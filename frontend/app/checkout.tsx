@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput, KeyboardAvoidingView, Platform } from "react-native";
+import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput, KeyboardAvoidingView, Platform, Modal } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { WebView, type WebViewNavigation } from "react-native-webview";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, type, radius } from "@/src/theme";
 import { api } from "@/src/api";
@@ -10,10 +11,10 @@ import { useAuth } from "@/src/context/auth";
 
 type Method = "stripe" | "paypal" | "mtn_momo" | "airtel";
 const METHODS: { id: Method; label: string; sub: string; icon: any; needsPhone?: boolean }[] = [
-  { id: "stripe", label: "Card (Stripe)", sub: "Visa, Mastercard, Amex", icon: "card-outline" },
-  { id: "paypal", label: "PayPal", sub: "Pay with your PayPal balance", icon: "logo-paypal" },
+  { id: "paypal", label: "PayPal", sub: "Live — Visa/Mastercard or PayPal balance", icon: "logo-paypal" },
   { id: "mtn_momo", label: "MTN Mobile Money", sub: "Rwanda MTN MoMo", icon: "phone-portrait-outline", needsPhone: true },
   { id: "airtel", label: "Airtel Money", sub: "Rwanda Airtel Money", icon: "phone-portrait-outline", needsPhone: true },
+  { id: "stripe", label: "Card (Stripe)", sub: "Visa, Mastercard, Amex", icon: "card-outline" },
 ];
 
 export default function Checkout() {
@@ -21,11 +22,36 @@ export default function Checkout() {
   const router = useRouter();
   const { plan, amount } = useLocalSearchParams<{ plan: string; amount: string }>();
   const { refresh, user } = useAuth();
-  const [method, setMethod] = useState<Method>("stripe");
+  const [method, setMethod] = useState<Method>("paypal");
   const [phone, setPhone] = useState(user?.phone || "+250");
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [paypalUrl, setPaypalUrl] = useState<string | null>(null);
+  const [paypalSubId, setPaypalSubId] = useState<string | null>(null);
+
+  const onPayPalNav = async (nav: WebViewNavigation) => {
+    const url = nav.url || "";
+    // Detect return / cancel URLs (both go to bbkigali.com/paypal/...)
+    if (url.includes("bbkigali.com/paypal/success") || url.includes("/paypal/success")) {
+      setPaypalUrl(null);
+      setLoading(true);
+      try {
+        const r = await api<{ status: string }>(`/billing/paypal/verify/${paypalSubId}`, { method: "POST", auth: true });
+        if (r.status === "success") {
+          await refresh();
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+          setSuccess(true);
+        } else {
+          setErr("PayPal reported the subscription is not yet active. It may take a moment — check your Profile.");
+        }
+      } catch (e: any) { setErr(e.message || "Verification failed"); }
+      finally { setLoading(false); }
+    } else if (url.includes("bbkigali.com/paypal/cancel") || url.includes("/paypal/cancel")) {
+      setPaypalUrl(null);
+      setErr("Payment cancelled.");
+    }
+  };
 
   const pay = async () => {
     setErr(null); setLoading(true);
@@ -34,6 +60,16 @@ export default function Checkout() {
       if (chosen.needsPhone && phone.replace(/\D/g, "").length < 9) {
         throw new Error("Enter a valid phone number for mobile money");
       }
+      if (method === "paypal") {
+        const r = await api<{ subscriptionId: string; approveUrl: string }>(
+          "/billing/paypal/create-subscription",
+          { method: "POST", auth: true, body: { plan } }
+        );
+        setPaypalSubId(r.subscriptionId);
+        setPaypalUrl(r.approveUrl);
+        return;
+      }
+      // Fallback for stripe/momo/airtel — currently mocked
       await api("/billing/subscribe", { method: "POST", auth: true, body: { plan, method, phone: chosen.needsPhone ? phone : null } });
       await refresh();
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
@@ -59,8 +95,46 @@ export default function Checkout() {
     );
   }
 
+  // Compute display prices — PayPal uses EUR, others use RWF
+  const paypalEurPrice: Record<string, string> = {
+    basic_monthly: "1.00", basic_yearly: "10.00", premium_monthly: "3.00", premium_yearly: "30.00",
+  };
+  const isPayPal = method === "paypal";
+  const displayCurrency = isPayPal ? "EUR" : "RWF";
+  const displayAmount = isPayPal
+    ? paypalEurPrice[String(plan)] || "0.00"
+    : Number(amount).toLocaleString();
+
   return (
     <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1, backgroundColor: colors.surface }}>
+      <Modal visible={!!paypalUrl} animationType="slide" onRequestClose={() => setPaypalUrl(null)}>
+        <View style={{ flex: 1, backgroundColor: "#fff" }}>
+          <View style={[styles.top, { paddingTop: insets.top + spacing.md, backgroundColor: "#003087" }]}>
+            <Pressable onPress={() => setPaypalUrl(null)} hitSlop={12} testID="paypal-close">
+              <Ionicons name="close" size={26} color="#fff" />
+            </Pressable>
+            <Text style={[styles.topTitle, { color: "#fff" }]}>PAYPAL CHECKOUT</Text>
+            <View style={{ width: 26 }} />
+          </View>
+          {paypalUrl && (
+            Platform.OS === "web" ? (
+              <iframe src={paypalUrl} style={{ flex: 1, width: "100%", height: "100%", border: 0 }} />
+            ) : (
+              <WebView
+                source={{ uri: paypalUrl }}
+                onNavigationStateChange={onPayPalNav}
+                onShouldStartLoadWithRequest={(req) => { onPayPalNav(req as any); return true; }}
+                startInLoadingState
+                javaScriptEnabled
+                domStorageEnabled
+                thirdPartyCookiesEnabled
+                testID="paypal-webview"
+              />
+            )
+          )}
+        </View>
+      </Modal>
+
       <View style={[styles.top, { paddingTop: insets.top + spacing.md }]}>
         <Pressable onPress={() => router.back()} hitSlop={12} testID="checkout-back">
           <Ionicons name="chevron-back" size={28} color={colors.onSurface} />
@@ -73,7 +147,8 @@ export default function Checkout() {
         <View style={styles.summary}>
           <Text style={styles.summaryLabel}>YOU&apos;RE PAYING FOR</Text>
           <Text style={styles.summaryPlan}>{String(plan || "").replace("_", " ").toUpperCase()}</Text>
-          <Text style={styles.summaryAmount}>{Number(amount).toLocaleString()} RWF</Text>
+          <Text style={styles.summaryAmount}>{displayAmount} {displayCurrency}</Text>
+          {isPayPal && <Text style={styles.summaryNote}>PayPal is billed in EUR (converted from RWF).</Text>}
         </View>
 
         <Text style={styles.sectionLabel}>PAYMENT METHOD</Text>
@@ -117,10 +192,18 @@ export default function Checkout() {
           </View>
         )}
 
-        <View style={styles.demoBox}>
-          <Ionicons name="information-circle-outline" size={16} color={colors.warning} />
-          <Text style={styles.demoText}>Demo mode — payments are simulated. No real charge will occur.</Text>
-        </View>
+        {!isPayPal && (
+          <View style={styles.demoBox}>
+            <Ionicons name="information-circle-outline" size={16} color={colors.warning} />
+            <Text style={styles.demoText}>Demo mode — this method is currently mocked. Only PayPal charges real money.</Text>
+          </View>
+        )}
+        {isPayPal && (
+          <View style={[styles.demoBox, { borderColor: colors.success }]}>
+            <Ionicons name="shield-checkmark-outline" size={16} color={colors.success} />
+            <Text style={styles.demoText}>Live PayPal. You will be redirected to PayPal to complete payment.</Text>
+          </View>
+        )}
 
         {err && <Text style={styles.err} testID="checkout-error">{err}</Text>}
       </ScrollView>
@@ -130,7 +213,7 @@ export default function Checkout() {
           {loading ? <ActivityIndicator color={colors.onBrandPrimary} /> : (
             <>
               <Ionicons name="lock-closed" size={16} color={colors.onBrandPrimary} />
-              <Text style={styles.payText}>PAY {Number(amount).toLocaleString()} RWF</Text>
+              <Text style={styles.payText}>PAY {displayAmount} {displayCurrency}</Text>
             </>
           )}
         </Pressable>
@@ -146,6 +229,7 @@ const styles = StyleSheet.create({
   summaryLabel: { ...type.label, color: colors.brandPrimary, letterSpacing: 2 },
   summaryPlan: { ...type.h2, color: colors.onBrandTertiary, marginTop: 4, fontSize: 16 },
   summaryAmount: { ...type.displayXL, fontSize: 36, marginTop: spacing.sm },
+  summaryNote: { ...type.caption, marginTop: 4, color: colors.onBrandTertiary },
   sectionLabel: { ...type.label, letterSpacing: 1.5, marginBottom: spacing.sm, color: colors.onSurfaceSecondary },
   methodRow: { flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.md, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, borderWidth: 1.5, borderColor: colors.border },
   methodRowActive: { borderColor: colors.brandPrimary },

@@ -2,12 +2,14 @@
 import os
 import uuid
 import logging
+import base64
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Optional, Literal
 
 import jwt
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Header
+import httpx
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Header, Request
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
@@ -26,6 +28,22 @@ YOUTUBE_LIVE_URL = f"https://www.youtube.com/watch?v={YOUTUBE_LIVE_ID}"
 YOUTUBE_EMBED_URL = f"https://www.youtube.com/embed/{YOUTUBE_LIVE_ID}?autoplay=1&playsinline=1&rel=0"
 DEMO_AUDIO_STREAM = "https://stream.zeno.fm/0r0xa792kwzuv"
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "https://radio-vod-platform.preview.emergentagent.com")
+
+# PayPal config
+PAYPAL_ENV = os.environ.get("PAYPAL_ENV", "sandbox").lower()
+PAYPAL_BASE = "https://api-m.paypal.com" if PAYPAL_ENV == "live" else "https://api-m.sandbox.paypal.com"
+PAYPAL_CLIENT_ID = os.environ.get("PAYPAL_CLIENT_ID", "")
+PAYPAL_CLIENT_SECRET = os.environ.get("PAYPAL_CLIENT_SECRET", "")
+PAYPAL_WEBHOOK_ID = os.environ.get("PAYPAL_WEBHOOK_ID", "")
+PAYPAL_RETURN_URL = os.environ.get("PAYPAL_RETURN_URL", f"{PUBLIC_BASE_URL}/paypal/success")
+PAYPAL_CANCEL_URL = os.environ.get("PAYPAL_CANCEL_URL", f"{PUBLIC_BASE_URL}/paypal/cancel")
+PAYPAL_CURRENCY = os.environ.get("PAYPAL_CURRENCY", "EUR")
+PAYPAL_PRICES = {
+    "basic_monthly":   os.environ.get("PAYPAL_PRICE_BASIC_MONTHLY", "1.00"),
+    "basic_yearly":    os.environ.get("PAYPAL_PRICE_BASIC_YEARLY", "10.00"),
+    "premium_monthly": os.environ.get("PAYPAL_PRICE_PREMIUM_MONTHLY", "3.00"),
+    "premium_yearly":  os.environ.get("PAYPAL_PRICE_PREMIUM_YEARLY", "30.00"),
+}
 
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
@@ -369,6 +387,258 @@ async def momo_status(reference: str, user = Depends(get_current_user)):
     if not p:
         raise HTTPException(404, "Payment not found")
     return {"reference": reference, "status": p["status"], "amount": p["amount"], "currency": p["currency"]}
+
+
+# ---------- PayPal (real live-mode) ----------
+PLAN_META = {
+    "basic_monthly":   {"tier": "basic",   "period": "monthly", "days": 30,  "label": "Basic Monthly",   "interval_unit": "MONTH", "interval_count": 1},
+    "basic_yearly":    {"tier": "basic",   "period": "yearly",  "days": 365, "label": "Basic Yearly",    "interval_unit": "YEAR",  "interval_count": 1},
+    "premium_monthly": {"tier": "premium", "period": "monthly", "days": 30,  "label": "Premium Monthly", "interval_unit": "MONTH", "interval_count": 1},
+    "premium_yearly":  {"tier": "premium", "period": "yearly",  "days": 365, "label": "Premium Yearly",  "interval_unit": "YEAR",  "interval_count": 1},
+}
+
+
+async def _paypal_token() -> str:
+    if not PAYPAL_CLIENT_ID or not PAYPAL_CLIENT_SECRET:
+        raise HTTPException(500, "PayPal credentials not configured on server")
+    basic = base64.b64encode(f"{PAYPAL_CLIENT_ID}:{PAYPAL_CLIENT_SECRET}".encode()).decode()
+    async with httpx.AsyncClient(timeout=30.0) as c:
+        r = await c.post(
+            f"{PAYPAL_BASE}/v1/oauth2/token",
+            headers={"Authorization": f"Basic {basic}", "Content-Type": "application/x-www-form-urlencoded"},
+            content="grant_type=client_credentials",
+        )
+    if r.status_code >= 300:
+        logger.error("PayPal oauth failed %s %s", r.status_code, r.text)
+        raise HTTPException(502, f"PayPal OAuth failed: {r.text}")
+    return r.json()["access_token"]
+
+
+async def _paypal_ensure_plans() -> dict:
+    """Create Product + 4 Plans on PayPal if not yet stored. Returns plan_key -> plan_id map."""
+    existing = await db.paypal_plans.find_one({"env": PAYPAL_ENV}, {"_id": 0})
+    if existing and all(k in existing.get("plans", {}) for k in PLAN_META):
+        return existing["plans"]
+
+    token = await _paypal_token()
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    async with httpx.AsyncClient(timeout=30.0) as c:
+        # 1) Product
+        product_id = existing.get("productId") if existing else None
+        if not product_id:
+            pr = await c.post(
+                f"{PAYPAL_BASE}/v1/catalogs/products",
+                headers={**headers, "PayPal-Request-Id": str(uuid.uuid4())},
+                json={
+                    "name": "BB FM Kigali Subscription",
+                    "description": "Access to BB FM Kigali live radio, VOD, and podcasts.",
+                    "type": "SERVICE",
+                    "category": "ENTERTAINMENT_AND_MEDIA",
+                },
+            )
+            if pr.status_code >= 300:
+                logger.error("PayPal product create %s %s", pr.status_code, pr.text)
+                raise HTTPException(502, f"PayPal product create failed: {pr.text}")
+            product_id = pr.json()["id"]
+
+        # 2) Plans
+        plans_map: dict = (existing or {}).get("plans", {}) if existing else {}
+        for key, meta in PLAN_META.items():
+            if plans_map.get(key):
+                continue
+            price = PAYPAL_PRICES[key]
+            body = {
+                "product_id": product_id,
+                "name": f"BB FM {meta['label']}",
+                "description": f"BB FM Kigali {meta['label']}",
+                "status": "ACTIVE",
+                "billing_cycles": [{
+                    "frequency": {"interval_unit": meta["interval_unit"], "interval_count": meta["interval_count"]},
+                    "tenure_type": "REGULAR",
+                    "sequence": 1,
+                    "total_cycles": 0,
+                    "pricing_scheme": {"fixed_price": {"value": price, "currency_code": PAYPAL_CURRENCY}},
+                }],
+                "payment_preferences": {
+                    "auto_bill_outstanding": True,
+                    "setup_fee_failure_action": "CONTINUE",
+                    "payment_failure_threshold": 2,
+                },
+            }
+            plr = await c.post(
+                f"{PAYPAL_BASE}/v1/billing/plans",
+                headers={**headers, "PayPal-Request-Id": str(uuid.uuid4())},
+                json=body,
+            )
+            if plr.status_code >= 300:
+                logger.error("PayPal plan create %s %s", plr.status_code, plr.text)
+                raise HTTPException(502, f"PayPal plan create failed for {key}: {plr.text}")
+            plans_map[key] = plr.json()["id"]
+
+    await db.paypal_plans.update_one(
+        {"env": PAYPAL_ENV},
+        {"$set": {"env": PAYPAL_ENV, "productId": product_id, "plans": plans_map, "updatedAt": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    logger.info("PayPal plans ensured: %s", plans_map)
+    return plans_map
+
+
+class PayPalCreateIn(BaseModel):
+    plan: Literal["basic_monthly", "basic_yearly", "premium_monthly", "premium_yearly"]
+
+
+@api.post("/billing/paypal/create-subscription")
+async def paypal_create(body: PayPalCreateIn, user = Depends(get_current_user)):
+    plan_meta = PLAN_META[body.plan]
+    plans = await _paypal_ensure_plans()
+    plan_id = plans.get(body.plan)
+    if not plan_id:
+        raise HTTPException(500, "PayPal plan not provisioned")
+    token = await _paypal_token()
+    payload = {
+        "plan_id": plan_id,
+        "custom_id": user["id"],
+        "application_context": {
+            "brand_name": "BB FM Kigali",
+            "user_action": "SUBSCRIBE_NOW",
+            "return_url": PAYPAL_RETURN_URL,
+            "cancel_url": PAYPAL_CANCEL_URL,
+        },
+    }
+    async with httpx.AsyncClient(timeout=30.0) as c:
+        r = await c.post(
+            f"{PAYPAL_BASE}/v1/billing/subscriptions",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", "PayPal-Request-Id": str(uuid.uuid4())},
+            json=payload,
+        )
+    if r.status_code >= 300:
+        logger.error("PayPal subscribe %s %s", r.status_code, r.text)
+        raise HTTPException(502, f"PayPal create-subscription failed: {r.text}")
+    data = r.json()
+    approve_url = next((l["href"] for l in data.get("links", []) if l.get("rel") == "approve"), None)
+    if not approve_url:
+        raise HTTPException(502, "PayPal did not return an approval URL")
+    # Persist pending payment
+    now = datetime.now(timezone.utc)
+    payment = {
+        "id": data["id"],
+        "reference": data["id"],
+        "userId": user["id"],
+        "plan": body.plan,
+        "planLabel": plan_meta["label"],
+        "amount": float(PAYPAL_PRICES[body.plan]),
+        "currency": PAYPAL_CURRENCY,
+        "method": "paypal",
+        "status": "pending",
+        "paypalSubscriptionId": data["id"],
+        "createdAt": now.isoformat(),
+    }
+    await db.payments.insert_one(payment.copy())
+    return {
+        "subscriptionId": data["id"],
+        "approveUrl": approve_url,
+        "status": data.get("status", "APPROVAL_PENDING"),
+    }
+
+
+@api.post("/billing/paypal/verify/{subscription_id}")
+async def paypal_verify(subscription_id: str, user = Depends(get_current_user)):
+    """Called by the app after the WebView redirects back on approval — polls PayPal for real status."""
+    token = await _paypal_token()
+    async with httpx.AsyncClient(timeout=30.0) as c:
+        r = await c.get(
+            f"{PAYPAL_BASE}/v1/billing/subscriptions/{subscription_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    if r.status_code >= 300:
+        raise HTTPException(502, f"PayPal fetch subscription failed: {r.text}")
+    data = r.json()
+    status_raw = (data.get("status") or "").upper()
+    payment = await db.payments.find_one({"reference": subscription_id, "userId": user["id"]}, {"_id": 0})
+    if not payment:
+        raise HTTPException(404, "Payment record not found")
+    final_status = "success" if status_raw in ("ACTIVE", "APPROVED") else \
+                   "failed"  if status_raw in ("CANCELLED", "EXPIRED", "SUSPENDED") else "pending"
+    await db.payments.update_one(
+        {"reference": subscription_id},
+        {"$set": {"status": final_status, "providerPayload": data, "updatedAt": datetime.now(timezone.utc).isoformat()}},
+    )
+    if final_status == "success":
+        pm = PLAN_META[payment["plan"]]
+        expires = datetime.now(timezone.utc) + timedelta(days=pm["days"])
+        await db.users.update_one(
+            {"id": user["id"]},
+            {"$set": {"tier": pm["tier"], "subscriptionExpiresAt": expires.isoformat(), "currentPlan": payment["plan"]}},
+        )
+    return {"status": final_status, "paypalStatus": status_raw, "subscriptionId": subscription_id}
+
+
+@api.post("/billing/paypal/webhook")
+async def paypal_webhook(request: Request):
+    """Public webhook — configure this URL in PayPal Dashboard → Apps & Credentials → Webhooks."""
+    raw = await request.body()
+    try:
+        payload = await request.json()
+    except Exception:
+        return {"ok": False, "error": "invalid_json"}
+    event_type = payload.get("event_type", "")
+    resource = payload.get("resource", {}) or {}
+    logger.info("PayPal webhook: %s", event_type)
+    # OPTIONAL: verify signature if PAYPAL_WEBHOOK_ID is set (skipped when blank)
+    if PAYPAL_WEBHOOK_ID:
+        try:
+            token = await _paypal_token()
+            verify_body = {
+                "auth_algo": request.headers.get("paypal-auth-algo"),
+                "cert_url": request.headers.get("paypal-cert-url"),
+                "transmission_id": request.headers.get("paypal-transmission-id"),
+                "transmission_sig": request.headers.get("paypal-transmission-sig"),
+                "transmission_time": request.headers.get("paypal-transmission-time"),
+                "webhook_id": PAYPAL_WEBHOOK_ID,
+                "webhook_event": payload,
+            }
+            async with httpx.AsyncClient(timeout=15.0) as c:
+                vr = await c.post(
+                    f"{PAYPAL_BASE}/v1/notifications/verify-webhook-signature",
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                    json=verify_body,
+                )
+            if vr.status_code >= 300 or vr.json().get("verification_status") != "SUCCESS":
+                logger.warning("PayPal webhook signature verification failed: %s", vr.text)
+                return {"ok": False, "error": "signature_verification_failed"}
+        except Exception as e:
+            logger.warning("PayPal webhook verify exception: %s", e)
+
+    sub_id = resource.get("id") or resource.get("billing_agreement_id")
+    if not sub_id:
+        return {"ok": True}
+    payment = await db.payments.find_one({"reference": sub_id}, {"_id": 0})
+    if not payment:
+        return {"ok": True, "note": "no matching payment"}
+    if event_type in ("BILLING.SUBSCRIPTION.ACTIVATED", "PAYMENT.SALE.COMPLETED", "BILLING.SUBSCRIPTION.CREATED", "PAYMENT.CAPTURE.COMPLETED"):
+        pm = PLAN_META[payment["plan"]]
+        expires = datetime.now(timezone.utc) + timedelta(days=pm["days"])
+        await db.payments.update_one({"reference": sub_id}, {"$set": {"status": "success", "providerPayload": payload, "updatedAt": datetime.now(timezone.utc).isoformat()}})
+        await db.users.update_one({"id": payment["userId"]}, {"$set": {"tier": pm["tier"], "subscriptionExpiresAt": expires.isoformat(), "currentPlan": payment["plan"]}})
+    elif event_type in ("BILLING.SUBSCRIPTION.CANCELLED", "BILLING.SUBSCRIPTION.EXPIRED", "BILLING.SUBSCRIPTION.SUSPENDED"):
+        await db.payments.update_one({"reference": sub_id}, {"$set": {"status": "failed", "providerPayload": payload, "updatedAt": datetime.now(timezone.utc).isoformat()}})
+        await db.users.update_one({"id": payment["userId"]}, {"$set": {"tier": "free"}})
+    return {"ok": True}
+
+
+@api.get("/billing/paypal/config")
+async def paypal_config(user = Depends(get_current_user)):
+    """Frontend fetches non-secret PayPal config for display (currency, prices, return URLs)."""
+    return {
+        "env": PAYPAL_ENV,
+        "currency": PAYPAL_CURRENCY,
+        "prices": PAYPAL_PRICES,
+        "returnUrl": PAYPAL_RETURN_URL,
+        "cancelUrl": PAYPAL_CANCEL_URL,
+        "clientId": PAYPAL_CLIENT_ID,  # public — safe to expose
+    }
 
 
 # ---------- Root health ----------
