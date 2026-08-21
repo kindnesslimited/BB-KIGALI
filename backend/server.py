@@ -21,7 +21,11 @@ DB_NAME = os.environ["DB_NAME"]
 JWT_SECRET = os.environ.get("JWT_SECRET", "bbfm-kigali-dev-secret-change-me")
 JWT_ALG = "HS256"
 MOCK_OTP_CODE = "123456"
-DEMO_STREAM_URL = "https://stream.zeno.fm/0r0xa792kwzuv"  # public demo stream
+YOUTUBE_LIVE_ID = "wPD77ygQKfo"
+YOUTUBE_LIVE_URL = f"https://www.youtube.com/watch?v={YOUTUBE_LIVE_ID}"
+YOUTUBE_EMBED_URL = f"https://www.youtube.com/embed/{YOUTUBE_LIVE_ID}?autoplay=1&playsinline=1&rel=0"
+DEMO_AUDIO_STREAM = "https://stream.zeno.fm/0r0xa792kwzuv"
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "https://radio-vod-platform.preview.emergentagent.com")
 
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
@@ -177,11 +181,14 @@ async def now_playing():
     if not doc:
         doc = {
             "key": "current",
-            "streamUrl": DEMO_STREAM_URL,
-            "showTitle": "Morning Drive",
-            "djName": "DJ Karisa",
-            "description": "Waking up Kigali with the best beats and news.",
-            "coverImage": "https://images.pexels.com/photos/28435464/pexels-photo-28435464.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+            "streamUrl": DEMO_AUDIO_STREAM,
+            "youtubeVideoId": YOUTUBE_LIVE_ID,
+            "youtubeEmbedUrl": YOUTUBE_EMBED_URL,
+            "youtubeWatchUrl": YOUTUBE_LIVE_URL,
+            "showTitle": "BB FM Kigali Live",
+            "djName": "Live on YouTube",
+            "description": "Watch BB FM Kigali live — streaming 24/7 from Rwanda.",
+            "coverImage": f"https://img.youtube.com/vi/{YOUTUBE_LIVE_ID}/maxresdefault.jpg",
             "isLive": True,
         }
     return {k: v for k, v in doc.items() if k != "key"}
@@ -283,6 +290,87 @@ async def payment_history(user = Depends(get_current_user)):
     return items
 
 
+# ---------- MTN MoMo dedicated endpoints ----------
+# These are the endpoints your real MTN MoMo integration (RequestToPay) will hit.
+# Point your MoMo API "callbackHost" / "X-Callback-Url" at PUBLIC_BASE_URL + /api/billing/momo/callback
+class MoMoInitiateIn(BaseModel):
+    plan: Literal["basic_monthly", "basic_yearly", "premium_monthly", "premium_yearly"]
+    phone: str  # payer MSISDN in E.164 e.g. +250788xxxxxx
+
+
+@api.post("/billing/momo/initiate")
+async def momo_initiate(body: MoMoInitiateIn, user = Depends(get_current_user)):
+    plan = PLAN_CATALOG.get(body.plan)
+    if not plan:
+        raise HTTPException(400, "Invalid plan")
+    reference = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    payment = {
+        "id": reference,
+        "reference": reference,
+        "userId": user["id"],
+        "plan": body.plan,
+        "planLabel": plan["label"],
+        "amount": plan["amount"],
+        "currency": plan["currency"],
+        "method": "mtn_momo",
+        "phone": body.phone,
+        "status": "pending",
+        "createdAt": now.isoformat(),
+    }
+    await db.payments.insert_one(payment.copy())
+    # In production: call MTN MoMo RequestToPay API here with:
+    #   X-Reference-Id: reference
+    #   X-Callback-Url: PUBLIC_BASE_URL + /api/billing/momo/callback
+    #   body { amount, currency: "RWF", externalId, payer:{partyIdType:"MSISDN", partyId: body.phone}, payerMessage, payeeNote }
+    return {
+        "reference": reference,
+        "status": "pending",
+        "message": "Approve the payment on your phone. We'll notify you when it completes.",
+        "callbackUrl": f"{PUBLIC_BASE_URL}/api/billing/momo/callback",
+        "pollUrl": f"{PUBLIC_BASE_URL}/api/billing/momo/{reference}",
+    }
+
+
+@api.post("/billing/momo/callback")
+async def momo_callback(payload: dict):
+    """Public webhook that MTN MoMo POSTs when the payer's transaction status changes.
+    Whitelist this URL in your MoMo API sandbox/production dashboard as callbackHost."""
+    logger.info("MoMo callback received: %s", payload)
+    reference = payload.get("referenceId") or payload.get("externalId") or payload.get("reference")
+    status_raw = (payload.get("status") or "").upper()
+    if not reference:
+        return {"ok": False, "error": "missing_reference"}
+    payment = await db.payments.find_one({"reference": reference}, {"_id": 0})
+    if not payment:
+        return {"ok": False, "error": "unknown_reference"}
+    final_status = "success" if status_raw in ("SUCCESSFUL", "SUCCESS", "COMPLETED") else \
+                   "failed"  if status_raw in ("FAILED", "REJECTED", "CANCELLED", "EXPIRED") else \
+                   "pending"
+    await db.payments.update_one({"reference": reference}, {"$set": {
+        "status": final_status,
+        "providerPayload": payload,
+        "updatedAt": datetime.now(timezone.utc).isoformat(),
+    }})
+    if final_status == "success":
+        plan = PLAN_CATALOG.get(payment["plan"])
+        if plan:
+            expires = datetime.now(timezone.utc) + timedelta(days=plan["days"])
+            await db.users.update_one(
+                {"id": payment["userId"]},
+                {"$set": {"tier": plan["tier"], "subscriptionExpiresAt": expires.isoformat(), "currentPlan": payment["plan"]}},
+            )
+    return {"ok": True, "status": final_status, "reference": reference}
+
+
+@api.get("/billing/momo/{reference}")
+async def momo_status(reference: str, user = Depends(get_current_user)):
+    p = await db.payments.find_one({"reference": reference, "userId": user["id"]}, {"_id": 0})
+    if not p:
+        raise HTTPException(404, "Payment not found")
+    return {"reference": reference, "status": p["status"], "amount": p["amount"], "currency": p["currency"]}
+
+
 # ---------- Root health ----------
 @api.get("/")
 async def root():
@@ -371,13 +459,31 @@ async def seed():
     if not await db.radio_state.count_documents({}):
         await db.radio_state.insert_one({
             "key": "current",
-            "streamUrl": DEMO_STREAM_URL,
-            "showTitle": "Morning Drive",
-            "djName": "DJ Karisa",
-            "description": "Waking up Kigali with the best beats and news.",
-            "coverImage": "https://images.pexels.com/photos/28435464/pexels-photo-28435464.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+            "streamUrl": DEMO_AUDIO_STREAM,
+            "youtubeVideoId": YOUTUBE_LIVE_ID,
+            "youtubeEmbedUrl": YOUTUBE_EMBED_URL,
+            "youtubeWatchUrl": YOUTUBE_LIVE_URL,
+            "showTitle": "BB FM Kigali Live",
+            "djName": "Live on YouTube",
+            "description": "Watch BB FM Kigali live — streaming 24/7 from Rwanda.",
+            "coverImage": f"https://img.youtube.com/vi/{YOUTUBE_LIVE_ID}/maxresdefault.jpg",
             "isLive": True,
         })
+    else:
+        # Ensure existing radio_state row is updated with YouTube live details on redeploy
+        await db.radio_state.update_one(
+            {"key": "current"},
+            {"$set": {
+                "youtubeVideoId": YOUTUBE_LIVE_ID,
+                "youtubeEmbedUrl": YOUTUBE_EMBED_URL,
+                "youtubeWatchUrl": YOUTUBE_LIVE_URL,
+                "showTitle": "BB FM Kigali Live",
+                "djName": "Live on YouTube",
+                "description": "Watch BB FM Kigali live — streaming 24/7 from Rwanda.",
+                "coverImage": f"https://img.youtube.com/vi/{YOUTUBE_LIVE_ID}/maxresdefault.jpg",
+                "isLive": True,
+            }}
+        )
 
 
 @app.on_event("startup")

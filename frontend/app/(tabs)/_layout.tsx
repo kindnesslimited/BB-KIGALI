@@ -27,7 +27,7 @@ function MiniPlayer() {
           <Text numberOfLines={1} style={styles.mpDj}>{nowPlaying.djName}</Text>
         </View>
         <Pressable
-          onPress={(e) => { e.stopPropagation(); void toggle(); }}
+          onPress={(e) => { e.stopPropagation(); void toggle(); router.push("/player"); }}
           hitSlop={10}
           testID="mini-player-toggle"
           style={styles.mpBtn}

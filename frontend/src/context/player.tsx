@@ -1,10 +1,11 @@
-import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from "react";
-import { Platform } from "react-native";
-import { createAudioPlayer, setAudioModeAsync, AudioPlayer } from "expo-audio";
+import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
 import { api } from "../api";
 
 export type NowPlaying = {
   streamUrl: string;
+  youtubeVideoId?: string;
+  youtubeEmbedUrl?: string;
+  youtubeWatchUrl?: string;
   showTitle: string;
   djName: string;
   description: string;
@@ -19,6 +20,7 @@ type Ctx = {
   toggle: () => Promise<void>;
   play: () => Promise<void>;
   pause: () => void;
+  refreshNowPlaying: () => Promise<void>;
 };
 
 const PlayerCtx = createContext<Ctx | null>(null);
@@ -26,47 +28,23 @@ const PlayerCtx = createContext<Ctx | null>(null);
 export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const [nowPlaying, setNowPlaying] = useState<NowPlaying | null>(null);
   const [isPlaying, setPlaying] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const playerRef = useRef<AudioPlayer | null>(null);
+  const [loading] = useState(false);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const data = await api<NowPlaying>("/radio/now-playing");
-        setNowPlaying(data);
-      } catch (e) { console.log("np", e); }
-      try {
-        await setAudioModeAsync({ playsInSilentMode: true, shouldPlayInBackground: true });
-      } catch {}
-    })();
-    return () => { try { playerRef.current?.remove(); } catch {} };
-  }, []);
-
-  const play = useCallback(async () => {
-    if (!nowPlaying) return;
-    setLoading(true);
+  const refreshNowPlaying = useCallback(async () => {
     try {
-      if (!playerRef.current) {
-        playerRef.current = createAudioPlayer({ uri: nowPlaying.streamUrl });
-      }
-      playerRef.current.play();
-      setPlaying(true);
-    } catch (e) {
-      console.log("play err", e);
-    } finally { setLoading(false); }
-  }, [nowPlaying]);
-
-  const pause = useCallback(() => {
-    try { playerRef.current?.pause(); } catch {}
-    setPlaying(false);
+      const data = await api<NowPlaying>("/radio/now-playing");
+      setNowPlaying(data);
+    } catch (e) { console.log("np", e); }
   }, []);
 
-  const toggle = useCallback(async () => {
-    if (isPlaying) pause(); else await play();
-  }, [isPlaying, pause, play]);
+  useEffect(() => { void refreshNowPlaying(); }, [refreshNowPlaying]);
+
+  const play = useCallback(async () => { setPlaying(true); }, []);
+  const pause = useCallback(() => { setPlaying(false); }, []);
+  const toggle = useCallback(async () => { setPlaying((p) => !p); }, []);
 
   return (
-    <PlayerCtx.Provider value={{ nowPlaying, isPlaying, loading, toggle, play, pause }}>
+    <PlayerCtx.Provider value={{ nowPlaying, isPlaying, loading, toggle, play, pause, refreshNowPlaying }}>
       {children}
     </PlayerCtx.Provider>
   );

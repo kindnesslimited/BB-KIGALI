@@ -62,12 +62,12 @@ export default function Home() {
             <Text style={styles.heroTitle} numberOfLines={2}>{nowPlaying.showTitle.toUpperCase()}</Text>
             <Text style={styles.heroDj}>with {nowPlaying.djName}</Text>
             <Pressable
-              onPress={(e) => { e.stopPropagation(); void toggle(); }}
+              onPress={(e) => { e.stopPropagation(); void toggle(); router.push("/player"); }}
               style={styles.heroBtn}
               testID="home-play-live"
             >
               <Ionicons name={playerLoading ? "hourglass" : isPlaying ? "pause" : "play"} size={22} color={colors.onBrandPrimary} />
-              <Text style={styles.heroBtnText}>{isPlaying ? "PAUSE" : "LISTEN LIVE"}</Text>
+              <Text style={styles.heroBtnText}>{isPlaying ? "PAUSE" : "WATCH LIVE"}</Text>
             </Pressable>
           </View>
         </Pressable>
