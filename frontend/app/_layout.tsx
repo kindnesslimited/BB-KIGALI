@@ -64,6 +64,12 @@ export default function RootLayout() {
                 <Stack.Screen name="video/[id]" />
                 <Stack.Screen name="paywall" options={{ presentation: "modal" }} />
                 <Stack.Screen name="checkout" options={{ presentation: "modal" }} />
+                <Stack.Screen name="admin/index" />
+                <Stack.Screen name="admin/settings" />
+                <Stack.Screen name="admin/programs" />
+                <Stack.Screen name="admin/shows" />
+                <Stack.Screen name="live-news" options={{ presentation: "modal" }} />
+                <Stack.Screen name="program/[id]" />
               </Stack>
             </AuthGate>
           </PlayerProvider>

@@ -1,0 +1,42 @@
+{
+  "summary": "Iteration 3 — ALL 16 new backend pytest cases + full frontend E2E on Expo web (mobile 390x844) PASS. Backend: (a) OTP verify with '+250798875272' AND '250798875272' both return user.role='admin' (auto-promotion from ADMIN_PHONES env strips '+') and a fresh non-admin phone returns non-admin role. (b) GET /api/programs returns exactly 3 items ordered BBSPORTSTALK, B&B SPORTS BAR, #IMPUMEKOYIWACU (note: field is 'name', not 'title'). (c) GET /api/settings returns stationName='B&B Kigali', frequency='89.7 FM', stationTagline='#MuriSiporonIgitego' (frontend also reads stationTagline). (d) GET /api/shows contains a show with videoUrl including 'Jsi8atSWGbg'. (e) Admin PUT /api/admin/settings {youtubeLiveUrl:...v=Jsi8atSWGbg} → immediately after, GET /api/radio/now-playing returns youtubeVideoId='Jsi8atSWGbg' (then restored). (f) Non-admin PUT /api/admin/settings returns 403; unauth returns 401. (g) Admin POST/PUT/DELETE /api/admin/programs CRUD works (create needs 'name' field). (h) Admin POST /api/admin/shows creates a show. (i) Non-premium GET /api/shows/{id} on premium show returns locked=true, unlockPrice='1.00', unlockCurrency='EUR'. (j) POST /api/billing/vod/{id}/create returns orderId + approveUrl containing 'paypal.com'. (k) MoMo /initiate with 250794230137 writes db.payments.besoftPayload.debit.metadata.kind='debit_credit' and credits[0].payee_identifier='250798875272' — VERIFIED in Mongo. Frontend: signed in as admin +250798875272 → home shows 'B&B KIGALI 89.7 FM' + '#MuriSiporonIgitego', 3 program cards (program-<id>) with 'MOST POPULAR' badge on first, home-live-news + home-shows visible, home-admin visible; tapping opens /admin (admin-home) with all 3 admin-card-* buttons. admin-card-settings screen shows input-station-name, input-radio-url, input-youtube-live, settings-save. admin-card-programs shows admin-programs list + programs-add opens new form with prog-name input. admin-card-shows opens admin-shows. home-live-news → live-news screen with a YouTube iframe (src=https://www.youtube.com/embed/wPD77ygQKfo?...). Signed in as +250788111133 → NO home-admin, tapping first premium show shows locked-box with buy-vod-btn 'PAY 1.00 EUR' and go-premium-btn 'OR GO PREMIUM'.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/programs", "issue": "Field is 'name' (not 'title'). Doesn't match the review request wording but the value is correct."},
+      {"endpoint": "GET /api/settings", "issue": "Field is 'stationTagline' (not 'tagline'). Review request wording implied 'tagline'; both frontend and Pydantic use 'stationTagline'. Value = '#MuriSiporonIgitego' — correct."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_admin_vod_branding.py",
+    "/app/backend/tests/test_bbfm_backend.py",
+    "/app/backend/tests/test_momo_paypal.py",
+    "/app/test_reports/pytest/pytest_iter3.xml"
+  ],
+  "action_items": [
+    "None blocking. Optional consistency: rename ProgramIn.name → title AND AdminSettingsIn.stationTagline → tagline if you want field names to match the product spec verbatim; otherwise document field mapping in the API section of the PRD.",
+    "(Carryover) /app/memory/test_credentials.md still references BeSoft /transfer endpoint — actual code uses /public/payments/debit-credit."
+  ],
+  "critical_code_review_comments": [
+    "server.py:919-941 admin_put_settings correctly upserts settings AND mirrors youtubeVideoId/embedUrl into db.radio_state so /radio/now-playing reflects the change without restart.",
+    "server.py:951-983 Programs CRUD is admin-guarded via require_admin dependency; ProgramIn schema takes 'name' — frontend already aligned (admin/programs.tsx line 66 uses p.name).",
+    "Auto-admin promotion: OTP verify strips '+' and compares against ADMIN_PHONES from env (250798875272,250794230137). Both '+250...' and '250...' inputs correctly promote.",
+    "Non-premium premium-show response contains locked=true + unlockPrice='1.00' + unlockCurrency='EUR' + videoUrl=null — matches spec.",
+    "/api/billing/vod/{show_id}/create returns approveUrl on paypal.com and orderId; premium users get alreadyUnlocked=true (verified for non-premium in test; skip path implemented for repeat runs)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_admin_vod_branding.py (NEW — 16 test cases covering admin role, programs, settings, admin CRUD, VOD locking, PayPal VOD create, MoMo debit-credit Mongo verification)"
+  ],
+  "success_rate": {"backend": "100% (16/16 new + 25/25 carryover green)", "frontend": "100% on all 8 requested flows"},
+  "seed_data_creation": "Test-only: 1 program TEST_PROG created + deleted; 1 show TEST_SHOW_DELETE_ME created + deleted. One MoMo debit-credit call fired to BeSoft with payer 250794230137 (BeSoft accepted, MTN provider returned HTTP_400 as expected — Mongo payload was the pass criterion).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Reuse /app/backend/tests/test_admin_vod_branding.py — run with `pytest -n 0` (xdist parallel workers race on the shared ADMIN_PHONE OTP challenge; single-worker mode avoids it). All admin endpoints require Bearer token from a user whose phone (with or without '+') is in ADMIN_PHONES env. Field name gotchas: programs use 'name' not 'title'; settings uses 'stationTagline' not 'tagline'. Non-premium unlock price is a string '1.00' + currency 'EUR' (per-VOD one-time PayPal purchase). MoMo initiate always writes db.payments.besoftPayload — verify metadata.kind=='debit_credit' and credits[0].payee_identifier=='250798875272'. Real payer 250794230137 will always fail at MTN (account inactive) — that's expected and not a bug.",
+  "rca_of_issue": "Not applicable — feature verification, all requested behaviours pass."
+}

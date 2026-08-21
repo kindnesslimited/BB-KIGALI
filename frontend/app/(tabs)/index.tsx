@@ -12,6 +12,7 @@ import { usePlayer } from "@/src/context/player";
 
 type Sched = { id: string; time: string; showTitle: string; djName: string; isLive: boolean };
 type News = { id: string; title: string; excerpt: string; thumbnail: string; publishedAt: string };
+type Program = { id: string; name: string; description?: string; coverImage?: string; order: number };
 
 export default function Home() {
   const insets = useSafeAreaInsets();
@@ -20,12 +21,17 @@ export default function Home() {
   const { nowPlaying, isPlaying, toggle, loading: playerLoading } = usePlayer();
   const [schedule, setSchedule] = useState<Sched[]>([]);
   const [news, setNews] = useState<News[]>([]);
+  const [programs, setPrograms] = useState<Program[]>([]);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = async () => {
     try {
-      const [s, n] = await Promise.all([api<Sched[]>("/radio/schedule"), api<News[]>("/news")]);
-      setSchedule(s); setNews(n.slice(0, 5));
+      const [s, n, p] = await Promise.all([
+        api<Sched[]>("/radio/schedule"),
+        api<News[]>("/news"),
+        api<Program[]>("/programs"),
+      ]);
+      setSchedule(s); setNews(n.slice(0, 5)); setPrograms(p);
     } catch (e) { console.log("home load", e); }
   };
   useEffect(() => { load(); }, []);
@@ -40,12 +46,37 @@ export default function Home() {
     >
       {/* Header */}
       <View style={styles.header}>
-        <View>
+        <View style={{ flex: 1 }}>
           <Text style={styles.hello}>Muraho{user?.displayName ? `, ${user.displayName}` : ""}</Text>
-          <Text style={styles.brand}>BB FM KIGALI</Text>
+          <Text style={styles.brand}>B&B KIGALI 89.7 FM</Text>
+          <Text style={styles.tagline}>#MuriSiporonIgitego</Text>
         </View>
+        {user?.role === "admin" && (
+          <Pressable onPress={() => router.push("/admin")} style={styles.adminBtn} testID="home-admin">
+            <Ionicons name="shield-checkmark" size={16} color={colors.brandPrimary} />
+            <Text style={styles.adminBtnText}>ADMIN</Text>
+          </Pressable>
+        )}
         <Pressable onPress={() => router.push("/(tabs)/profile")} style={styles.avatar} testID="home-avatar">
           <Text style={styles.avatarText}>{(user?.displayName?.[0] || user?.phone?.slice(-2) || "?").toUpperCase()}</Text>
+        </Pressable>
+      </View>
+
+      {/* Quick Actions row */}
+      <View style={styles.quickRow}>
+        <Pressable onPress={() => router.push("/live-news")} style={styles.quickBtn} testID="home-live-news">
+          <View style={styles.quickIcon}><Ionicons name="tv-outline" size={20} color={colors.brandPrimary} /></View>
+          <View>
+            <Text style={styles.quickLabel}>LIVE NEWS</Text>
+            <Text style={styles.quickSub}>Watch on YouTube</Text>
+          </View>
+        </Pressable>
+        <Pressable onPress={() => router.push("/(tabs)/shows")} style={styles.quickBtn} testID="home-shows">
+          <View style={styles.quickIcon}><Ionicons name="play-circle-outline" size={20} color={colors.brandPrimary} /></View>
+          <View>
+            <Text style={styles.quickLabel}>SHOWS</Text>
+            <Text style={styles.quickSub}>VOD & podcasts</Text>
+          </View>
         </Pressable>
       </View>
 
@@ -71,6 +102,43 @@ export default function Home() {
             </Pressable>
           </View>
         </Pressable>
+      )}
+
+      {/* Programs */}
+      {programs.length > 0 && (
+        <View style={styles.section}>
+          <View style={styles.sectionHead}>
+            <Text style={styles.sectionTitle}>PROGRAMS</Text>
+            {user?.role === "admin" && (
+              <Pressable onPress={() => router.push("/admin/programs")}>
+                <Text style={styles.seeAll}>Manage</Text>
+              </Pressable>
+            )}
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: spacing.lg, gap: spacing.md }}>
+            {programs.map((p, idx) => (
+              <Pressable
+                key={p.id}
+                onPress={() => router.push({ pathname: "/program/[id]", params: { id: p.id } })}
+                style={styles.programCard}
+                testID={`program-${p.id}`}
+              >
+                {p.coverImage && <Image source={{ uri: p.coverImage }} style={StyleSheet.absoluteFill} contentFit="cover" />}
+                <LinearGradient colors={["rgba(15,15,19,0.1)", "rgba(15,15,19,0.85)"]} style={StyleSheet.absoluteFill} />
+                {idx === 0 && (
+                  <View style={styles.programBadge}>
+                    <Ionicons name="star" size={9} color={colors.onBrandPrimary} />
+                    <Text style={styles.programBadgeText}>MOST POPULAR</Text>
+                  </View>
+                )}
+                <View style={styles.programBottom}>
+                  <Text style={styles.programOrder}>#{p.order}</Text>
+                  <Text style={styles.programName} numberOfLines={2}>{p.name}</Text>
+                </View>
+              </Pressable>
+            ))}
+          </ScrollView>
+        </View>
       )}
 
       {/* Schedule */}
@@ -130,11 +198,25 @@ export default function Home() {
 }
 
 const styles = StyleSheet.create({
-  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: spacing.lg, marginBottom: spacing.lg },
+  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: spacing.lg, marginBottom: spacing.lg, gap: spacing.sm },
   hello: { ...type.bodyMuted },
-  brand: { ...type.displayLg, letterSpacing: 1 },
+  brand: { ...type.displayLg, letterSpacing: 1, fontSize: 22 },
+  tagline: { ...type.caption, color: colors.brandPrimary, letterSpacing: 1 },
+  adminBtn: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: spacing.sm, paddingVertical: 6, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.brandPrimary, backgroundColor: colors.brandTertiary },
+  adminBtnText: { color: colors.brandPrimary, fontFamily: "BarlowCondensed-Bold", fontSize: 11, letterSpacing: 1 },
   avatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.brandTertiary, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.brandPrimary },
   avatarText: { color: colors.brandPrimary, fontFamily: "BarlowCondensed-Bold", fontSize: 16 },
+  quickRow: { flexDirection: "row", gap: spacing.md, paddingHorizontal: spacing.lg, marginBottom: spacing.xl },
+  quickBtn: { flex: 1, flexDirection: "row", alignItems: "center", gap: spacing.sm, padding: spacing.md, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border },
+  quickIcon: { width: 36, height: 36, borderRadius: radius.sm, backgroundColor: colors.brandTertiary, alignItems: "center", justifyContent: "center" },
+  quickLabel: { ...type.h2, fontSize: 13, letterSpacing: 1 },
+  quickSub: { ...type.caption, marginTop: 2, fontSize: 10 },
+  programCard: { width: 160, height: 200, borderRadius: radius.md, overflow: "hidden", backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border },
+  programBadge: { position: "absolute", top: spacing.sm, left: spacing.sm, flexDirection: "row", alignItems: "center", gap: 3, backgroundColor: colors.brandPrimary, paddingHorizontal: 6, paddingVertical: 3, borderRadius: radius.sm },
+  programBadgeText: { color: colors.onBrandPrimary, fontFamily: "BarlowCondensed-Bold", fontSize: 9, letterSpacing: 1 },
+  programBottom: { position: "absolute", left: spacing.md, right: spacing.md, bottom: spacing.md },
+  programOrder: { color: colors.brandPrimary, fontFamily: "BarlowCondensed-Bold", fontSize: 12, letterSpacing: 1 },
+  programName: { ...type.h1, fontSize: 18, lineHeight: 22, marginTop: 2 },
   hero: { height: 240, marginHorizontal: spacing.lg, borderRadius: radius.lg, overflow: "hidden", marginBottom: spacing.xl },
   heroContent: { position: "absolute", bottom: 0, left: 0, right: 0, padding: spacing.lg },
   liveBadge: { flexDirection: "row", alignItems: "center", gap: 6, alignSelf: "flex-start", backgroundColor: colors.brandPrimary, paddingHorizontal: spacing.md, paddingVertical: 6, borderRadius: radius.pill, marginBottom: spacing.sm },

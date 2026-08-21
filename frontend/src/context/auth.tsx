@@ -6,6 +6,7 @@ export type User = {
   phone: string;
   displayName?: string | null;
   tier: "free" | "basic" | "premium";
+  role?: "user" | "admin";
   subscriptionExpiresAt?: string | null;
 };
 

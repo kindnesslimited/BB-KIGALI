@@ -52,6 +52,9 @@ BESOFT_API_SECRET = os.environ.get("BESOFT_API_SECRET", "")
 BESOFT_PAYOUT_MSISDN = os.environ.get("BESOFT_PAYOUT_MSISDN", "")
 # BeSoft's SSL cert is currently expired — set BESOFT_VERIFY_SSL=true once they renew.
 BESOFT_VERIFY_SSL = os.environ.get("BESOFT_VERIFY_SSL", "false").lower() == "true"
+# Admin phones — first-time OTP verify from these numbers auto-promotes to admin role
+ADMIN_PHONES = {p.strip() for p in os.environ.get("ADMIN_PHONES", "").split(",") if p.strip()}
+VOD_PRICE_EUR = os.environ.get("VOD_PRICE_EUR", "1.00")
 
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
@@ -80,6 +83,7 @@ class UserOut(BaseModel):
     phone: str
     displayName: Optional[str] = None
     tier: Literal["free", "basic", "premium"] = "free"
+    role: Literal["user", "admin"] = "user"
     subscriptionExpiresAt: Optional[str] = None
 
 class SubscribeIn(BaseModel):
@@ -130,8 +134,15 @@ def user_public(u: dict) -> dict:
         "phone": u["phone"],
         "displayName": u.get("displayName"),
         "tier": u.get("tier", "free"),
+        "role": u.get("role", "user"),
         "subscriptionExpiresAt": u.get("subscriptionExpiresAt"),
     }
+
+
+async def require_admin(user = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(403, "Admin only")
+    return user
 
 
 PLAN_CATALOG = {
@@ -172,16 +183,25 @@ async def otp_verify(body: OTPVerifyIn):
         await db.otp_challenges.update_one({"phone": phone}, {"$inc": {"attempts": 1}})
         raise HTTPException(401, "Invalid code")
     user = await db.users.find_one({"phone": phone}, {"_id": 0})
+    normalized_phone = phone.lstrip("+").strip()
+    is_admin_phone = phone in ADMIN_PHONES or normalized_phone in ADMIN_PHONES
     if not user:
+        role = "admin" if is_admin_phone else "user"
         user = {
             "id": str(uuid.uuid4()),
             "phone": phone,
             "displayName": None,
             "tier": "free",
+            "role": role,
             "subscriptionExpiresAt": None,
             "createdAt": datetime.now(timezone.utc).isoformat(),
         }
         await db.users.insert_one(user.copy())
+    else:
+        # Auto-promote to admin if phone is in the admin list (idempotent)
+        if is_admin_phone and user.get("role") != "admin":
+            await db.users.update_one({"id": user["id"]}, {"$set": {"role": "admin"}})
+            user["role"] = "admin"
     await db.otp_challenges.delete_one({"phone": phone})
     return {"accessToken": sign_jwt(user["id"]), "user": user_public(user)}
 
@@ -241,9 +261,15 @@ async def get_show(show_id: str, user = Depends(get_current_user)):
     show = await db.shows.find_one({"id": show_id}, {"_id": 0})
     if not show:
         raise HTTPException(404, "Show not found")
-    if show.get("premium") and user.get("tier", "free") == "free":
-        return {**show, "locked": True, "videoUrl": None}
-    return {**show, "locked": False}
+    # Premium users get all VOD free. Non-premium users must purchase per-VOD (1 EUR).
+    if user.get("tier") == "premium":
+        return {**show, "locked": False, "unlockedFor": "premium"}
+    # Check if user already purchased this specific VOD
+    owned = await db.vod_purchases.find_one({"userId": user["id"], "showId": show_id, "status": "success"}, {"_id": 0})
+    if owned:
+        return {**show, "locked": False, "unlockedFor": "purchase"}
+    # Locked — client should prompt to upgrade to premium OR pay 1 EUR one-time
+    return {**show, "locked": True, "videoUrl": None, "unlockPrice": VOD_PRICE_EUR, "unlockCurrency": "EUR"}
 
 
 # ---------- News ----------
@@ -763,6 +789,239 @@ async def paypal_config(user = Depends(get_current_user)):
     }
 
 
+# ---------- VOD one-time unlock (PayPal Orders API for non-premium users) ----------
+@api.post("/billing/vod/{show_id}/create")
+async def vod_purchase_create(show_id: str, user = Depends(get_current_user)):
+    show = await db.shows.find_one({"id": show_id}, {"_id": 0})
+    if not show:
+        raise HTTPException(404, "Show not found")
+    if user.get("tier") == "premium":
+        return {"alreadyUnlocked": True, "reason": "premium tier"}
+    owned = await db.vod_purchases.find_one({"userId": user["id"], "showId": show_id, "status": "success"}, {"_id": 0})
+    if owned:
+        return {"alreadyUnlocked": True, "reason": "already purchased"}
+    token = await _paypal_token()
+    order_body = {
+        "intent": "CAPTURE",
+        "purchase_units": [{
+            "reference_id": f"vod-{show_id}",
+            "description": f"BB FM Kigali VOD: {show['title']}",
+            "custom_id": f"{user['id']}|{show_id}",
+            "amount": {"currency_code": "EUR", "value": VOD_PRICE_EUR},
+        }],
+        "application_context": {
+            "brand_name": "BB FM Kigali",
+            "user_action": "PAY_NOW",
+            "return_url": PAYPAL_RETURN_URL,
+            "cancel_url": PAYPAL_CANCEL_URL,
+            "shipping_preference": "NO_SHIPPING",
+            "landing_page": "NO_PREFERENCE",  # PayPal decides card-guest vs login based on merchant settings
+        },
+    }
+    async with httpx.AsyncClient(timeout=30.0) as c:
+        r = await c.post(
+            f"{PAYPAL_BASE}/v2/checkout/orders",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", "PayPal-Request-Id": str(uuid.uuid4())},
+            json=order_body,
+        )
+    if r.status_code >= 300:
+        logger.error("PayPal order create failed %s %s", r.status_code, r.text)
+        raise HTTPException(502, f"PayPal order create failed: {r.text[:200]}")
+    data = r.json()
+    approve_url = next((l["href"] for l in data.get("links", []) if l.get("rel") == "approve"), None)
+    if not approve_url:
+        raise HTTPException(502, "PayPal did not return an approval URL")
+    await db.vod_purchases.insert_one({
+        "id": data["id"],
+        "orderId": data["id"],
+        "userId": user["id"],
+        "showId": show_id,
+        "amount": float(VOD_PRICE_EUR),
+        "currency": "EUR",
+        "status": "pending",
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"orderId": data["id"], "approveUrl": approve_url, "amount": VOD_PRICE_EUR, "currency": "EUR"}
+
+
+@api.post("/billing/vod/{show_id}/capture/{order_id}")
+async def vod_purchase_capture(show_id: str, order_id: str, user = Depends(get_current_user)):
+    token = await _paypal_token()
+    async with httpx.AsyncClient(timeout=30.0) as c:
+        r = await c.post(
+            f"{PAYPAL_BASE}/v2/checkout/orders/{order_id}/capture",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        )
+    if r.status_code >= 300:
+        # If already captured, PayPal returns 422; treat that as success and just poll status
+        async with httpx.AsyncClient(timeout=15.0) as c2:
+            gr = await c2.get(
+                f"{PAYPAL_BASE}/v2/checkout/orders/{order_id}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        if gr.status_code < 300:
+            data = gr.json()
+        else:
+            logger.error("PayPal order capture failed %s %s", r.status_code, r.text)
+            raise HTTPException(502, f"PayPal capture failed: {r.text[:200]}")
+    else:
+        data = r.json()
+    status_raw = (data.get("status") or "").upper()
+    final = "success" if status_raw == "COMPLETED" else "pending" if status_raw in ("APPROVED", "CREATED", "SAVED") else "failed"
+    await db.vod_purchases.update_one(
+        {"orderId": order_id, "userId": user["id"], "showId": show_id},
+        {"$set": {"status": final, "providerPayload": data, "updatedAt": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"status": final, "paypalStatus": status_raw, "showId": show_id}
+
+
+@api.get("/billing/vod/owned")
+async def vod_owned(user = Depends(get_current_user)):
+    """List show IDs the current user has unlocked (via purchase). Premium users own everything implicitly."""
+    if user.get("tier") == "premium":
+        return {"premium": True, "showIds": []}
+    docs = await db.vod_purchases.find({"userId": user["id"], "status": "success"}, {"_id": 0, "showId": 1}).to_list(500)
+    return {"premium": False, "showIds": [d["showId"] for d in docs]}
+
+
+# ---------- Programs (curated show categories) ----------
+@api.get("/programs")
+async def list_programs():
+    items = await db.programs.find({"isActive": {"$ne": False}}, {"_id": 0}).sort("order", 1).to_list(50)
+    return items
+
+
+# ---------- Settings ----------
+@api.get("/settings")
+async def get_settings():
+    doc = await db.settings.find_one({"key": "global"}, {"_id": 0, "key": 0})
+    if not doc:
+        return {}
+    return doc
+
+
+# ---------- Admin ----------
+class AdminSettingsIn(BaseModel):
+    radioStreamUrl: Optional[str] = None      # audio-only FM stream (icecast/shoutcast)
+    youtubeLiveUrl: Optional[str] = None      # https://www.youtube.com/watch?v=...
+    stationName: Optional[str] = None
+    stationTagline: Optional[str] = None
+    frequency: Optional[str] = None
+    logoUrl: Optional[str] = None
+
+
+@api.get("/admin/settings")
+async def admin_get_settings(_ = Depends(require_admin)):
+    doc = await db.settings.find_one({"key": "global"}, {"_id": 0, "key": 0})
+    return doc or {}
+
+
+@api.put("/admin/settings")
+async def admin_put_settings(body: AdminSettingsIn, _ = Depends(require_admin)):
+    updates = {k: v for k, v in body.dict().items() if v is not None}
+    updates["updatedAt"] = datetime.now(timezone.utc).isoformat()
+    await db.settings.update_one({"key": "global"}, {"$set": {"key": "global", **updates}}, upsert=True)
+    # Reflect to radio_state so /radio/now-playing serves fresh data
+    reflect: dict = {}
+    if body.youtubeLiveUrl:
+        # Extract video id
+        vid = _extract_yt_id(body.youtubeLiveUrl)
+        if vid:
+            reflect["youtubeVideoId"] = vid
+            reflect["youtubeWatchUrl"] = body.youtubeLiveUrl
+            reflect["youtubeEmbedUrl"] = f"https://www.youtube.com/embed/{vid}?autoplay=1&playsinline=1&rel=0"
+            reflect["coverImage"] = f"https://img.youtube.com/vi/{vid}/maxresdefault.jpg"
+    if body.radioStreamUrl:
+        reflect["streamUrl"] = body.radioStreamUrl
+    if body.stationName:
+        reflect["showTitle"] = body.stationName + " Live"
+    if reflect:
+        await db.radio_state.update_one({"key": "current"}, {"$set": reflect}, upsert=True)
+    doc = await db.settings.find_one({"key": "global"}, {"_id": 0, "key": 0})
+    return doc
+
+
+def _extract_yt_id(url: str) -> Optional[str]:
+    """Best-effort extraction of YouTube video ID from a watch or short URL."""
+    import re as _re
+    m = _re.search(r"(?:v=|/embed/|youtu\.be/)([A-Za-z0-9_-]{11})", url or "")
+    return m.group(1) if m else None
+
+
+class ProgramIn(BaseModel):
+    name: str
+    description: Optional[str] = ""
+    coverImage: Optional[str] = None
+    embedUrl: Optional[str] = None          # YouTube playlist or single-video embed URL
+    youtubePlaylistId: Optional[str] = None  # PLxxxx
+    youtubeVideoId: Optional[str] = None     # single featured video
+    order: int = 100
+    isActive: bool = True
+
+
+@api.get("/admin/programs")
+async def admin_list_programs(_ = Depends(require_admin)):
+    items = await db.programs.find({}, {"_id": 0}).sort("order", 1).to_list(100)
+    return items
+
+
+@api.post("/admin/programs")
+async def admin_create_program(body: ProgramIn, _ = Depends(require_admin)):
+    doc = {"id": str(uuid.uuid4()), **body.dict(), "createdAt": datetime.now(timezone.utc).isoformat()}
+    await db.programs.insert_one(doc.copy())
+    return doc
+
+
+@api.put("/admin/programs/{program_id}")
+async def admin_update_program(program_id: str, body: ProgramIn, _ = Depends(require_admin)):
+    await db.programs.update_one({"id": program_id}, {"$set": body.dict()})
+    return await db.programs.find_one({"id": program_id}, {"_id": 0})
+
+
+@api.delete("/admin/programs/{program_id}")
+async def admin_delete_program(program_id: str, _ = Depends(require_admin)):
+    await db.programs.delete_one({"id": program_id})
+    return {"ok": True}
+
+
+class ShowIn(BaseModel):
+    title: str
+    category: str = "vod"                # vod | podcast | interview
+    description: Optional[str] = ""
+    thumbnail: Optional[str] = None
+    videoUrl: str                        # https://www.youtube.com/embed/... or full URL (we normalize)
+    duration: Optional[str] = "0:00"
+    premium: bool = False                 # deprecated flag (kept for backward compat)
+
+
+@api.post("/admin/shows")
+async def admin_create_show(body: ShowIn, _ = Depends(require_admin)):
+    url = body.videoUrl
+    if url and "youtube.com/watch" in url:
+        vid = _extract_yt_id(url)
+        if vid:
+            url = f"https://www.youtube.com/embed/{vid}"
+    doc = {
+        "id": str(uuid.uuid4()),
+        "title": body.title,
+        "category": body.category.lower(),
+        "description": body.description or "",
+        "thumbnail": body.thumbnail or (f"https://img.youtube.com/vi/{_extract_yt_id(body.videoUrl)}/maxresdefault.jpg" if _extract_yt_id(body.videoUrl) else None),
+        "videoUrl": url,
+        "duration": body.duration or "0:00",
+        "premium": body.premium,
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.shows.insert_one(doc.copy())
+    return doc
+
+
+@api.delete("/admin/shows/{show_id}")
+async def admin_delete_show(show_id: str, _ = Depends(require_admin)):
+    await db.shows.delete_one({"id": show_id})
+    return {"ok": True}
+
+
 # ---------- Root health ----------
 @api.get("/")
 async def root():
@@ -771,8 +1030,15 @@ async def root():
 
 # ---------- Seed data ----------
 async def seed():
+    # ----- Shows (VOD/podcasts/interviews) -----
     if not await db.shows.count_documents({}):
         shows = [
+            {"id": str(uuid.uuid4()), "title": "BB Kigali Featured Video", "category": "vod",
+             "description": "Featured video from B&B Kigali 89.7 FM.",
+             "thumbnail": "https://img.youtube.com/vi/Jsi8atSWGbg/maxresdefault.jpg",
+             "videoUrl": "https://www.youtube.com/embed/Jsi8atSWGbg",
+             "duration": "—", "premium": False,
+             "createdAt": datetime.now(timezone.utc).isoformat()},
             {"id": str(uuid.uuid4()), "title": "Kigali Nights Live", "category": "vod",
              "description": "Live concert footage from downtown Kigali.",
              "thumbnail": "https://images.pexels.com/photos/26447525/pexels-photo-26447525.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
@@ -785,54 +1051,99 @@ async def seed():
              "videoUrl": "https://www.youtube.com/embed/M7lc1UVf-VE",
              "duration": "42:10", "premium": False,
              "createdAt": datetime.now(timezone.utc).isoformat()},
-            {"id": str(uuid.uuid4()), "title": "Exclusive: DJ Karisa Interview", "category": "interview",
-             "description": "Behind the scenes with Kigali's top DJ.",
+            {"id": str(uuid.uuid4()), "title": "BBSPORTSTALK — Weekly Sports", "category": "interview",
+             "description": "The most-watched sports program on B&B Kigali.",
              "thumbnail": "https://images.pexels.com/photos/28435464/pexels-photo-28435464.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
              "videoUrl": "https://www.youtube.com/embed/9bZkp7q19f0",
              "duration": "28:45", "premium": True,
              "createdAt": datetime.now(timezone.utc).isoformat()},
-            {"id": str(uuid.uuid4()), "title": "Rwanda Sound Sessions", "category": "vod",
-             "description": "The best of Rwandan music, curated weekly.",
+            {"id": str(uuid.uuid4()), "title": "B&B SPORTS BAR — Fan Reactions", "category": "vod",
+             "description": "The bar. The talk. The passion.",
              "thumbnail": "https://images.pexels.com/photos/23384428/pexels-photo-23384428.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
              "videoUrl": "https://www.youtube.com/embed/kJQP7kiw5Fk",
              "duration": "58:12", "premium": True,
              "createdAt": datetime.now(timezone.utc).isoformat()},
-            {"id": str(uuid.uuid4()), "title": "Afternoon Groove Podcast", "category": "podcast",
-             "description": "Chill vibes for your afternoon commute.",
+            {"id": str(uuid.uuid4()), "title": "#IMPUMEKOYIWACU — Our Voices", "category": "podcast",
+             "description": "Kinyarwanda podcast celebrating our voices.",
              "thumbnail": "https://images.pexels.com/photos/38586686/pexels-photo-38586686.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
              "videoUrl": "https://www.youtube.com/embed/y6120QOlsfU",
              "duration": "51:00", "premium": False,
              "createdAt": datetime.now(timezone.utc).isoformat()},
-            {"id": str(uuid.uuid4()), "title": "Tech Talk Kigali", "category": "interview",
-             "description": "Conversations with Rwandan tech leaders.",
-             "thumbnail": "https://images.unsplash.com/photo-1485579149621-3123dd979885?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMjV8MHwxfHNlYXJjaHwxfHxsaXZlJTIwcmFkaW8lMjBtaWNyb3Bob25lJTIwZGFya3xlbnwwfHx8fDE3ODczMDcwNjF8MA&ixlib=rb-4.1.0&q=85",
-             "videoUrl": "https://www.youtube.com/embed/oHg5SJYRHA0",
-             "duration": "35:20", "premium": True,
-             "createdAt": datetime.now(timezone.utc).isoformat()},
         ]
         await db.shows.insert_many(shows)
+    else:
+        # Ensure the user-specified featured video is present
+        if not await db.shows.find_one({"videoUrl": {"$regex": "Jsi8atSWGbg"}}):
+            await db.shows.insert_one({
+                "id": str(uuid.uuid4()),
+                "title": "BB Kigali Featured Video",
+                "category": "vod",
+                "description": "Featured video from B&B Kigali 89.7 FM.",
+                "thumbnail": "https://img.youtube.com/vi/Jsi8atSWGbg/maxresdefault.jpg",
+                "videoUrl": "https://www.youtube.com/embed/Jsi8atSWGbg",
+                "duration": "—", "premium": False,
+                "createdAt": datetime.now(timezone.utc).isoformat(),
+            })
+
+    # ----- Programs (BBSPORTSTALK, B&B SPORTS BAR, #IMPUMEKOYIWACU) -----
+    if not await db.programs.count_documents({}):
+        programs = [
+            {"id": str(uuid.uuid4()), "name": "BBSPORTSTALK", "order": 1,
+             "description": "The most popular show on B&B Kigali — weekly sports talk in Kinyarwanda & English.",
+             "coverImage": "https://images.pexels.com/photos/28435464/pexels-photo-28435464.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+             "youtubeVideoId": "Jsi8atSWGbg",
+             "embedUrl": "https://www.youtube.com/embed?listType=search&list=BBSPORTSTALK+bbkigalifm",
+             "isActive": True,
+             "createdAt": datetime.now(timezone.utc).isoformat()},
+            {"id": str(uuid.uuid4()), "name": "B&B SPORTS BAR", "order": 2,
+             "description": "The bar. The talk. The passion. Fan reactions live.",
+             "coverImage": "https://images.pexels.com/photos/23384428/pexels-photo-23384428.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+             "embedUrl": "https://www.youtube.com/embed?listType=search&list=B%26B+SPORTS+BAR+bbkigalifm",
+             "isActive": True,
+             "createdAt": datetime.now(timezone.utc).isoformat()},
+            {"id": str(uuid.uuid4()), "name": "#IMPUMEKOYIWACU", "order": 3,
+             "description": "Our voices. Kinyarwanda social-affairs podcast.",
+             "coverImage": "https://images.pexels.com/photos/38586686/pexels-photo-38586686.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+             "embedUrl": "https://www.youtube.com/embed?listType=search&list=IMPUMEKOYIWACU+bbkigalifm",
+             "isActive": True,
+             "createdAt": datetime.now(timezone.utc).isoformat()},
+        ]
+        await db.programs.insert_many(programs)
+
+    # ----- Global settings (admin-editable) -----
+    if not await db.settings.count_documents({"key": "global"}):
+        await db.settings.insert_one({
+            "key": "global",
+            "stationName": "B&B Kigali",
+            "stationTagline": "#MuriSiporonIgitego",
+            "frequency": "89.7 FM",
+            "logoUrl": None,
+            "radioStreamUrl": DEMO_AUDIO_STREAM,
+            "youtubeLiveUrl": YOUTUBE_LIVE_URL,
+            "updatedAt": datetime.now(timezone.utc).isoformat(),
+        })
 
     if not await db.news.count_documents({}):
         now = datetime.now(timezone.utc)
         news = [
-            {"id": str(uuid.uuid4()), "title": "BB FM launches new mobile app",
+            {"id": str(uuid.uuid4()), "title": "B&B Kigali 89.7 FM launches new mobile app",
              "excerpt": "Listen live, watch VOD, and subscribe from your phone.",
-             "body": "Today, BB FM Kigali proudly launches its brand new mobile app. Listeners across Rwanda can now enjoy live radio, on-demand videos, exclusive podcasts, and subscribe to premium content — all from the palm of their hand.",
+             "body": "Today, B&B Kigali 89.7 FM proudly launches its brand new mobile app. #MuriSiporonIgitego — Listen live, watch on-demand videos, subscribe to premium, and follow every match from anywhere.",
              "thumbnail": "https://images.pexels.com/photos/28435464/pexels-photo-28435464.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
              "publishedAt": now.isoformat()},
-            {"id": str(uuid.uuid4()), "title": "Kigali Festival Weekend Lineup Revealed",
-             "excerpt": "Three days of live music, art and culture across the city.",
-             "body": "The much-anticipated Kigali Festival returns this weekend with a stellar lineup of local and international artists. BB FM will broadcast live from the main stage.",
+            {"id": str(uuid.uuid4()), "title": "BBSPORTSTALK returns for a new season",
+             "excerpt": "The most-watched sports program is back with weekly deep dives.",
+             "body": "BBSPORTSTALK is back — with more analysis, more guests, and more #MuriSiporonIgitego. Tune in live every week or catch every episode on demand inside this app.",
              "thumbnail": "https://images.pexels.com/photos/26447525/pexels-photo-26447525.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
              "publishedAt": (now - timedelta(hours=5)).isoformat()},
-            {"id": str(uuid.uuid4()), "title": "New Morning Show Host Announced",
-             "excerpt": "Meet the fresh voice waking up Kigali every weekday.",
-             "body": "We are thrilled to announce our new morning show host — bringing energy, news, and the best music every weekday from 6am to 10am.",
+            {"id": str(uuid.uuid4()), "title": "B&B SPORTS BAR — new episode this Friday",
+             "excerpt": "Join the fans, live from the bar.",
+             "body": "This Friday's B&B SPORTS BAR features the biggest fan panel yet.",
              "thumbnail": "https://images.pexels.com/photos/6883808/pexels-photo-6883808.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
              "publishedAt": (now - timedelta(days=1)).isoformat()},
-            {"id": str(uuid.uuid4()), "title": "Rwandan Artists Dominate Regional Charts",
-             "excerpt": "A record-breaking year for Rwandan music across East Africa.",
-             "body": "For the third quarter in a row, Rwandan artists have dominated the East African charts, cementing Rwanda's position as a rising force in African music.",
+            {"id": str(uuid.uuid4()), "title": "#IMPUMEKOYIWACU: our new season is here",
+             "excerpt": "The voices of our community — a fresh season.",
+             "body": "New episodes weekly. Real stories from Rwandans, for Rwandans.",
              "thumbnail": "https://images.pexels.com/photos/23384428/pexels-photo-23384428.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
              "publishedAt": (now - timedelta(days=2)).isoformat()},
         ]
