@@ -57,6 +57,14 @@ ADMIN_PHONES = {p.strip() for p in os.environ.get("ADMIN_PHONES", "").split(",")
 VOD_PRICE_EUR = os.environ.get("VOD_PRICE_EUR", "1.00")
 VOD_PRICE_RWF = os.environ.get("VOD_PRICE_RWF", "1000")
 
+# Route Mobile SMSPLUS Bulk HTTP API
+SMS_API_URL = os.environ.get("SMS_API_URL", "").strip()
+SMS_USERNAME = os.environ.get("SMS_USERNAME", "").strip()
+SMS_PASSWORD = os.environ.get("SMS_PASSWORD", "").strip()
+SMS_SENDER_ID = os.environ.get("SMS_SENDER_ID", "BBKIGALI").strip()
+SMS_VERIFY_SSL = os.environ.get("SMS_VERIFY_SSL", "false").lower() == "true"
+SMS_DEV_RETURN_CODE = os.environ.get("SMS_DEV_RETURN_CODE", "false").lower() == "true"
+
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
 
@@ -155,23 +163,78 @@ PLAN_CATALOG = {
 
 
 # ---------- Auth ----------
+async def _send_sms(destination: str, message: str) -> tuple[bool, str]:
+    """Send SMS via Route Mobile SMSPLUS Bulk HTTP API. Returns (ok, provider_response)."""
+    if not SMS_API_URL or not SMS_USERNAME or not SMS_PASSWORD:
+        return False, "sms_not_configured"
+    params = {
+        "username": SMS_USERNAME,
+        "password": SMS_PASSWORD,
+        "type": "0",              # plain text (GSM 03.38)
+        "dlr": "1",               # delivery report requested
+        "destination": destination.lstrip("+"),
+        "source": SMS_SENDER_ID,
+        "message": message,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0, verify=SMS_VERIFY_SSL) as c:
+            r = await c.get(SMS_API_URL, params=params)
+    except httpx.RequestError as e:
+        logger.warning("SMS network error: %s", e)
+        return False, f"network:{e}"
+    body = (r.text or "").strip()
+    logger.info("SMS provider response: %s %s", r.status_code, body[:200])
+    # Success format: 1701|<cell>|<msgid>
+    ok = body.startswith("1701") and r.status_code < 400
+    return ok, body
+
+
 @api.post("/auth/otp/start")
 async def otp_start(body: OTPStartIn):
     phone = body.phone.strip()
     if len(phone) < 7:
         raise HTTPException(400, "Invalid phone number")
+
+    normalized = phone.lstrip("+").strip()
+    is_admin_phone = phone in ADMIN_PHONES or normalized in ADMIN_PHONES
+
+    # Generate a fresh 6-digit code. Admin phones + missing SMS credentials => keep the universal test code 123456.
+    if is_admin_phone or not (SMS_API_URL and SMS_USERNAME and SMS_PASSWORD):
+        code = MOCK_OTP_CODE
+    else:
+        import secrets as _secrets
+        code = f"{_secrets.randbelow(1_000_000):06d}"
+
     await db.otp_challenges.update_one(
         {"phone": phone},
         {"$set": {
             "phone": phone,
-            "code": MOCK_OTP_CODE,
+            "code": code,
             "attempts": 0,
             "createdAt": datetime.now(timezone.utc).isoformat(),
         }},
         upsert=True,
     )
-    # MOCK: always return the test code in response for demo
-    return {"ok": True, "message": "OTP sent. Use 123456 (demo mode).", "testCode": MOCK_OTP_CODE}
+
+    # Attempt to send SMS via Route Mobile. Non-fatal — dev fallback returns the code in the response.
+    sms_sent = False
+    provider_resp = "sms_not_attempted"
+    if not is_admin_phone and SMS_API_URL and SMS_USERNAME and SMS_PASSWORD:
+        message = f"BB Kigali 89.7 FM: your verification code is {code}. Valid 10 min."
+        sms_sent, provider_resp = await _send_sms(normalized, message)
+
+    resp: dict = {"ok": True, "smsSent": sms_sent}
+    if is_admin_phone:
+        resp["message"] = "Admin phone — use 123456"
+        resp["testCode"] = MOCK_OTP_CODE
+    elif not sms_sent and SMS_DEV_RETURN_CODE:
+        resp["message"] = f"SMS delivery failed ({provider_resp[:60]}) — dev mode: use the code below."
+        resp["testCode"] = code
+    elif sms_sent:
+        resp["message"] = "OTP sent via SMS."
+    else:
+        resp["message"] = "OTP recorded. If you don't receive the SMS, contact support."
+    return resp
 
 
 @api.post("/auth/otp/verify", response_model=AuthOut)
@@ -180,7 +243,9 @@ async def otp_verify(body: OTPVerifyIn):
     challenge = await db.otp_challenges.find_one({"phone": phone}, {"_id": 0})
     if not challenge:
         raise HTTPException(401, "No OTP challenge. Request a new code.")
-    if body.code.strip() != MOCK_OTP_CODE:
+    submitted = body.code.strip()
+    expected = challenge.get("code") or MOCK_OTP_CODE
+    if submitted != expected:
         await db.otp_challenges.update_one({"phone": phone}, {"$inc": {"attempts": 1}})
         raise HTTPException(401, "Invalid code")
     user = await db.users.find_one({"phone": phone}, {"_id": 0})

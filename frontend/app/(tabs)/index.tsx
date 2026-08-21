@@ -13,6 +13,7 @@ import { usePlayer } from "@/src/context/player";
 type Sched = { id: string; time: string; showTitle: string; djName: string; isLive: boolean };
 type News = { id: string; title: string; excerpt: string; thumbnail: string; publishedAt: string };
 type Program = { id: string; name: string; description?: string; coverImage?: string; order: number };
+type Settings = { stationName?: string; stationTagline?: string; frequency?: string; logoUrl?: string };
 
 export default function Home() {
   const insets = useSafeAreaInsets();
@@ -22,16 +23,18 @@ export default function Home() {
   const [schedule, setSchedule] = useState<Sched[]>([]);
   const [news, setNews] = useState<News[]>([]);
   const [programs, setPrograms] = useState<Program[]>([]);
+  const [settings, setSettings] = useState<Settings>({});
   const [refreshing, setRefreshing] = useState(false);
 
   const load = async () => {
     try {
-      const [s, n, p] = await Promise.all([
+      const [s, n, p, st] = await Promise.all([
         api<Sched[]>("/radio/schedule"),
         api<News[]>("/news"),
         api<Program[]>("/programs"),
+        api<Settings>("/settings"),
       ]);
-      setSchedule(s); setNews(n.slice(0, 5)); setPrograms(p);
+      setSchedule(s); setNews(n.slice(0, 5)); setPrograms(p); setSettings(st);
     } catch (e) { console.log("home load", e); }
   };
   useEffect(() => { load(); }, []);
@@ -46,11 +49,15 @@ export default function Home() {
     >
       {/* Header */}
       <View style={styles.header}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.hello}>Muraho{user?.displayName ? `, ${user.displayName}` : ""}</Text>
-          <Text style={styles.brand}>B&B KIGALI 89.7 FM</Text>
-          <Text style={styles.tagline}>#MuriSiporonIgitego</Text>
-        </View>
+        {settings.logoUrl ? (
+          <Image source={{ uri: settings.logoUrl }} style={styles.logoImg} contentFit="contain" testID="home-logo" />
+        ) : (
+          <View style={{ flex: 1 }}>
+            <Text style={styles.hello}>Muraho{user?.displayName ? `, ${user.displayName}` : ""}</Text>
+            <Text style={styles.brand}>{settings.stationName?.toUpperCase() || "B&B KIGALI"} {settings.frequency || "89.7 FM"}</Text>
+            <Text style={styles.tagline}>{settings.stationTagline || "#MuriSiporonIgitego"}</Text>
+          </View>
+        )}
         {user?.role === "admin" && (
           <Pressable onPress={() => router.push("/admin")} style={styles.adminBtn} testID="home-admin">
             <Ionicons name="shield-checkmark" size={16} color={colors.brandPrimary} />
@@ -61,6 +68,9 @@ export default function Home() {
           <Text style={styles.avatarText}>{(user?.displayName?.[0] || user?.phone?.slice(-2) || "?").toUpperCase()}</Text>
         </Pressable>
       </View>
+      {settings.logoUrl && (
+        <Text style={styles.taglineOnly}>Muraho{user?.displayName ? `, ${user.displayName}` : ""} · {settings.stationTagline || "#MuriSiporonIgitego"}</Text>
+      )}
 
       {/* Quick Actions row */}
       <View style={styles.quickRow}>
@@ -198,7 +208,9 @@ export default function Home() {
 }
 
 const styles = StyleSheet.create({
-  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: spacing.lg, marginBottom: spacing.lg, gap: spacing.sm },
+  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: spacing.lg, marginBottom: spacing.md, gap: spacing.sm },
+  logoImg: { flex: 1, height: 44, marginRight: spacing.sm },
+  taglineOnly: { ...type.caption, paddingHorizontal: spacing.lg, marginBottom: spacing.lg, color: colors.onSurfaceSecondary },
   hello: { ...type.bodyMuted },
   brand: { ...type.displayLg, letterSpacing: 1, fontSize: 22 },
   tagline: { ...type.caption, color: colors.brandPrimary, letterSpacing: 1 },
