@@ -55,6 +55,7 @@ BESOFT_VERIFY_SSL = os.environ.get("BESOFT_VERIFY_SSL", "false").lower() == "tru
 # Admin phones — first-time OTP verify from these numbers auto-promotes to admin role
 ADMIN_PHONES = {p.strip() for p in os.environ.get("ADMIN_PHONES", "").split(",") if p.strip()}
 VOD_PRICE_EUR = os.environ.get("VOD_PRICE_EUR", "1.00")
+VOD_PRICE_RWF = os.environ.get("VOD_PRICE_RWF", "1000")
 
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
@@ -269,7 +270,7 @@ async def get_show(show_id: str, user = Depends(get_current_user)):
     if owned:
         return {**show, "locked": False, "unlockedFor": "purchase"}
     # Locked — client should prompt to upgrade to premium OR pay 1 EUR one-time
-    return {**show, "locked": True, "videoUrl": None, "unlockPrice": VOD_PRICE_EUR, "unlockCurrency": "EUR"}
+    return {**show, "locked": True, "videoUrl": None, "unlockPrice": VOD_PRICE_EUR, "unlockCurrency": "EUR", "unlockPriceRwf": VOD_PRICE_RWF}
 
 
 # ---------- News ----------
@@ -481,6 +482,20 @@ async def momo_callback(request: Request):
 
     payment = await db.payments.find_one(query, {"_id": 0})
     if not payment:
+        # Maybe it's a VOD one-time purchase
+        vod = await db.vod_purchases.find_one(query, {"_id": 0}) if "reference" in query else None
+        if not vod and besoft_tx_id:
+            vod = await db.vod_purchases.find_one({"besoftTxId": besoft_tx_id}, {"_id": 0})
+        if vod:
+            raw = (tx.get("status") or "").lower()
+            final_status_v = "success" if raw in ("success", "completed") else \
+                             "failed"  if raw in ("failed", "reversed", "expired", "cancelled") else \
+                             "processing" if raw == "processing" else "pending"
+            await db.vod_purchases.update_one({"reference": vod["reference"]}, {"$set": {
+                "status": final_status_v, "besoftCallback": payload,
+                "updatedAt": datetime.now(timezone.utc).isoformat(),
+            }})
+            return {"ok": True, "status": final_status_v, "reference": vod["reference"], "kind": "vod"}
         return {"ok": True, "note": "no matching payment"}
 
     final_status = "success" if raw_status in ("success", "completed") else \
@@ -882,6 +897,89 @@ async def vod_owned(user = Depends(get_current_user)):
         return {"premium": True, "showIds": []}
     docs = await db.vod_purchases.find({"userId": user["id"], "status": "success"}, {"_id": 0, "showId": 1}).to_list(500)
     return {"premium": False, "showIds": [d["showId"] for d in docs]}
+
+
+class VodMoMoIn(BaseModel):
+    phone: str
+
+
+@api.post("/billing/vod/{show_id}/momo")
+async def vod_purchase_momo(show_id: str, body: VodMoMoIn, user = Depends(get_current_user)):
+    """Buy a single VOD via MTN MoMo (BeSoft debit-credit). Non-premium users pay VOD_PRICE_RWF."""
+    show = await db.shows.find_one({"id": show_id}, {"_id": 0})
+    if not show:
+        raise HTTPException(404, "Show not found")
+    if user.get("tier") == "premium":
+        return {"alreadyUnlocked": True, "reason": "premium tier"}
+    owned = await db.vod_purchases.find_one({"userId": user["id"], "showId": show_id, "status": "success"}, {"_id": 0})
+    if owned:
+        return {"alreadyUnlocked": True, "reason": "already purchased"}
+    payer = _normalize_msisdn(body.phone)
+    if len(payer) < 10:
+        raise HTTPException(400, "Invalid payer phone number")
+    reference = f"vod-{show_id[:8]}-{uuid.uuid4().hex[:10]}"
+    amount = float(VOD_PRICE_RWF)
+    payload = {
+        "idempotency_key": reference,
+        "debit": {
+            "amount": amount, "currency": "RWF", "payment_method": "mtn_momo_collection",
+            "payer_identifier": payer, "description": f"BB FM VOD: {show['title']}",
+            "idempotency_key": reference + "-d", "country": "RW",
+            "metadata": {"userId": user["id"], "showId": show_id, "kind": "vod_unlock"},
+        },
+        "credits": [{
+            "amount": amount, "currency": "RWF", "payment_method": "mtn_momo_disbursement",
+            "payee_identifier": BESOFT_PAYOUT_MSISDN,
+            "description": f"VOD payout — {show['title']}",
+            "idempotency_key": reference + "-c1", "country": "RW",
+        }],
+    }
+    await db.vod_purchases.insert_one({
+        "id": reference, "orderId": reference, "reference": reference,
+        "userId": user["id"], "showId": show_id,
+        "amount": amount, "currency": "RWF", "method": "mtn_momo",
+        "phone": payer, "status": "pending",
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+    })
+    try:
+        async with httpx.AsyncClient(timeout=30.0, verify=BESOFT_VERIFY_SSL) as c:
+            r = await c.post(f"{BESOFT_BASE_URL}/public/payments/debit-credit", headers=_besoft_headers(), json=payload)
+    except httpx.RequestError as e:
+        await db.vod_purchases.update_one({"reference": reference}, {"$set": {"status": "failed", "error": str(e)}})
+        raise HTTPException(502, f"Unable to reach payment provider: {e}")
+    if r.status_code >= 300:
+        await db.vod_purchases.update_one({"reference": reference}, {"$set": {"status": "failed", "error": r.text[:400]}})
+        raise HTTPException(502, f"MoMo provider rejected the request: {r.text[:200]}")
+    data = r.json().get("data") or {}
+    debit = (data.get("debit") or {}) if isinstance(data, dict) else {}
+    besoft_tx_id = debit.get("id") or data.get("id")
+    besoft_status = (debit.get("status") or "pending").lower()
+    normalized = besoft_status if besoft_status in ("pending", "processing", "success", "failed") else "pending"
+    await db.vod_purchases.update_one({"reference": reference}, {"$set": {"besoftTxId": besoft_tx_id, "besoftPayload": data, "status": normalized}})
+    return {"reference": reference, "besoftTxId": besoft_tx_id, "status": normalized, "amount": amount, "currency": "RWF"}
+
+
+@api.get("/billing/vod/{show_id}/momo/{reference}")
+async def vod_momo_status(show_id: str, reference: str, user = Depends(get_current_user)):
+    p = await db.vod_purchases.find_one({"reference": reference, "userId": user["id"]}, {"_id": 0})
+    if not p:
+        raise HTTPException(404, "Purchase not found")
+    if p.get("status") in ("pending", "processing") and p.get("besoftTxId"):
+        try:
+            async with httpx.AsyncClient(timeout=15.0, verify=BESOFT_VERIFY_SSL) as c:
+                r = await c.get(f"{BESOFT_BASE_URL}/public/payments/{p['besoftTxId']}/status", headers=_besoft_headers())
+            if r.status_code == 200:
+                data = (r.json().get("data") or {}) if isinstance(r.json(), dict) else {}
+                raw_status = (data.get("status") or "").lower()
+                new_status = "success" if raw_status in ("success", "completed") else \
+                             "failed"  if raw_status in ("failed", "reversed", "expired", "cancelled") else \
+                             "processing" if raw_status == "processing" else "pending"
+                if new_status != p["status"]:
+                    await db.vod_purchases.update_one({"reference": reference}, {"$set": {"status": new_status, "besoftStatusPayload": data, "updatedAt": datetime.now(timezone.utc).isoformat()}})
+                    p["status"] = new_status
+        except httpx.RequestError as e:
+            logger.warning("BeSoft VOD status poll failed: %s", e)
+    return {"reference": reference, "status": p["status"], "amount": p.get("amount"), "currency": p.get("currency")}
 
 
 # ---------- Programs (curated show categories) ----------

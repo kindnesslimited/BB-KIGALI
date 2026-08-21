@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Platform, Modal } from "react-native";
+import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Platform, Modal, TextInput } from "react-native";
 import { WebView, type WebViewNavigation } from "react-native-webview";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -13,7 +13,7 @@ import * as Haptics from "expo-haptics";
 type Show = {
   id: string; title: string; category: string; description: string; thumbnail: string;
   videoUrl: string | null; duration: string; premium: boolean;
-  locked?: boolean; unlockPrice?: string; unlockCurrency?: string;
+  locked?: boolean; unlockPrice?: string; unlockCurrency?: string; unlockPriceRwf?: string;
 };
 
 export default function VideoPlayerScreen() {
@@ -27,6 +27,9 @@ export default function VideoPlayerScreen() {
   const [payUrl, setPayUrl] = useState<string | null>(null);
   const [orderId, setOrderId] = useState<string | null>(null);
   const [buying, setBuying] = useState(false);
+  const [momoPhone, setMomoPhone] = useState<string>(user?.phone || "+250");
+  const [showMomo, setShowMomo] = useState(false);
+  const [momoStatus, setMomoStatus] = useState<string | null>(null);
 
   const loadShow = async () => {
     try {
@@ -46,6 +49,30 @@ export default function VideoPlayerScreen() {
       );
       if (r.alreadyUnlocked) { await loadShow(); return; }
       if (r.approveUrl && r.orderId) { setOrderId(r.orderId); setPayUrl(r.approveUrl); }
+    } catch (e: any) { setErr(e.message); }
+    finally { setBuying(false); }
+  };
+
+  const buyVodMomo = async () => {
+    if (momoPhone.replace(/\D/g, "").length < 9) { setErr("Enter a valid MoMo phone"); return; }
+    setBuying(true); setErr(null);
+    try {
+      const r = await api<{ reference: string; status: string }>(
+        `/billing/vod/${id}/momo`,
+        { method: "POST", auth: true, body: { phone: momoPhone } }
+      );
+      setMomoStatus(r.status);
+      const started = Date.now();
+      while (Date.now() - started < 90_000) {
+        try {
+          const p = await api<{ status: string }>(`/billing/vod/${id}/momo/${r.reference}`, { auth: true });
+          setMomoStatus(p.status);
+          if (p.status === "success") { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {}); await loadShow(); setShowMomo(false); return; }
+          if (p.status === "failed") { setErr("Payment was declined on the phone."); return; }
+        } catch { /* keep polling */ }
+        await new Promise((res) => setTimeout(res, 3000));
+      }
+      setErr("Timed out. Check Profile → payment history.");
     } catch (e: any) { setErr(e.message); }
     finally { setBuying(false); }
   };
@@ -79,6 +106,7 @@ export default function VideoPlayerScreen() {
   const embedUrl = show.videoUrl ? `${show.videoUrl}${show.videoUrl.includes("?") ? "&" : "?"}autoplay=0&playsinline=1` : null;
   const price = show.unlockPrice || "1.00";
   const currency = show.unlockCurrency || "EUR";
+  const priceRwf = show.unlockPriceRwf || "1000";
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.surface }} testID="video-screen">
@@ -122,23 +150,54 @@ export default function VideoPlayerScreen() {
           <View style={styles.lockedBox} testID="locked-box">
             <Image source={{ uri: show.thumbnail }} style={StyleSheet.absoluteFill} contentFit="cover" blurRadius={12} />
             <View style={styles.lockedInner}>
-              <Ionicons name="lock-closed" size={36} color={colors.brandPrimary} />
+              <Ionicons name="lock-closed" size={32} color={colors.brandPrimary} />
               <Text style={styles.lockedTitle}>UNLOCK THIS VIDEO</Text>
-              <Text style={styles.lockedSub}>Watch this VOD for {price} {currency}, or go Premium to watch all VOD unlimited.</Text>
-              <View style={styles.lockedActions}>
-                <Pressable onPress={buyVod} disabled={buying} style={[styles.buyBtn, buying && { opacity: 0.6 }]} testID="buy-vod-btn">
-                  {buying ? <ActivityIndicator color={colors.onBrandPrimary} /> : (
-                    <>
-                      <Ionicons name="card" size={16} color={colors.onBrandPrimary} />
-                      <Text style={styles.buyBtnText}>PAY {price} {currency}</Text>
-                    </>
+              <Text style={styles.lockedSub}>{price} EUR / {Number(priceRwf).toLocaleString()} RWF — or go Premium for all VOD free.</Text>
+
+              {!showMomo ? (
+                <View style={styles.lockedActions}>
+                  <Pressable onPress={buyVod} disabled={buying} style={[styles.buyBtn, buying && { opacity: 0.6 }]} testID="buy-vod-btn">
+                    {buying ? <ActivityIndicator color={colors.onBrandPrimary} /> : (
+                      <>
+                        <Ionicons name="card" size={14} color={colors.onBrandPrimary} />
+                        <Text style={styles.buyBtnText}>PAY {price}€ (CARD)</Text>
+                      </>
+                    )}
+                  </Pressable>
+                  <Pressable onPress={() => { setErr(null); setShowMomo(true); }} disabled={buying} style={styles.momoBtn} testID="buy-vod-momo-btn">
+                    <Ionicons name="phone-portrait" size={14} color={colors.brandPrimary} />
+                    <Text style={styles.momoBtnText}>{Number(priceRwf).toLocaleString()} RWF (MoMo)</Text>
+                  </Pressable>
+                </View>
+              ) : (
+                <View style={{ width: "100%", gap: 8 }}>
+                  <TextInput
+                    value={momoPhone}
+                    onChangeText={setMomoPhone}
+                    keyboardType="phone-pad"
+                    placeholder="+250 78x xxx xxx"
+                    placeholderTextColor={colors.onSurfaceSecondary}
+                    style={styles.momoInput}
+                    testID="vod-momo-phone"
+                  />
+                  <Pressable onPress={buyVodMomo} disabled={buying} style={[styles.buyBtn, buying && { opacity: 0.6 }]} testID="vod-momo-confirm">
+                    {buying ? <ActivityIndicator color={colors.onBrandPrimary} /> : (
+                      <Text style={styles.buyBtnText}>SEND MOMO REQUEST</Text>
+                    )}
+                  </Pressable>
+                  {momoStatus && buying && (
+                    <Text style={styles.momoStatus}>Waiting on your phone… ({momoStatus})</Text>
                   )}
-                </Pressable>
-                <Pressable onPress={() => router.push("/paywall")} style={styles.premBtn} testID="go-premium-btn">
-                  <Ionicons name="star" size={14} color={colors.brandPrimary} />
-                  <Text style={styles.premBtnText}>OR GO PREMIUM</Text>
-                </Pressable>
-              </View>
+                  <Pressable onPress={() => setShowMomo(false)} style={{ alignItems: "center", paddingTop: 4 }}>
+                    <Text style={styles.momoBack}>← use card instead</Text>
+                  </Pressable>
+                </View>
+              )}
+
+              <Pressable onPress={() => router.push("/paywall")} style={{ paddingTop: spacing.sm }} testID="go-premium-btn">
+                <Text style={styles.premInline}>OR GO PREMIUM →</Text>
+              </Pressable>
+              {err && <Text style={styles.err}>{err}</Text>}
             </View>
           </View>
         ) : embedUrl ? (
@@ -196,8 +255,15 @@ const styles = StyleSheet.create({
   lockedTitle: { ...type.h1, color: colors.brandPrimary, letterSpacing: 1, marginTop: spacing.sm },
   lockedSub: { ...type.bodyMuted, textAlign: "center", marginBottom: spacing.md, fontSize: 13 },
   lockedActions: { flexDirection: "row", gap: spacing.sm, alignItems: "center" },
-  buyBtn: { flexDirection: "row", alignItems: "center", gap: spacing.sm, backgroundColor: colors.brandPrimary, paddingHorizontal: spacing.lg, paddingVertical: 12, borderRadius: radius.pill },
-  buyBtnText: { ...type.h2, color: colors.onBrandPrimary, letterSpacing: 1.5, fontSize: 13 },
+  buyBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, backgroundColor: colors.brandPrimary, paddingHorizontal: spacing.md, paddingVertical: 12, borderRadius: radius.pill, flex: 1 },
+  buyBtnText: { ...type.h2, color: colors.onBrandPrimary, letterSpacing: 1, fontSize: 12 },
+  momoBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4, paddingHorizontal: spacing.md, paddingVertical: 12, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.brandPrimary, flex: 1 },
+  momoBtnText: { color: colors.brandPrimary, fontFamily: "BarlowCondensed-Bold", fontSize: 11, letterSpacing: 1 },
+  momoInput: { backgroundColor: colors.surface, borderRadius: radius.md, padding: 12, color: colors.onSurface, fontSize: 14, borderWidth: 1, borderColor: colors.border, textAlign: "center" },
+  momoStatus: { ...type.caption, color: colors.brandPrimary, textAlign: "center" },
+  momoBack: { color: colors.onSurfaceSecondary, fontSize: 11 },
+  premInline: { color: colors.brandPrimary, fontFamily: "BarlowCondensed-Bold", fontSize: 12, letterSpacing: 1.5 },
+  err: { color: colors.error, textAlign: "center", marginTop: 6, fontSize: 12 },
   premBtn: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: spacing.md, paddingVertical: 12, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.brandPrimary },
   premBtnText: { color: colors.brandPrimary, fontFamily: "BarlowCondensed-Bold", fontSize: 12, letterSpacing: 1 },
   metaRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, marginBottom: spacing.sm, flexWrap: "wrap" },

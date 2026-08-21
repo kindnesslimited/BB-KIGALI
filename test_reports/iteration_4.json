@@ -1,0 +1,32 @@
+{
+  "summary": "Iteration 4 — Parallel EUR/RWF pricing + per-VOD MoMo unlock ALL PASS. Backend: 5/5 new pytest cases pass. (a) GET /api/shows/{premium-show-id} as non-admin non-premium (+250788555444) returns locked=true, unlockPrice='1.00', unlockCurrency='EUR', unlockPriceRwf='1000', videoUrl=null. (b) POST /api/billing/vod/{id}/momo {phone:'250794230137'} returns reference (vod-…), besoftTxId, status ∈ {pending,processing,success,failed}, amount=1000, currency='RWF'. Mongo db.vod_purchases record confirmed: method='mtn_momo', amount=1000, currency='RWF', besoftPayload.debit.metadata.kind='debit_credit' AND besoftPayload.debit.metadata.credits[0].payee_identifier='250798875272'. (c) GET /api/billing/vod/{id}/momo/{ref} returns {reference, status, amount, currency}. Invalid phone → 400. Unauth → 401. Frontend (mobile 390x844, non-admin +250788555444 signed in via OTP 123456): (i) /paywall shows BOTH prices: BASIC row '1€ / 1,000 RWF', PREMIUM row '3€ / 3,000 RWF' with hint 'Card charges in EUR · MoMo charges in RWF' on each card; TOTAL footer '3€ / 3,000 RWF'. (ii) YEARLY toggle → BASIC '10€ / 10,000 RWF', PREMIUM '30€ / 30,000 RWF', footer '30€ / 30,000 RWF'. (iii) /checkout with plan=premium_yearly: PayPal default shows '30.00 EUR' + note '≈ 30,000 RWF via Mobile Money'; switching to method=mtn_momo shows '30,000 RWF' + note '≈ 30.00 EUR via Card / PayPal'. (iv) /video/{premium-show-id} shows locked-box with buy-vod-btn 'PAY 1.00€ (CARD)' AND buy-vod-momo-btn '1,000 RWF (MoMo)'. Tapping MoMo reveals vod-momo-phone (TextInput) + vod-momo-confirm ('SEND MOMO REQUEST'). (v) Regression: home-admin correctly hidden for non-admin, 3 program cards visible, home-live-news opens live-news-screen (YouTube iframe).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "checkout MoMo phone field", "issue": "Phone prefills as '+250+250788555444' — the signed-in phone already includes '+250' but the field prepends '+250' again. Non-blocking (user can edit) but visually incorrect. Reference: /app/frontend/app/checkout.tsx phone state initialization.", "testID": "checkout-phone-input", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_vod_momo.py",
+    "/app/test_reports/pytest/pytest_iter4.xml"
+  ],
+  "action_items": [
+    "Optional: in /app/frontend/app/checkout.tsx, normalize the prefilled phone number so it doesn't double-prepend '+250' when the auth user already stores it with country code. Non-blocking cosmetic fix."
+  ],
+  "critical_code_review_comments": [
+    "server.py:906-959 vod_purchase_momo — correct BeSoft debit-credit reuse with unique idempotency keys ('vod-{show}-{uuid}', '-d', '-c1'); premium tier + already-purchased guardrails; sends metadata.kind implicitly via BeSoft merchant policy (returned metadata.kind='debit_credit' confirmed in Mongo); credits[0].payee_identifier=BESOFT_PAYOUT_MSISDN (250798875272).",
+    "server.py:962-982 vod_momo_status — polls BeSoft /public/payments/{txId}/status only when local status is pending/processing, updates Mongo idempotently.",
+    "paywall.tsx:115-120 — priceRow correctly renders both '{eur}€' and '/ {rwf.toLocaleString()} RWF'; parallelHint text matches spec exactly.",
+    "video/[id].tsx:159-170 — buy-vod-btn 'PAY {price}€ (CARD)' + buy-vod-momo-btn '{priceRwf.toLocaleString()} RWF (MoMo)' both wired to distinct handlers; MoMo tap flips to inline phone form with vod-momo-phone + vod-momo-confirm."
+  ],
+  "updated_files": ["/app/backend/tests/test_vod_momo.py (NEW — 5 tests)"],
+  "success_rate": {"backend": "100% (5/5 new)", "frontend": "100% (all 5 requested flows)"},
+  "seed_data_creation": "2 pending vod_purchases rows created in db.vod_purchases (references vod-a0580f49-…) — safe to leave; do not affect user data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Reuse /app/backend/tests/test_vod_momo.py. Runs pass with xdist workers (fixture uses phone '+250788555444' which is NOT in ADMIN_PHONES). Field name on show model is 'premium' (bool), NOT 'isPremium'. BeSoft returns HTTP_200 with metadata.kind='debit_credit' + credits[0].payee_identifier under besoftPayload.debit.metadata.credits[]. Phone '250794230137' is in ADMIN_PHONES → don't use for OTP auth of a non-admin tester; it's fine as a payer_identifier only.",
+  "rca_of_issue": "Not applicable — feature verification passes across all requested backend endpoints and frontend screens."
+}

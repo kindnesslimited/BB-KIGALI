@@ -23,7 +23,7 @@ export default function Checkout() {
   const { plan, amount } = useLocalSearchParams<{ plan: string; amount: string }>();
   const { refresh, user } = useAuth();
   const [method, setMethod] = useState<Method>("paypal");
-  const [phone, setPhone] = useState(user?.phone || "+250");
+  const [phone, setPhone] = useState(user?.phone && user.phone.startsWith("+") ? user.phone : (user?.phone ? "+" + user.phone : "+250"));
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -128,15 +128,19 @@ export default function Checkout() {
     );
   }
 
-  // Compute display prices — PayPal uses EUR, others use RWF
-  const paypalEurPrice: Record<string, string> = {
+  // Compute display prices — Card (PayPal) uses EUR, MoMo/Airtel/Stripe use RWF
+  const eurPrice: Record<string, string> = {
     basic_monthly: "1.00", basic_yearly: "10.00", premium_monthly: "3.00", premium_yearly: "30.00",
   };
   const isPayPal = method === "paypal";
   const displayCurrency = isPayPal ? "EUR" : "RWF";
   const displayAmount = isPayPal
-    ? paypalEurPrice[String(plan)] || "0.00"
+    ? eurPrice[String(plan)] || "0.00"
     : Number(amount).toLocaleString();
+  // Parallel: always show both
+  const parallelText = isPayPal
+    ? `≈ ${Number(amount).toLocaleString()} RWF via Mobile Money`
+    : `≈ ${eurPrice[String(plan)] || "0"} EUR via Card / PayPal`;
 
   return (
     <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1, backgroundColor: colors.surface }}>
@@ -181,7 +185,7 @@ export default function Checkout() {
           <Text style={styles.summaryLabel}>YOU&apos;RE PAYING FOR</Text>
           <Text style={styles.summaryPlan}>{String(plan || "").replace("_", " ").toUpperCase()}</Text>
           <Text style={styles.summaryAmount}>{displayAmount} {displayCurrency}</Text>
-          {isPayPal && <Text style={styles.summaryNote}>PayPal is billed in EUR (converted from RWF).</Text>}
+          <Text style={styles.summaryNote}>{parallelText}</Text>
         </View>
 
         <Text style={styles.sectionLabel}>PAYMENT METHOD</Text>

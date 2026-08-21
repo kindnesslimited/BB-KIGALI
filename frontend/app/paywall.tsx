@@ -6,7 +6,7 @@ import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, type, radius } from "@/src/theme";
 
-type Plan = { id: string; tier: "basic" | "premium"; label: string; monthly: number; yearly: number; benefits: string[]; recommended?: boolean };
+type Plan = { id: string; tier: "basic" | "premium"; label: string; monthly: number; yearly: number; monthlyEur: number; yearlyEur: number; benefits: string[]; recommended?: boolean };
 
 const PLANS: Plan[] = [
   {
@@ -15,6 +15,8 @@ const PLANS: Plan[] = [
     label: "BASIC",
     monthly: 1000,
     yearly: 10000,
+    monthlyEur: 1,
+    yearlyEur: 10,
     benefits: ["Live radio (ad-supported)", "Access to all news", "Public podcasts"],
   },
   {
@@ -23,8 +25,10 @@ const PLANS: Plan[] = [
     label: "PREMIUM",
     monthly: 3000,
     yearly: 30000,
+    monthlyEur: 3,
+    yearlyEur: 30,
     recommended: true,
-    benefits: ["Ad-free live radio", "All premium VOD & podcasts", "Exclusive interviews", "Download for offline (soon)"],
+    benefits: ["Ad-free live radio", "ALL VOD & podcasts free", "Exclusive interviews", "Download for offline (soon)"],
   },
 ];
 
@@ -36,6 +40,7 @@ export default function Paywall() {
 
   const plan = PLANS.find((p) => p.tier === selectedTier)!;
   const price = period === "monthly" ? plan.monthly : plan.yearly;
+  const priceEur = period === "monthly" ? plan.monthlyEur : plan.yearlyEur;
   const planKey = `${selectedTier}_${period}` as const;
 
   const savings = plan.monthly * 12 - plan.yearly;
@@ -84,6 +89,7 @@ export default function Paywall() {
           {PLANS.map((p) => {
             const active = selectedTier === p.tier;
             const displayPrice = period === "monthly" ? p.monthly : p.yearly;
+            const displayEur = period === "monthly" ? p.monthlyEur : p.yearlyEur;
             return (
               <Pressable
                 key={p.id}
@@ -107,9 +113,11 @@ export default function Paywall() {
                   </View>
                 </View>
                 <View style={styles.priceRow}>
-                  <Text style={styles.price}>{displayPrice.toLocaleString()}</Text>
-                  <Text style={styles.priceUnit}>RWF / {period === "monthly" ? "mo" : "yr"}</Text>
+                  <Text style={styles.price}>{displayEur}€</Text>
+                  <Text style={styles.priceUnit}>/ {displayPrice.toLocaleString()} RWF</Text>
+                  <Text style={[styles.priceUnit, { marginLeft: "auto" }]}>per {period === "monthly" ? "month" : "year"}</Text>
                 </View>
+                <Text style={styles.parallelHint}>Card charges in EUR · MoMo charges in RWF</Text>
                 {p.benefits.map((b, i) => (
                   <View key={i} style={styles.benefit}>
                     <Ionicons name="checkmark-circle" size={16} color={colors.brandPrimary} />
@@ -125,7 +133,7 @@ export default function Paywall() {
       <View style={[styles.footer, { paddingBottom: insets.bottom + spacing.md }]}>
         <View style={{ flex: 1 }}>
           <Text style={styles.footerLabel}>TOTAL</Text>
-          <Text style={styles.footerPrice}>{price.toLocaleString()} RWF</Text>
+          <Text style={styles.footerPrice}>{priceEur}€ / {price.toLocaleString()} RWF</Text>
         </View>
         <Pressable onPress={proceed} style={styles.continueBtn} testID="paywall-continue">
           <Text style={styles.continueText}>CONTINUE</Text>
@@ -156,9 +164,10 @@ const styles = StyleSheet.create({
   radio: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: colors.border, alignItems: "center", justifyContent: "center" },
   radioActive: { borderColor: colors.brandPrimary },
   radioDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: colors.brandPrimary },
-  priceRow: { flexDirection: "row", alignItems: "baseline", gap: spacing.sm, marginBottom: spacing.md },
+  priceRow: { flexDirection: "row", alignItems: "baseline", gap: spacing.sm, marginBottom: 4 },
   price: { ...type.displayXL, fontSize: 38 },
-  priceUnit: { ...type.bodyMuted, fontSize: 14 },
+  priceUnit: { ...type.bodyMuted, fontSize: 13 },
+  parallelHint: { ...type.caption, color: colors.brandPrimary, marginBottom: spacing.md, fontSize: 11 },
   benefit: { flexDirection: "row", alignItems: "center", gap: spacing.sm, marginTop: spacing.xs },
   benefitText: { ...type.body, fontSize: 13, color: colors.onSurfaceTertiary },
   footer: { position: "absolute", left: 0, right: 0, bottom: 0, backgroundColor: colors.surfaceSecondary, borderTopWidth: 1, borderTopColor: colors.border, flexDirection: "row", alignItems: "center", padding: spacing.lg, gap: spacing.md },
