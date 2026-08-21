@@ -1,0 +1,38 @@
+{
+  "summary": "MTN MoMo switch from /public/payments/transfer to /public/payments/debit-credit VERIFIED. Called POST /api/billing/momo/initiate with plan basic_monthly + real MTN number 250794230137: response returned 200 with reference='bbfm-9f66f8911f1243ab', besoftTxId='9b688dfb-1226-4e3b-bb3a-bc32fbd071e9' and status='failed' (as expected — MTN provider returned HTTP_400 'account inactive', which is a payer-side issue, not a code issue). Inspected Mongo db.payments (latest) and confirmed besoftPayload.debit.metadata.kind === 'debit_credit' and metadata.credits has exactly ONE entry with payee_identifier='250798875272' and amount=1000 — proving the debit-credit endpoint received the correct payload. Regression: OTP verify with 123456 ✓, /api/radio/now-playing returns youtubeVideoId='wPD77ygQKfo' ✓, /api/shows returns 6 items ✓, PayPal create-subscription returns approveUrl with 'paypal.com' ✓, MoMo status polling returns status field ✓. Frontend regression on Expo web (mobile viewport 390x844): onboarding-skip → phone-continue → 6-digit OTP fill → auto-navigate to home → tab-profile → upgrade-btn → paywall (period-monthly/yearly toggles + plan-basic) → paywall-continue → checkout shows all 4 methods (paypal, mtn_momo, airtel, stripe) with momo-phone-input visible on MTN MoMo, 'currently mocked' banner on Airtel+Stripe, and 'Live PayPal' badge on PayPal. 6/6 backend pytest cases green.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_momo_paypal.py",
+    "/app/backend/tests/test_bbfm_backend.py",
+    "/app/test_reports/pytest/pytest_iter2.xml"
+  ],
+  "action_items": [
+    "Update /app/memory/test_credentials.md — the 'Endpoint used' line still says POST /api/v1/public/payments/transfer but the code now hits /public/payments/debit-credit. Refresh doc for future contributors.",
+    "(Carryover from iter_1) Onboarding CTA does not advance FlatList on web — Skip works, so not blocking. Consider replacing scrollToIndex with scrollToOffset({x:(i+1)*width}) or a web-compatible carousel."
+  ],
+  "critical_code_review_comments": [
+    "server.py:400 correctly targets /public/payments/debit-credit with idempotency_key + one credit for BESOFT_PAYOUT_MSISDN (250798875272).",
+    "server.py:405-408 raises 502 only when BeSoft itself returns >=300; when BeSoft returns 200 with tx status='failed' (as happens with a bad payer number), we still store besoftTxId and return reference — matches spec.",
+    "server.py:399,491 uses BESOFT_VERIFY_SSL=false to accept BeSoft's expired cert — flip to true when they renew.",
+    "server.py doesn't validate the BeSoft webhook signature (no shared secret spec in docs) — acceptable but call it out if BeSoft publishes an HMAC scheme.",
+    "/app/memory/test_credentials.md still references the old /transfer endpoint — should be updated."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_momo_paypal.py (new — MoMo debit-credit + PayPal regression suite)"
+  ],
+  "success_rate": {"backend": "100% (6/6 new + 19/19 carryover)", "frontend": "100% on tested flows (onboarding → OTP → paywall → checkout)"},
+  "seed_data_creation": "None — backend seeds on startup. Auth used +250788199137/201/202 with mock OTP 123456. Two real MoMo requests fired against BeSoft with payer 250794230137 (both returned HTTP_400 from MTN — expected).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "BeSoft MoMo integration lives at server.py:346-428 and hits POST /public/payments/debit-credit. Verify via Mongo: db.payments.find_one({method:'mtn_momo'}, sort=[('createdAt',-1)])['besoftPayload']['debit']['metadata']['kind']=='debit_credit'. Real MTN test number 250794230137 will always return status='failed' with failure_reason 'provider error [HTTP_400]' — that's a payer-side issue, NOT a code bug. BeSoft cert is expired so BESOFT_VERIFY_SSL=false in backend/.env. Reuse /app/backend/tests/test_momo_paypal.py. Test creds: any E.164 phone + OTP 123456.",
+  "rca_of_issue": "Not applicable — this was a feature verification (not a bug). The switch from /transfer to /debit-credit at server.py:400 sends the correct payload; BeSoft's response echoes metadata.kind='debit_credit' + metadata.credits[0] with payee_identifier=250798875272, amount=1000. MTN's HTTP_400 rejection of payer 250794230137 is a real-world provider constraint and out of scope for this change."
+}

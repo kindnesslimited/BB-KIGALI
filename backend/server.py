@@ -353,10 +353,13 @@ async def momo_initiate(body: MoMoInitiateIn, user = Depends(get_current_user)):
         raise HTTPException(400, "Invalid payer phone number")
 
     reference = f"bbfm-{uuid.uuid4().hex[:16]}"
+    debit_amount = float(plan["amount"])
+    # Merchant charge_percent is 0 on this account (confirmed via /transfer response). Adjust if BeSoft changes it.
+    credit_amount = debit_amount
     payload = {
         "idempotency_key": reference,
         "debit": {
-            "amount": float(plan["amount"]),
+            "amount": debit_amount,
             "currency": plan["currency"],  # RWF
             "payment_method": "mtn_momo_collection",
             "payer_identifier": payer,
@@ -365,6 +368,15 @@ async def momo_initiate(body: MoMoInitiateIn, user = Depends(get_current_user)):
             "country": "RW",
             "metadata": {"userId": user["id"], "plan": body.plan},
         },
+        "credits": [{
+            "amount": credit_amount,
+            "currency": plan["currency"],
+            "payment_method": "mtn_momo_disbursement",
+            "payee_identifier": BESOFT_PAYOUT_MSISDN,
+            "description": f"Payout to BB FM Kigali — {plan['label']}",
+            "idempotency_key": reference + "-c1",
+            "country": "RW",
+        }],
     }
 
     now = datetime.now(timezone.utc)
@@ -385,7 +397,7 @@ async def momo_initiate(body: MoMoInitiateIn, user = Depends(get_current_user)):
 
     try:
         async with httpx.AsyncClient(timeout=30.0, verify=BESOFT_VERIFY_SSL) as c:
-            r = await c.post(f"{BESOFT_BASE_URL}/public/payments/transfer", headers=_besoft_headers(), json=payload)
+            r = await c.post(f"{BESOFT_BASE_URL}/public/payments/debit-credit", headers=_besoft_headers(), json=payload)
     except httpx.RequestError as e:
         await db.payments.update_one({"reference": reference}, {"$set": {"status": "failed", "error": f"network: {e}"}})
         raise HTTPException(502, f"Unable to reach payment provider: {e}")
