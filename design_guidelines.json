@@ -1,0 +1,255 @@
+{
+  "app_name": "BB FM Kigali",
+  "personality": "7 Dark-First Utility DARK with an energetic African-modern radio vibe",
+  "personality_one_liner": "A high-performance, dark-first operational surface where live radio metrics, cinematic VOD thumbnails, and energetic amber accents take center stage.",
+  "color": {
+    "surface": "#0F0F13",
+    "onSurface": "#FFFFFF",
+    "surfaceSecondary": "#1C1C21",
+    "onSurfaceSecondary": "#A3A3A8",
+    "surfaceTertiary": "#27272F",
+    "onSurfaceTertiary": "#C2C2C7",
+    "surfaceInverse": "#F2F2F5",
+    "onSurfaceInverse": "#0F0F13",
+    "brand": "#FF6B00",
+    "brandPrimary": "#FF6B00",
+    "onBrandPrimary": "#0B0400",
+    "brandSecondary": "#CC5500",
+    "onBrandSecondary": "#FFFFFF",
+    "brandTertiary": "#40220A",
+    "onBrandTertiary": "#FFB885",
+    "success": "#2E8B57",
+    "onSuccess": "#FFFFFF",
+    "warning": "#DAA520",
+    "onWarning": "#0B0400",
+    "error": "#D9381E",
+    "onError": "#FFFFFF",
+    "info": "#2F4F4F",
+    "onInfo": "#FFFFFF",
+    "border": "#27272F",
+    "borderStrong": "#FF6B00",
+    "divider": "#1C1C21"
+  },
+  "typography": {
+    "displayFontFamily": "Barlow Condensed",
+    "textFontFamily": "Satoshi",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "Dense and operational. Use md (12pt) for internal card padding, lg (16pt) for screen edges. Minimal wasted space, emphasizing large thumbnails and readable metrics.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 6,
+    "md": 12,
+    "lg": 20,
+    "pill": 999
+  },
+  "shadow_tier": 0,
+  "navigation": "bottom_tabs",
+  "icon_set": "Ionicons",
+  "glassmorphism": {
+    "enabled": true,
+    "do's": [
+      "Use heavily tinted blur for the persistent mini-player positioned above the tab bar.",
+      "Use blur on the bottom tab bar and sticky headers.",
+      "Apply gradient-to-dark scrim over all cinematic VOD thumbnails before placing text."
+    ],
+    "dont's": [
+      "Do not use blur on standard VOD cards or list rows.",
+      "Do not make the blur too transparent; ensure underlying content is abstracted."
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Splash",
+      "purpose": "Brand reveal with a vibrant energetic gradient or dark background holding the station logo.",
+      "states": {
+        "loading": "Dark background with a subtle pulsing brandPrimary border around the logo.",
+        "empty": "N/A",
+        "error": "N/A"
+      },
+      "layout": "Centered logo (use fallback if PNG unavailable) on a deep #0F0F13 canvas with a subtle vertical gradient (surface to slightly darker surface). A 'BB FM Kigali' wordmark in Barlow Condensed."
+    },
+    {
+      "name": "Onboarding",
+      "purpose": "Educate the user on Live Radio, VOD, and Premium Podcasts.",
+      "states": {
+        "loading": "N/A",
+        "empty": "N/A",
+        "error": "N/A"
+      },
+      "layout": "Full-bleed imagery for each slide. Required: gradient-to-dark scrim (top to bottom fade ending at >=70% surface) over the image. Text and primary CTA (brandPrimary) sit in the bottom 30%."
+    },
+    {
+      "name": "PhoneEntry",
+      "purpose": "Secure authentication starting with phone number.",
+      "states": {
+        "loading": "Spinner on the 'Continue' button.",
+        "empty": "Default input state.",
+        "error": "Inline error text below the input."
+      },
+      "layout": "Large Barlow Condensed header. Single-column input. Sticky CTA at the bottom inside KeyboardAvoidingView."
+    },
+    {
+      "name": "OTPVerify",
+      "purpose": "Verify phone number.",
+      "states": {
+        "loading": "Spinner on the 'Verify' button.",
+        "empty": "4 to 6 digit OTP input slots.",
+        "error": "Shake animation and red error text."
+      },
+      "layout": "Large instructional header. Row of surfaceSecondary pill/square inputs for the code. Sticky CTA at the bottom."
+    },
+    {
+      "name": "Home",
+      "purpose": "Command center for the radio station, featuring Live Radio status and featured content.",
+      "states": {
+        "loading": "Skeleton blocks for the featured shows and schedule.",
+        "empty": "Illustration + 'No live broadcast right now.'",
+        "error": "Error message + 'Retry Connection'."
+      },
+      "layout": "Header with user greeting. Hero section displaying current 'ON AIR' show (large Barlow Condensed text, brandPrimary 'LIVE' badge). Horizontal scrolling carousel for 'Upcoming Schedule' and 'Featured News'. Persistent mini-player component sits fixed at the bottom above the tab bar."
+    },
+    {
+      "name": "Shows",
+      "purpose": "VOD and Podcast library.",
+      "states": {
+        "loading": "Skeleton grids.",
+        "empty": "Icon + 'No shows available in this category.'",
+        "error": "Error message + Retry CTA."
+      },
+      "layout": "Sticky header with horizontally scrolling chip row for categories (All, Podcasts, VOD, Interviews). Below, a 2-column grid of VOD thumbnails. Each thumbnail MUST have a gradient scrim and title text at the bottom. The persistent mini-player remains visible above the tab bar."
+    },
+    {
+      "name": "News",
+      "purpose": "Station news and articles.",
+      "states": {
+        "loading": "Skeleton list.",
+        "empty": "Icon + 'No news updates today.'",
+        "error": "Error message + Retry CTA."
+      },
+      "layout": "Vertical scroll list of news cards. Each card has a leading thumbnail (left) and text (right). Clean surfaceSecondary containers with 1pt divider."
+    },
+    {
+      "name": "Profile",
+      "purpose": "Manage account and active subscriptions.",
+      "states": {
+        "loading": "Spinner.",
+        "empty": "N/A",
+        "error": "Error + Retry."
+      },
+      "layout": "Header with Avatar (Initials). Sections for 'Subscription Status' (shows current tier with a prominent upgrade CTA if Basic), 'Payment History', and 'Settings'. Use surfaceSecondary rows."
+    },
+    {
+      "name": "FullRadioPlayer",
+      "purpose": "Immersive, full-screen radio playback experience.",
+      "states": {
+        "loading": "Pulsing artwork.",
+        "empty": "N/A",
+        "error": "Connection error message."
+      },
+      "layout": "Modal full-screen sheet. Large album/DJ artwork taking up top 50% with a heavy bottom gradient scrim. Bottom half contains track/DJ info (Barlow Condensed), wave animation or progress bar, and large playback controls."
+    },
+    {
+      "name": "VideoPlayer",
+      "purpose": "Watch VOD content.",
+      "states": {
+        "loading": "Spinner in the center of the video block.",
+        "empty": "N/A",
+        "error": "Video failed to load."
+      },
+      "layout": "Top 30-40% is the WebView/Video player (supports Admin YouTube/Vimeo URLs). Bottom 60% contains Title, Description, and a 'More Like This' horizontal carousel."
+    },
+    {
+      "name": "SubscriptionPaywall",
+      "purpose": "Upsell Basic and Premium tiers.",
+      "states": {
+        "loading": "Spinner on CTA.",
+        "empty": "N/A",
+        "error": "Error loading plans."
+      },
+      "layout": "Sales-focused page. Top 'hero benefit' headline. 2 vertical cards for plans (Basic and Premium). Premium card should have a 1.5pt borderStrong outline and a 'RECOMMENDED' badge in brandTertiary. Sticky 'Continue to Payment' button at the bottom."
+    },
+    {
+      "name": "CheckoutMethod",
+      "purpose": "Select payment gateway.",
+      "states": {
+        "loading": "Processing payment spinner.",
+        "empty": "N/A",
+        "error": "Payment failed."
+      },
+      "layout": "List of surfaceSecondary rows representing Stripe, PayPal, MTN Mobile Money, Airtel Money. Simple radio button selection. Sticky 'Pay [Amount]' CTA at the bottom."
+    }
+  ],
+  "images": {
+    "onboarding_scene_1": {
+      "url": "https://images.pexels.com/photos/38586686/pexels-photo-38586686.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "alt": "Focused man in a radio studio creating engaging content"
+    },
+    "onboarding_scene_2": {
+      "url": "https://images.pexels.com/photos/26447525/pexels-photo-26447525.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "alt": "Energetic crowd enjoying a night concert"
+    },
+    "onboarding_scene_3": {
+      "url": "https://images.unsplash.com/photo-1485579149621-3123dd979885?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMjV8MHwxfHNlYXJjaHwxfHxsaXZlJTIwcmFkaW8lMjBtaWNyb3Bob25lJTIwZGFya3xlbnwwfHx8fDE3ODczMDcwNjF8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "Live radio microphone"
+    },
+    "hero_live_radio": {
+      "url": "https://images.pexels.com/photos/28435464/pexels-photo-28435464.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "alt": "DJ speaking into microphone"
+    },
+    "vod_thumbnail_fallback": {
+      "url": "https://images.pexels.com/photos/6883808/pexels-photo-6883808.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "alt": "Modern podcast studio interview"
+    },
+    "vod_thumbnail_cinematic": {
+      "url": "https://images.pexels.com/photos/23384428/pexels-photo-23384428.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "alt": "Dramatic cinematic movie scene"
+    }
+  },
+  "instructions_to_main_agent": [
+    "Strictly follow the Dark-First Utility (7) guidelines: avoid large empty spaces, emphasize operational density, use Barlow Condensed for numbers/titles/metrics and Satoshi for readability.",
+    "Banned Colors: Any shade of blue, indigo, or purple. Use #FF6B00 (Amber/Rust) as the single brand primary color.",
+    "The persistent mini-player must be placed OUTSIDE the scroll views of individual tab screens, residing directly above the bottom tab bar. Apply a glassmorphism (expo-blur) effect to it.",
+    "For the Shows (VOD) screen, implement the category chips as a horizontally scrolling row nested within a sticky header.",
+    "For the SubscriptionPaywall, ensure the Premium tier card visually stands out using the `borderStrong` token and a `brandTertiary` background tint.",
+    "All VOD thumbnails MUST use the gradient-to-dark scrim pattern (top to bottom fade ending at >=70% surfaceInverse) to guarantee text contrast.",
+    "Use WebView for video rendering to support Admin URLs (YouTube/Vimeo) in the VideoPlayer screen.",
+    "Apply `KeyboardAvoidingView` to the authentication and checkout screens to keep the primary CTA anchored above the keyboard.",
+    "Research learnings: Mobile VOD discovery relies heavily on horizontal chip filters and scannable 2-column grids rather than single-row carousels for deep catalogs. Apply this on the Shows screen."
+  ],
+  "haptics": {
+    "primary_cta_press": "impactMedium",
+    "tab_change": "selection",
+    "chip_filter_select": "impactLight",
+    "play_pause_toggle": "impactMedium",
+    "otp_success": "notificationSuccess",
+    "otp_error": "notificationError",
+    "paywall_plan_select": "selection"
+  }
+}

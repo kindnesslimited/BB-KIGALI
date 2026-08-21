@@ -1,0 +1,38 @@
+{
+  "summary": "BB FM Kigali E2E testing complete. Backend: 19/19 pytest cases passed on public URL (health, OTP start/verify, /auth/me, radio now-playing & schedule, shows list/filter/lock-unlock for premium, news, plans, subscribe stripe+momo, billing history, post-upgrade unlock). Frontend E2E on Expo web: full user journey works — onboarding skip → phone → OTP auto-verify → home → shows filter (all=6, podcast=2) → news (8 items after list expansion) → profile (FREE) → upsell → paywall (monthly/yearly toggle, plan-basic, plan-premium) → checkout (all 4 methods present, momo-phone-input appears for MTN MoMo) → pay-btn → checkout-success → profile shows PREMIUM. Two web-preview issues: (1) onboarding-cta does not advance slides on web (FlatList scrollToIndex no-op); user has to use onboarding-skip. (2) Expo Router renders duplicate tab-* testIDs on web causing intermittent click failures for testing.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "onboarding.tsx", "issue": "Tapping onboarding-cta does not advance carousel slides on Expo web — FlatList.scrollToIndex is a no-op in react-native-web with pagingEnabled. Users on web are stuck on slide 1 and must use the Skip button. Works on native. Consider using ScrollView with manual scroll or a web-safe carousel.", "testID": "onboarding-cta", "priority": "MEDIUM"},
+      {"component": "(tabs)/_layout.tsx", "issue": "Duplicate elements with data-testid=\"tab-home|tab-shows|tab-news|tab-profile\" render on web (2 nodes each). tabBarButtonTestID is applied twice by react-navigation/expo-router-web. Impacts automated testing and may confuse a11y. Consider distinct testIDs or filter to visible one.", "testID": "tab-profile", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "home", "issues": ["Mini-player docked above tab bar overlaps bottom rows; verified via screenshots — acceptable, informational only."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_bbfm_backend.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "Fix onboarding-cta on web: replace FlatList paging with a web-compatible carousel or fall back to a manual next-index scroll via scrollToOffset({x: (index+1)*width}) which is known to be more reliable on web.",
+    "Investigate duplicate tab-* testIDs rendered by expo-router-web (react-navigation tabBarButtonTestID is placed on both the anchor link and the button wrapper). Not blocking users, but should be reduced to a single node for cleaner testing/a11y."
+  ],
+  "critical_code_review_comments": [
+    "server.py:74-94 correctly excludes Mongo _id via projection and gracefully expires premium subscriptions — good.",
+    "server.py PLAN_CATALOG hardcoded — acceptable for demo. Amounts align with spec (1000/3000 RWF).",
+    "onboarding.tsx uses FlatList with scrollToIndex — reliable on native but flaky on web. See action_items.",
+    "auth/otp.tsx auto-submits when 6 digits entered; works well via keyboard typing in playwright.",
+    "checkout uses testIDs method-stripe/paypal/mtn_momo/airtel and pay-btn — all present and functional.",
+    "Frontend correctly uses EXPO_PUBLIC_BACKEND_URL (not EXPO_BACKEND_URL) — matches Expo web convention."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (19/19)", "frontend": "95% (2 minor web-only issues)"},
+  "seed_data_creation": "No manual seed. Backend seeds 6 shows, 4 news, 5 schedule items, and radio_state automatically on startup — verified in tests.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend public URL: https://radio-vod-platform.preview.emergentagent.com. Test phone accepts any E.164; universal OTP 123456. Reuse /app/backend/tests/test_bbfm_backend.py. When testing UI on web, use onboarding-skip (onboarding-cta does not advance on web). For tab navigation in Playwright, use .first or .nth(0) because expo-router-web duplicates testIDs.",
+  "rca_of_issue": "Onboarding CTA no-op: FlatList in react-native-web does not honor pagingEnabled + scrollToIndex reliably. Mitigation: switch to scrollToOffset with width-based offset, or use a dedicated web carousel (react-native-pager-view has web support, or a simple <ScrollView horizontal>). Duplicate testIDs: react-navigation/native applies tabBarButtonTestID to both the underlying <a> href element and the pressable wrapper. Fixing requires either a custom tabBarButton renderer or accepting the duplication."
+}
