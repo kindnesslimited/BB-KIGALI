@@ -10,10 +10,11 @@ import { useAuth } from "@/src/context/auth";
 export default function PhoneEntry() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { requestOtp } = useAuth();
+  const { requestOtp, loginWithGoogle } = useAuth();
   const [phone, setPhone] = useState("+250");
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
 
   const submit = async () => {
     setErr(null);
@@ -27,6 +28,13 @@ export default function PhoneEntry() {
     } catch (e: any) {
       setErr(e.message || "Failed to send code");
     } finally { setLoading(false); }
+  };
+
+  const google = async () => {
+    setErr(null); setGoogleLoading(true);
+    try { await loginWithGoogle(); }
+    catch (e: any) { setErr(e.message || "Google sign-in failed"); }
+    finally { setGoogleLoading(false); }
   };
 
   return (
@@ -60,8 +68,22 @@ export default function PhoneEntry() {
         <View style={{ flex: 1 }} />
         <View style={{ paddingBottom: insets.bottom + spacing.lg }}>
           <Pressable onPress={submit} disabled={loading} style={[styles.cta, loading && { opacity: 0.6 }]} testID="phone-continue">
-            {loading ? <ActivityIndicator color={colors.onBrandPrimary} /> : <Text style={styles.ctaText}>CONTINUE</Text>}
+            {loading ? <ActivityIndicator color={colors.onBrandPrimary} /> : <Text style={styles.ctaText}>CONTINUE WITH PHONE</Text>}
           </Pressable>
+
+          <View style={styles.orRow}>
+            <View style={styles.orLine} /><Text style={styles.orText}>OR</Text><View style={styles.orLine} />
+          </View>
+
+          <Pressable onPress={google} disabled={googleLoading} style={[styles.googleBtn, googleLoading && { opacity: 0.6 }]} testID="google-signin">
+            {googleLoading ? <ActivityIndicator color={colors.onSurface} /> : (
+              <>
+                <Ionicons name="logo-google" size={20} color={colors.onSurface} />
+                <Text style={styles.googleText}>Continue with Google</Text>
+              </>
+            )}
+          </Pressable>
+
           <Text style={styles.legal}>By continuing you accept our Terms & Privacy.</Text>
         </View>
       </View>
@@ -82,5 +104,10 @@ const styles = StyleSheet.create({
   err: { color: colors.error, marginTop: spacing.sm },
   cta: { backgroundColor: colors.brandPrimary, height: 56, borderRadius: radius.md, alignItems: "center", justifyContent: "center" },
   ctaText: { ...type.h2, color: colors.onBrandPrimary, letterSpacing: 1 },
+  orRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, marginVertical: spacing.md },
+  orLine: { flex: 1, height: 1, backgroundColor: colors.border },
+  orText: { ...type.label, color: colors.onSurfaceSecondary, letterSpacing: 2 },
+  googleBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, height: 52, borderRadius: radius.md, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border },
+  googleText: { color: colors.onSurface, fontSize: 15, fontFamily: "System", fontWeight: "500" },
   legal: { ...type.caption, textAlign: "center", marginTop: spacing.md },
 });

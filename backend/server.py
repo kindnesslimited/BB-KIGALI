@@ -89,11 +89,17 @@ class AuthOut(BaseModel):
 
 class UserOut(BaseModel):
     id: str
-    phone: str
+    phone: Optional[str] = None
+    email: Optional[str] = None
     displayName: Optional[str] = None
+    picture: Optional[str] = None
     tier: Literal["free", "basic", "premium"] = "free"
     role: Literal["user", "admin"] = "user"
     subscriptionExpiresAt: Optional[str] = None
+
+
+class GoogleSessionIn(BaseModel):
+    session_id: str
 
 class SubscribeIn(BaseModel):
     plan: Literal["basic_monthly", "basic_yearly", "premium_monthly", "premium_yearly"]
@@ -118,14 +124,33 @@ async def get_current_user(authorization: Optional[str] = Header(None)):
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(401, "Missing bearer token")
     token = authorization.split(" ", 1)[1].strip()
+    # 1) Try JWT (phone OTP flow)
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+        user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0})
+        if user:
+            return await _tier_refresh(user)
     except jwt.PyJWTError:
-        raise HTTPException(401, "Invalid or expired token")
-    user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0})
-    if not user:
-        raise HTTPException(401, "User not found")
-    # Check subscription expiry
+        pass
+    # 2) Try Emergent session_token (Google OAuth flow)
+    session = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
+    if session:
+        exp = session.get("expires_at")
+        if exp:
+            try:
+                exp_dt = datetime.fromisoformat(exp) if isinstance(exp, str) else exp
+                if exp_dt.tzinfo is None:
+                    exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+                if exp_dt >= datetime.now(timezone.utc):
+                    user = await db.users.find_one({"id": session["user_id"]}, {"_id": 0})
+                    if user:
+                        return await _tier_refresh(user)
+            except Exception:
+                pass
+    raise HTTPException(401, "Invalid or expired token")
+
+
+async def _tier_refresh(user: dict) -> dict:
     if user.get("subscriptionExpiresAt"):
         try:
             exp = datetime.fromisoformat(user["subscriptionExpiresAt"])
@@ -140,8 +165,10 @@ async def get_current_user(authorization: Optional[str] = Header(None)):
 def user_public(u: dict) -> dict:
     return {
         "id": u["id"],
-        "phone": u["phone"],
+        "phone": u.get("phone"),
+        "email": u.get("email"),
         "displayName": u.get("displayName"),
+        "picture": u.get("picture"),
         "tier": u.get("tier", "free"),
         "role": u.get("role", "user"),
         "subscriptionExpiresAt": u.get("subscriptionExpiresAt"),
@@ -275,6 +302,71 @@ async def otp_verify(body: OTPVerifyIn):
 @api.get("/auth/me", response_model=UserOut)
 async def me(user = Depends(get_current_user)):
     return user_public(user)
+
+
+@api.post("/auth/session")
+async def google_session(body: GoogleSessionIn):
+    """Exchange an Emergent session_id (from Google OAuth redirect) for a 7-day session_token.
+    Upserts the user by email so Google users share the same account as phone-OTP users with the same email."""
+    session_id = body.session_id.strip()
+    if not session_id:
+        raise HTTPException(400, "Missing session_id")
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as c:
+            r = await c.get(
+                "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+                headers={"X-Session-ID": session_id},
+            )
+    except httpx.RequestError as e:
+        raise HTTPException(502, f"Auth provider unreachable: {e}")
+    if r.status_code != 200:
+        raise HTTPException(401, "Invalid or expired session")
+    data = r.json() or {}
+    email = (data.get("email") or "").strip().lower()
+    name = data.get("name") or ""
+    picture = data.get("picture") or None
+    session_token = data.get("session_token")
+    if not email or not session_token:
+        raise HTTPException(401, "Incomplete session data")
+
+    # Upsert user by email (share with any existing phone-signup user whose email later matches)
+    user = await db.users.find_one({"email": email}, {"_id": 0})
+    if not user:
+        is_admin = email.lower() in {a.lower() for a in ADMIN_PHONES}
+        user = {
+            "id": str(uuid.uuid4()),
+            "phone": None,
+            "email": email,
+            "displayName": name or (email.split("@")[0] if email else None),
+            "picture": picture,
+            "tier": "free",
+            "role": "admin" if is_admin else "user",
+            "subscriptionExpiresAt": None,
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.users.insert_one(user.copy())
+    else:
+        updates = {}
+        if name and not user.get("displayName"):
+            updates["displayName"] = name
+        if picture and not user.get("picture"):
+            updates["picture"] = picture
+        if updates:
+            await db.users.update_one({"id": user["id"]}, {"$set": updates})
+            user.update(updates)
+
+    expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+    await db.user_sessions.update_one(
+        {"session_token": session_token},
+        {"$set": {
+            "session_token": session_token,
+            "user_id": user["id"],
+            "expires_at": expires_at.isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }},
+        upsert=True,
+    )
+    return {"session_token": session_token, "user": user_public(user)}
 
 
 @api.patch("/auth/me", response_model=UserOut)
