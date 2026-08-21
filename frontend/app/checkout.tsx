@@ -12,9 +12,9 @@ import { useAuth } from "@/src/context/auth";
 type Method = "stripe" | "paypal" | "mtn_momo" | "airtel";
 const METHODS: { id: Method; label: string; sub: string; icon: any; needsPhone?: boolean }[] = [
   { id: "paypal", label: "PayPal", sub: "Live — Visa/Mastercard or PayPal balance", icon: "logo-paypal" },
-  { id: "mtn_momo", label: "MTN Mobile Money", sub: "Rwanda MTN MoMo", icon: "phone-portrait-outline", needsPhone: true },
-  { id: "airtel", label: "Airtel Money", sub: "Rwanda Airtel Money", icon: "phone-portrait-outline", needsPhone: true },
-  { id: "stripe", label: "Card (Stripe)", sub: "Visa, Mastercard, Amex", icon: "card-outline" },
+  { id: "mtn_momo", label: "MTN Mobile Money", sub: "Live — Rwanda MTN MoMo via BeSoft Pay", icon: "phone-portrait-outline", needsPhone: true },
+  { id: "airtel", label: "Airtel Money", sub: "Coming soon — currently mocked", icon: "phone-portrait-outline", needsPhone: true },
+  { id: "stripe", label: "Card (Stripe)", sub: "Coming soon — currently mocked", icon: "card-outline" },
 ];
 
 export default function Checkout() {
@@ -53,8 +53,32 @@ export default function Checkout() {
     }
   };
 
+  const [momoStatus, setMomoStatus] = useState<string | null>(null);
+
+  const pollMomo = async (reference: string) => {
+    const started = Date.now();
+    while (Date.now() - started < 90_000) {
+      try {
+        const r = await api<{ status: string }>(`/billing/momo/${reference}`, { auth: true });
+        setMomoStatus(r.status);
+        if (r.status === "success") {
+          await refresh();
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+          setSuccess(true);
+          return;
+        }
+        if (r.status === "failed") {
+          setErr("Payment failed or was cancelled on your phone.");
+          return;
+        }
+      } catch { /* keep polling */ }
+      await new Promise((res) => setTimeout(res, 3000));
+    }
+    setErr("Timed out waiting for confirmation. Check Payment History or try again.");
+  };
+
   const pay = async () => {
-    setErr(null); setLoading(true);
+    setErr(null); setLoading(true); setMomoStatus(null);
     try {
       const chosen = METHODS.find((m) => m.id === method)!;
       if (chosen.needsPhone && phone.replace(/\D/g, "").length < 9) {
@@ -69,7 +93,16 @@ export default function Checkout() {
         setPaypalUrl(r.approveUrl);
         return;
       }
-      // Fallback for stripe/momo/airtel — currently mocked
+      if (method === "mtn_momo") {
+        const r = await api<{ reference: string; status: string }>(
+          "/billing/momo/initiate",
+          { method: "POST", auth: true, body: { plan, phone } }
+        );
+        setMomoStatus(r.status);
+        await pollMomo(r.reference);
+        return;
+      }
+      // Fallback for stripe/airtel — currently mocked
       await api("/billing/subscribe", { method: "POST", auth: true, body: { plan, method, phone: chosen.needsPhone ? phone : null } });
       await refresh();
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
@@ -192,16 +225,28 @@ export default function Checkout() {
           </View>
         )}
 
-        {!isPayPal && (
+        {!isPayPal && method !== "mtn_momo" && (
           <View style={styles.demoBox}>
             <Ionicons name="information-circle-outline" size={16} color={colors.warning} />
-            <Text style={styles.demoText}>Demo mode — this method is currently mocked. Only PayPal charges real money.</Text>
+            <Text style={styles.demoText}>This method is currently mocked. Use PayPal or MTN MoMo for real payments.</Text>
           </View>
         )}
         {isPayPal && (
           <View style={[styles.demoBox, { borderColor: colors.success }]}>
             <Ionicons name="shield-checkmark-outline" size={16} color={colors.success} />
             <Text style={styles.demoText}>Live PayPal. You will be redirected to PayPal to complete payment.</Text>
+          </View>
+        )}
+        {method === "mtn_momo" && (
+          <View style={[styles.demoBox, { borderColor: colors.success }]}>
+            <Ionicons name="shield-checkmark-outline" size={16} color={colors.success} />
+            <Text style={styles.demoText}>Live MTN MoMo. You&apos;ll get a prompt on your phone to approve the payment.</Text>
+          </View>
+        )}
+        {momoStatus && loading && (
+          <View style={[styles.demoBox, { borderColor: colors.brandPrimary, marginTop: spacing.md }]} testID="momo-status">
+            <ActivityIndicator color={colors.brandPrimary} />
+            <Text style={styles.demoText}>Waiting for MoMo approval on your phone… (status: {momoStatus})</Text>
           </View>
         )}
 

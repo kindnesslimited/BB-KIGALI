@@ -45,6 +45,14 @@ PAYPAL_PRICES = {
     "premium_yearly":  os.environ.get("PAYPAL_PRICE_PREMIUM_YEARLY", "30.00"),
 }
 
+# BeSoft (MTN MoMo) config
+BESOFT_BASE_URL = os.environ.get("BESOFT_BASE_URL", "https://payment.besoft.info/api/v1").rstrip("/")
+BESOFT_API_KEY = os.environ.get("BESOFT_API_KEY", "")
+BESOFT_API_SECRET = os.environ.get("BESOFT_API_SECRET", "")
+BESOFT_PAYOUT_MSISDN = os.environ.get("BESOFT_PAYOUT_MSISDN", "")
+# BeSoft's SSL cert is currently expired — set BESOFT_VERIFY_SSL=true once they renew.
+BESOFT_VERIFY_SSL = os.environ.get("BESOFT_VERIFY_SSL", "false").lower() == "true"
+
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
 
@@ -308,12 +316,31 @@ async def payment_history(user = Depends(get_current_user)):
     return items
 
 
-# ---------- MTN MoMo dedicated endpoints ----------
-# These are the endpoints your real MTN MoMo integration (RequestToPay) will hit.
-# Point your MoMo API "callbackHost" / "X-Callback-Url" at PUBLIC_BASE_URL + /api/billing/momo/callback
+# ---------- MTN MoMo (BeSoft Pay - LIVE) ----------
+# Real integration with BeSoft merchant API.
+# Docs: https://payment.besoft.info/docs  |  https://payment.besoft.info/api/v1/openapi.yaml
+# All debit amounts settle to BESOFT_PAYOUT_MSISDN configured on the merchant profile.
 class MoMoInitiateIn(BaseModel):
     plan: Literal["basic_monthly", "basic_yearly", "premium_monthly", "premium_yearly"]
-    phone: str  # payer MSISDN in E.164 e.g. +250788xxxxxx
+    phone: str  # payer MSISDN, may include + or country code
+
+
+def _besoft_headers():
+    if not BESOFT_API_KEY or not BESOFT_API_SECRET:
+        raise HTTPException(500, "BeSoft credentials not configured on server")
+    return {
+        "X-API-Key": BESOFT_API_KEY,
+        "X-API-Secret": BESOFT_API_SECRET,
+        "Content-Type": "application/json",
+    }
+
+
+def _normalize_msisdn(phone: str) -> str:
+    """Strip +, spaces. Ensure starts with a country code. Assume 250 (Rwanda) if 9 digits (e.g. 78xxxxxxx)."""
+    digits = "".join(ch for ch in phone if ch.isdigit())
+    if len(digits) == 9 and digits.startswith(("7", "0")):
+        digits = "250" + digits.lstrip("0")
+    return digits
 
 
 @api.post("/billing/momo/initiate")
@@ -321,9 +348,27 @@ async def momo_initiate(body: MoMoInitiateIn, user = Depends(get_current_user)):
     plan = PLAN_CATALOG.get(body.plan)
     if not plan:
         raise HTTPException(400, "Invalid plan")
-    reference = str(uuid.uuid4())
+    payer = _normalize_msisdn(body.phone)
+    if len(payer) < 10:
+        raise HTTPException(400, "Invalid payer phone number")
+
+    reference = f"bbfm-{uuid.uuid4().hex[:16]}"
+    payload = {
+        "idempotency_key": reference,
+        "debit": {
+            "amount": float(plan["amount"]),
+            "currency": plan["currency"],  # RWF
+            "payment_method": "mtn_momo_collection",
+            "payer_identifier": payer,
+            "description": f"BB FM Kigali — {plan['label']}",
+            "idempotency_key": reference + "-d",
+            "country": "RW",
+            "metadata": {"userId": user["id"], "plan": body.plan},
+        },
+    }
+
     now = datetime.now(timezone.utc)
-    payment = {
+    payment_doc = {
         "id": reference,
         "reference": reference,
         "userId": user["id"],
@@ -332,53 +377,94 @@ async def momo_initiate(body: MoMoInitiateIn, user = Depends(get_current_user)):
         "amount": plan["amount"],
         "currency": plan["currency"],
         "method": "mtn_momo",
-        "phone": body.phone,
+        "phone": payer,
         "status": "pending",
         "createdAt": now.isoformat(),
     }
-    await db.payments.insert_one(payment.copy())
-    # In production: call MTN MoMo RequestToPay API here with:
-    #   X-Reference-Id: reference
-    #   X-Callback-Url: PUBLIC_BASE_URL + /api/billing/momo/callback
-    #   body { amount, currency: "RWF", externalId, payer:{partyIdType:"MSISDN", partyId: body.phone}, payerMessage, payeeNote }
+    await db.payments.insert_one(payment_doc.copy())
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0, verify=BESOFT_VERIFY_SSL) as c:
+            r = await c.post(f"{BESOFT_BASE_URL}/public/payments/transfer", headers=_besoft_headers(), json=payload)
+    except httpx.RequestError as e:
+        await db.payments.update_one({"reference": reference}, {"$set": {"status": "failed", "error": f"network: {e}"}})
+        raise HTTPException(502, f"Unable to reach payment provider: {e}")
+
+    if r.status_code >= 300:
+        logger.error("BeSoft transfer failed %s %s", r.status_code, r.text)
+        await db.payments.update_one({"reference": reference}, {"$set": {"status": "failed", "error": r.text[:500]}})
+        raise HTTPException(502, f"MoMo provider rejected the request: {r.text[:200]}")
+
+    data = r.json().get("data") or {}
+    debit = (data.get("debit") or {}) if isinstance(data, dict) else {}
+    besoft_tx_id = debit.get("id") or data.get("id")
+    besoft_status = (debit.get("status") or data.get("status") or "pending").lower()
+
+    await db.payments.update_one(
+        {"reference": reference},
+        {"$set": {"besoftTxId": besoft_tx_id, "besoftPayload": data, "status": besoft_status if besoft_status in ("pending", "processing", "success", "failed") else "pending"}},
+    )
+
     return {
         "reference": reference,
-        "status": "pending",
+        "besoftTxId": besoft_tx_id,
+        "status": besoft_status,
         "message": "Approve the payment on your phone. We'll notify you when it completes.",
-        "callbackUrl": f"{PUBLIC_BASE_URL}/api/billing/momo/callback",
+        "amount": plan["amount"],
+        "currency": plan["currency"],
         "pollUrl": f"{PUBLIC_BASE_URL}/api/billing/momo/{reference}",
     }
 
 
 @api.post("/billing/momo/callback")
-async def momo_callback(payload: dict):
-    """Public webhook that MTN MoMo POSTs when the payer's transaction status changes.
-    Whitelist this URL in your MoMo API sandbox/production dashboard as callbackHost."""
-    logger.info("MoMo callback received: %s", payload)
-    reference = payload.get("referenceId") or payload.get("externalId") or payload.get("reference")
-    status_raw = (payload.get("status") or "").upper()
-    if not reference:
-        return {"ok": False, "error": "missing_reference"}
-    payment = await db.payments.find_one({"reference": reference}, {"_id": 0})
+async def momo_callback(request: Request):
+    """Webhook receiver for BeSoft Pay. Configure this URL as your merchant webhook_url on BeSoft."""
+    try:
+        payload = await request.json()
+    except Exception:
+        return {"ok": False, "error": "invalid_json"}
+    logger.info("BeSoft webhook: %s", payload)
+    # Payload may contain: { transaction_id, external_id, status, transaction_type, amount, currency, provider_ref, ... }
+    tx = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    besoft_tx_id = tx.get("id") or tx.get("transaction_id")
+    external_id = tx.get("external_id") or tx.get("idempotency_key")
+    raw_status = (tx.get("status") or "").lower()
+    tx_type = (tx.get("transaction_type") or "debit").lower()
+
+    query = {}
+    if external_id:
+        # our reference == idempotency_key (before -d suffix) or reference itself
+        base_ref = external_id.split("-d")[0] if external_id.endswith("-d") else external_id
+        query = {"reference": base_ref}
+    elif besoft_tx_id:
+        query = {"besoftTxId": besoft_tx_id}
+    if not query:
+        return {"ok": False, "error": "no_match_key"}
+
+    payment = await db.payments.find_one(query, {"_id": 0})
     if not payment:
-        return {"ok": False, "error": "unknown_reference"}
-    final_status = "success" if status_raw in ("SUCCESSFUL", "SUCCESS", "COMPLETED") else \
-                   "failed"  if status_raw in ("FAILED", "REJECTED", "CANCELLED", "EXPIRED") else \
-                   "pending"
-    await db.payments.update_one({"reference": reference}, {"$set": {
+        return {"ok": True, "note": "no matching payment"}
+
+    final_status = "success" if raw_status in ("success", "completed") else \
+                   "failed"  if raw_status in ("failed", "reversed", "expired", "cancelled") else \
+                   "processing" if raw_status == "processing" else "pending"
+
+    await db.payments.update_one({"reference": payment["reference"]}, {"$set": {
         "status": final_status,
-        "providerPayload": payload,
+        "besoftCallback": payload,
         "updatedAt": datetime.now(timezone.utc).isoformat(),
     }})
-    if final_status == "success":
-        plan = PLAN_CATALOG.get(payment["plan"])
-        if plan:
-            expires = datetime.now(timezone.utc) + timedelta(days=plan["days"])
+
+    # Upgrade tier only when the DEBIT leg reaches success (money left the payer)
+    if final_status == "success" and tx_type in ("debit", ""):
+        p = PLAN_CATALOG.get(payment["plan"])
+        if p:
+            expires = datetime.now(timezone.utc) + timedelta(days=p["days"])
             await db.users.update_one(
                 {"id": payment["userId"]},
-                {"$set": {"tier": plan["tier"], "subscriptionExpiresAt": expires.isoformat(), "currentPlan": payment["plan"]}},
+                {"$set": {"tier": p["tier"], "subscriptionExpiresAt": expires.isoformat(), "currentPlan": payment["plan"]}},
             )
-    return {"ok": True, "status": final_status, "reference": reference}
+    return {"ok": True, "status": final_status, "reference": payment["reference"]}
 
 
 @api.get("/billing/momo/{reference}")
@@ -386,7 +472,31 @@ async def momo_status(reference: str, user = Depends(get_current_user)):
     p = await db.payments.find_one({"reference": reference, "userId": user["id"]}, {"_id": 0})
     if not p:
         raise HTTPException(404, "Payment not found")
-    return {"reference": reference, "status": p["status"], "amount": p["amount"], "currency": p["currency"]}
+
+    # If still pending/processing and we have a BeSoft tx id, poll BeSoft for fresh status
+    if p.get("status") in ("pending", "processing") and p.get("besoftTxId"):
+        try:
+            async with httpx.AsyncClient(timeout=15.0, verify=BESOFT_VERIFY_SSL) as c:
+                r = await c.get(f"{BESOFT_BASE_URL}/public/payments/{p['besoftTxId']}/status", headers=_besoft_headers())
+            if r.status_code == 200:
+                data = (r.json().get("data") or {}) if isinstance(r.json(), dict) else {}
+                raw_status = (data.get("status") or "").lower()
+                new_status = "success" if raw_status in ("success", "completed") else \
+                             "failed"  if raw_status in ("failed", "reversed", "expired", "cancelled") else \
+                             "processing" if raw_status == "processing" else "pending"
+                if new_status != p["status"]:
+                    await db.payments.update_one({"reference": reference}, {"$set": {"status": new_status, "besoftStatusPayload": data, "updatedAt": datetime.now(timezone.utc).isoformat()}})
+                    p["status"] = new_status
+                    # Upgrade tier on success
+                    if new_status == "success":
+                        plan = PLAN_CATALOG.get(p["plan"])
+                        if plan:
+                            expires = datetime.now(timezone.utc) + timedelta(days=plan["days"])
+                            await db.users.update_one({"id": user["id"]}, {"$set": {"tier": plan["tier"], "subscriptionExpiresAt": expires.isoformat(), "currentPlan": p["plan"]}})
+        except httpx.RequestError as e:
+            logger.warning("BeSoft status poll failed: %s", e)
+
+    return {"reference": reference, "status": p["status"], "amount": p["amount"], "currency": p["currency"], "besoftTxId": p.get("besoftTxId")}
 
 
 # ---------- PayPal (real live-mode) ----------
