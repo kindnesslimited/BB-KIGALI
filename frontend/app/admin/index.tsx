@@ -8,9 +8,11 @@ import { useAuth } from "@/src/context/auth";
 const CARDS: { key: string; label: string; sub: string; icon: any; route: any }[] = [
   { key: "settings", label: "Live URLs & Branding", sub: "Radio stream, live YouTube URL, station name",
     icon: "settings-outline", route: "/admin/settings" },
+  { key: "payments", label: "Payments & Revenue", sub: "All Stripe, PayPal, MoMo transactions + revenue totals",
+    icon: "cash-outline", route: "/admin/payments" },
   { key: "users", label: "Users & Admins", sub: "Grant admin access, invite new admins by phone",
     icon: "people-outline", route: "/admin/users" },
-  { key: "sms", label: "SMS Providers", sub: "Route Mobile, Twilio, Africa's Talking, WhatsApp — auto-fallback",
+  { key: "sms", label: "SMS Providers", sub: "Route Mobile + WhatsApp — auto-fallback + analytics",
     icon: "chatbubbles-outline", route: "/admin/sms" },
   { key: "categories", label: "Categories", sub: "Add unlimited show categories (News, Sports, Music…)",
     icon: "pricetags-outline", route: "/admin/categories" },

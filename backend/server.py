@@ -1672,6 +1672,116 @@ async def admin_delete_user(user_id: str, current = Depends(require_admin)):
     return {"ok": True}
 
 
+# ---------- Admin: Payments History + Revenue Dashboard ----------
+@api.get("/admin/payments")
+async def admin_payments_list(
+    method: Optional[str] = None,
+    status: Optional[str] = None,
+    days: int = 90,
+    limit: int = 100,
+    _ = Depends(require_admin),
+):
+    """List recent payments with optional filters. Joins user phone/email."""
+    if limit < 1: limit = 1
+    if limit > 500: limit = 500
+    if days < 1: days = 1
+    if days > 365: days = 365
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    q: dict = {"createdAt": {"$gte": cutoff}}
+    if method:
+        q["method"] = method
+    if status:
+        q["status"] = status
+    docs = await db.payments.find(q, {"_id": 0}).sort("createdAt", -1).limit(limit).to_list(limit)
+    # Enrich with user info
+    user_ids = {d.get("userId") for d in docs if d.get("userId")}
+    users_map: dict = {}
+    if user_ids:
+        u_docs = await db.users.find({"id": {"$in": list(user_ids)}}, {"_id": 0, "id": 1, "phone": 1, "email": 1, "displayName": 1}).to_list(500)
+        users_map = {u["id"]: u for u in u_docs}
+    out = []
+    for d in docs:
+        u = users_map.get(d.get("userId"), {}) if d.get("userId") else {}
+        out.append({
+            **d,
+            "userPhone": u.get("phone"),
+            "userEmail": u.get("email"),
+            "userName": u.get("displayName"),
+        })
+    return out
+
+
+@api.get("/admin/payments/summary")
+async def admin_payments_summary(days: int = 30, _ = Depends(require_admin)):
+    """Revenue totals + counts, broken down by method/currency/status."""
+    if days < 1: days = 1
+    if days > 365: days = 365
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+    # By method + currency + status (only sum successful for revenue)
+    pipeline = [
+        {"$match": {"createdAt": {"$gte": cutoff}}},
+        {"$group": {
+            "_id": {"method": "$method", "currency": "$currency", "status": "$status"},
+            "count": {"$sum": 1},
+            "amount": {"$sum": {"$cond": [{"$eq": ["$status", "success"]}, {"$ifNull": ["$amount", 0]}, 0]}},
+        }},
+    ]
+    rows = await db.payments.aggregate(pipeline).to_list(200)
+
+    # Aggregate by method
+    by_method: dict = {}
+    by_currency: dict = {}
+    totals = {"success": 0, "pending": 0, "failed": 0, "count": 0}
+    for r in rows:
+        k = r["_id"]
+        method = k.get("method") or "unknown"
+        currency = (k.get("currency") or "").upper()
+        status = k.get("status") or "unknown"
+        count = r.get("count", 0)
+        amount = float(r.get("amount", 0) or 0)
+        totals["count"] += count
+        if status in totals: totals[status] += count
+        m = by_method.setdefault(method, {"count": 0, "byCurrency": {}})
+        m["count"] += count
+        if status == "success":
+            m["byCurrency"].setdefault(currency, 0)
+            m["byCurrency"][currency] += amount
+            by_currency.setdefault(currency, 0)
+            by_currency[currency] += amount
+
+    # By-day series
+    by_day_raw = await db.payments.aggregate([
+        {"$match": {"createdAt": {"$gte": cutoff}, "status": "success"}},
+        {"$group": {
+            "_id": {"day": {"$substr": ["$createdAt", 0, 10]}, "currency": "$currency"},
+            "amount": {"$sum": {"$ifNull": ["$amount", 0]}},
+            "count": {"$sum": 1},
+        }},
+        {"$sort": {"_id.day": 1}},
+    ]).to_list(2000)
+
+    day_map: dict = {}
+    for r in by_day_raw:
+        day = r["_id"]["day"]
+        cur = (r["_id"].get("currency") or "").upper()
+        d = day_map.setdefault(day, {"day": day, "count": 0, "byCurrency": {}})
+        d["count"] += r.get("count", 0)
+        d["byCurrency"][cur] = d["byCurrency"].get(cur, 0) + float(r.get("amount", 0) or 0)
+    by_day = sorted(day_map.values(), key=lambda x: x["day"])
+
+    return {
+        "windowDays": days,
+        "totals": totals,
+        "byMethod": [
+            {"method": m, "count": v["count"], "revenue": v["byCurrency"]}
+            for m, v in sorted(by_method.items(), key=lambda kv: -kv[1]["count"])
+        ],
+        "totalRevenue": by_currency,   # {"EUR": 42.0, "RWF": 12000, ...}
+        "byDay": by_day,
+    }
+
+
 # ---------- Admin SMS providers ----------
 @api.get("/admin/sms/providers")
 async def admin_sms_providers(_ = Depends(require_admin)):

@@ -102,10 +102,10 @@
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
 
-user_problem_statement: "Wire the WhatsApp API (whatsapp.nostress.vip/api_com.php) with the user-provided token 18237d895903355010bb85cc3dc46a46fb31110 so OTP can deliver via WhatsApp. Add Stripe webhook secret whsec_OwJWz4MgxKAogBu7TYrZOt1Qw7pSQTKn to secure webhook signature verification. Build a Provider Analytics dashboard that shows attempt/delivered counts + success rate per SMS provider over the last 7 days. USER-REPORTED BUG: 'Check if OTP can deliver via WhatsApp'."
+user_problem_statement: "1) Wire the new WhatsApp token f8237d8959e03355010bb85cc3dc46a46fb31110 and verify OTPs deliver. 2) Simplify SMS provider chain to only route_mobile + whatsapp (remove Twilio + Africa's Talking references). 3) Build a Payment History Dashboard admin screen showing all Stripe/PayPal/MoMo transactions + revenue totals per method + status breakdown."
 
 backend:
-  - task: "WhatsApp OTP wiring (nostress.vip api_com.php)"
+  - task: "Admin Payment History + Revenue endpoints"
     implemented: true
     working: true
     file: "/app/backend/server.py"
@@ -115,8 +115,8 @@ backend:
     status_history:
       - working: true
         agent: "main"
-        comment: "Rewrote _sms_whatsapp per the actual nostress.vip API docs (crawled from whatsapp.nostress.vip/api/). Correct format is POST to https://whatsapp.nostress.vip/api_com.php with JSON {action:'send',auth:<token>,tel:<phone-no-plus>,msg:<text>}. Success indicator is code=='110' or status contains 'accepted'. Parses JSON response; treats code=='101' invalid token, code=='102' invalid phone, etc. Curl-verified: our request now reaches the API correctly and returns {code:'101', status:'Error: invalid token'} — the token in .env is being REJECTED by the WhatsApp gateway. Code is correct; user must verify their token."
-  - task: "Stripe webhook signing secret"
+        comment: "Added GET /api/admin/payments (list, filters: method, status, days, limit) — joins user phone/email. GET /api/admin/payments/summary?days=N returns {totals: {success, pending, failed, count}, byMethod: [{method, count, revenue by currency}], totalRevenue: {EUR, RWF, ...}, byDay}. Curl-verified: 30-day summary shows 6 success / 42 pending / 29 failed across stripe/mtn_momo/paypal with EUR 1 + RWF 13,000 revenue."
+  - task: "WhatsApp token + simplified SMS chain"
     implemented: true
     working: true
     file: "/app/backend/.env"
@@ -126,50 +126,38 @@ backend:
     status_history:
       - working: true
         agent: "main"
-        comment: "Set STRIPE_WEBHOOK_SECRET='whsec_OwJWz4MgxKAogBu7TYrZOt1Qw7pSQTKn' (the production BB KIGALI endpoint secret). Existing webhook handler /api/billing/stripe/webhook already uses stripe.Webhook.construct_event with this secret; unsigned events now rejected in prod."
-  - task: "SMS provider analytics"
-    implemented: true
-    working: true
-    file: "/app/backend/server.py"
-    stuck_count: 0
-    priority: "high"
-    needs_retesting: true
-    status_history:
-      - working: true
-        agent: "main"
-        comment: "Added db.sms_deliveries collection — every provider attempt is now recorded with {provider, success, skipped, response, weekKey, createdAt}. GET /api/admin/sms/analytics?days=7 returns {windowDays, totals, providers[], byDay[]} with success rate per provider. Includes zero-data providers so UI always shows all 4. Curl-verified with real test SMS run that recorded 4 rows (2 attempts + 2 skipped)."
+        comment: "Updated WHATSAPP_API_TOKEN to new value 'f8237d8959e03355010bb85cc3dc46a46fb31110'. Set SMS_PROVIDER_ORDER='route_mobile,whatsapp' (removed africas_talking + twilio per user request). Direct API test with curl confirmed WhatsApp accepts the token: {code:'110', status:'request accepted', output:'Message sent'} — REAL WHATSAPP DELIVERY IS NOW WORKING."
 
 frontend:
-  - task: "SMS Providers screen: Analytics dashboard"
+  - task: "Admin Payments dashboard screen"
     implemented: true
     working: "NA"
-    file: "/app/frontend/app/admin/sms.tsx"
+    file: "/app/frontend/app/admin/payments.tsx"
     stuck_count: 0
     priority: "high"
     needs_retesting: true
     status_history:
       - working: "NA"
         agent: "main"
-        comment: "Added Analytics card at top of screen (only visible when attempts>0): 3-stat grid (Delivered, Attempts, Success rate %) + horizontal bar chart per provider showing delivered/attempts ratio. Fetched in parallel with providers list."
+        comment: "New screen at /admin/payments. Time-window segment (7D/30D/90D), revenue cards per currency, status pills (success/pending/failed counts), 'By Method' breakdown card (PayPal/Stripe/MoMo icons with amounts per currency), transaction list with status filter chips (all/success/pending/failed). Card added to admin home at position 2 (right after Live URLs). Route registered in root layout. Pull-to-refresh + top-right refresh button."
 
 metadata:
   created_by: "main_agent"
   version: "1.0"
-  test_sequence: 9
+  test_sequence: 10
   run_ui: true
 
 test_plan:
   current_focus:
-    - "WhatsApp OTP wiring (nostress.vip api_com.php)"
-    - "Stripe webhook signing secret"
-    - "SMS provider analytics"
-    - "SMS Providers screen: Analytics dashboard"
+    - "Admin Payment History + Revenue endpoints"
+    - "WhatsApp token + simplified SMS chain"
+    - "Admin Payments dashboard screen"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
   - agent: "main"
-    message: "USER-REPORTED BUG: 'check if OTP can deliver via WhatsApp'. I have wired WhatsApp per the nostress.vip API docs. Curl test confirms the request format is correct — but their API returned {code:'101', status:'Error: invalid token'} for the token the user provided. So: (1) validate the WhatsApp integration CODE is correct (the request body must be {action:'send', auth:<token>, tel:<phone-no-+>, msg:<text>} POSTed as JSON to https://whatsapp.nostress.vip/api_com.php); (2) confirm the token is being sent as-is from .env; (3) confirm the failure path is being recorded in sms_deliveries collection; (4) confirm analytics endpoint returns provider-level counts; (5) frontend: SMS Providers screen shows the analytics card when there's data. Please do NOT test actual delivery to a WhatsApp number — token is confirmed rejected by the gateway. Admin phone +250798875272, OTP in testCode field."
+    message: "Verify: (1) GET /api/admin/payments/summary?days=30 returns totalRevenue map + byMethod array + byDay array. (2) GET /api/admin/payments?days=30&limit=5 returns enriched Payment[] with userPhone/userEmail. (3) Filter by ?method=stripe and ?status=success work. (4) Non-admin auth → 403; no auth → 401. (5) WhatsApp OTP now REALLY delivers — POST /api/auth/otp/start with a random Rwandan phone (NOT admin) should return {ok:true, smsSent:true, provider:'whatsapp' or 'route_mobile'} — verify against sms_deliveries collection there's a new row with success=true. Do NOT test with real user phone — a mock phone like +250799000123 is fine, but expect the message to be sent to that number. (6) Frontend: admin can navigate to Admin Console → 'Payments & Revenue' card (position 2), see 3 window options (7D/30D/90D), revenue cards, status pills, method breakdown, tx list with filter chips. Admin phone +250798875272, OTP in testCode field."
 
 

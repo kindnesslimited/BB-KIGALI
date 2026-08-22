@@ -1,0 +1,34 @@
+{
+  "summary": "Payment History Dashboard + WhatsApp OTP delivery verified end-to-end. Backend: 19/19 pytest cases pass — /api/admin/payments and /api/admin/payments/summary return correct shape, filters (method/status/combined) work, days=1/30/90/365 all clamped correctly, list is sorted desc by createdAt and enriched with userPhone/userEmail/userName. Auth boundary: unauthenticated → 401, non-admin user → 403. WhatsApp: rotated token f8237d8959e03355010bb85cc3dc46a46fb31110 is ACCEPTED by nostress.vip — direct curl returns {code:110, status:'request accepted', output:'Message sent'}. Non-admin OTP flow now actually delivers via WhatsApp — response {smsSent:true, provider:'whatsapp'} and db.sms_deliveries records whatsapp:success=true code=110 for every attempt. SMS_PROVIDER_ORDER correctly reduced to [route_mobile, whatsapp]. Frontend: full admin login → /admin → 'Payments & Revenue' card visible at position 2 (right after 'Live URLs & Branding'), icon cash-outline. Screen loads without error — 7D/30D/90D segment works, tapping 90D reloads data, both RWF & EUR revenue cards render, status pills show 6 success / 42 pending / 29 failed with correct green/yellow/red colors, BY METHOD lists Card/MTN MoMo/PayPal with counts, TRANSACTIONS list shows rows with method icon, plan label, user phone, timestamp, amount and status badge. Filter chips ALL/SUCCESS/PENDING/FAILED all filter the list correctly (SUCCESS → 6, FAILED → 29). Top-right refresh button works. No React Native / Expo deprecation issues found in payments.tsx.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_payments_and_whatsapp.py (NEW — 19 tests, all pass)",
+    "/app/test_reports/pytest/pytest_iter10.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py:1676-1782 admin_payments_list + admin_payments_summary: cleanly clamps days 1..365 and limit 1..500, uses aggregation for by-method+status and by-day series, filters _id from mongo docs, enriches with user info via a single $in query. LGTM.",
+    "server.py:319-362 _sms_whatsapp: correctly strips '+' from tel, parses code=='110' as success; nostress.vip token now returns 110 as expected — WhatsApp delivery works end-to-end.",
+    "server.py:373-411 _send_sms: chains route_mobile → whatsapp, records EVERY attempt (success/fail/skipped) in db.sms_deliveries — real-time analytics stays accurate.",
+    "frontend/app/admin/payments.tsx: proper testIDs everywhere (admin-payments, window-{7|30|90}, filter-{all|success|pending|failed}, payments-refresh, payments-back, tx-{id}). Refresh runs on window change. Empty states handled (no revenue / no txs). Method meta covers paypal/stripe/mtn_momo/airtel with themed icons + colors. useMemo for filtered list — no unnecessary re-renders.",
+    "frontend/app/admin/index.tsx: 'Payments & Revenue' card slotted at index 1 (position 2), route /admin/payments correctly registered in _layout.tsx."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_payments_and_whatsapp.py (created)"
+  ],
+  "success_rate": {"backend": "100% (19/19)", "frontend": "100% (all UI checks passed)"},
+  "seed_data_creation": "Test run inserted a couple of extra OTP challenge docs (throwaway phones like +250788XXXXXX) and 3-4 sms_deliveries records via the non-admin OTP path — harmless; analytics only looks at last N days and old rows can be cleared with `db.sms_deliveries.deleteMany({createdAt:{$lt: <cutoff>}})` if desired.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run backend tests with `python -m pytest backend/tests/test_payments_and_whatsapp.py -v -o addopts=''`. IMPORTANT: /api/auth/otp/verify returns the token under key `accessToken` (NOT `token`). Non-admin OTP now delivers via WhatsApp successfully, so /api/auth/otp/start no longer returns `testCode` for random phones — the user_token fixture bypasses this by inserting an OTP challenge directly into mongo. Frontend storage util JSON.stringifies values, so to set the token via localStorage for E2E tests use: `localStorage.setItem('bbfm.token', JSON.stringify(rawJwt))`.",
+  "rca_of_issue": "N/A — feature was newly implemented and works correctly. The previous iteration's WhatsApp code=101 (invalid token) issue is RESOLVED by the rotated token f8237d8959e03355010bb85cc3dc46a46fb31110. Confirmed by (1) direct curl to nostress.vip returning code=110, and (2) end-to-end OTP flow where /api/auth/otp/start with a non-admin phone returned {smsSent:true, provider:'whatsapp'} and db.sms_deliveries recorded {provider:'whatsapp', success:true, response:'code=110 request accepted'}. Route Mobile still fails first (1703 = auth-related error, needs IP whitelist) but WhatsApp catches the fallback perfectly."
+}
