@@ -8,6 +8,7 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { StatusBar } from "expo-status-bar";
 
 import { useIconFonts } from "@/src/hooks/use-icon-fonts";
+import { useGlobalScreenCaptureBlock } from "@/src/hooks/use-screen-capture-guard";
 import { AuthProvider, useAuth } from "@/src/context/auth";
 import { PlayerProvider } from "@/src/context/player";
 import { colors } from "@/src/theme";
@@ -35,6 +36,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 }
 
 export default function RootLayout() {
+  useGlobalScreenCaptureBlock();
   const [iconsLoaded, iconsError] = useIconFonts();
   const [fontsLoaded, fontsError] = useFonts({
     "BarlowCondensed-Bold": "https://cdn.jsdelivr.net/npm/@fontsource/barlow-condensed@5.0.13/files/barlow-condensed-latin-700-normal.woff",

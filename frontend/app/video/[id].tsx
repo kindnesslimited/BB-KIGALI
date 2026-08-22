@@ -9,6 +9,7 @@ import { api } from "@/src/api";
 import { Image } from "expo-image";
 import { useAuth } from "@/src/context/auth";
 import * as Haptics from "expo-haptics";
+import { useScreenshotDetected } from "@/src/hooks/use-screen-capture-guard";
 
 type Show = {
   id: string; title: string; category: string; description: string; thumbnail: string;
@@ -21,6 +22,16 @@ export default function VideoPlayerScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { user } = useAuth();
+  const screenshotCount = useScreenshotDetected();
+  const [showWarning, setShowWarning] = useState(false);
+
+  useEffect(() => {
+    if (screenshotCount === 0) return;
+    setShowWarning(true);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+    const t = setTimeout(() => setShowWarning(false), 4000);
+    return () => clearTimeout(t);
+  }, [screenshotCount]);
   const [show, setShow] = useState<Show | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -146,6 +157,13 @@ export default function VideoPlayerScreen() {
       </View>
 
       <View style={styles.player}>
+        {showWarning && (
+          <View style={styles.recordingOverlay} testID="recording-warning">
+            <Ionicons name="warning" size={44} color="#fff" />
+            <Text style={styles.recordingTitle}>SCREENSHOT DETECTED</Text>
+            <Text style={styles.recordingSub}>Please respect our creators — don&apos;t share protected content. Screen recordings are also detected.</Text>
+          </View>
+        )}
         {show.locked ? (
           <View style={styles.lockedBox} testID="locked-box">
             <Image source={{ uri: show.thumbnail }} style={StyleSheet.absoluteFill} contentFit="cover" blurRadius={12} />
@@ -250,6 +268,18 @@ const styles = StyleSheet.create({
   topBar: { flexDirection: "row", alignItems: "center", paddingHorizontal: spacing.lg, gap: spacing.md, paddingBottom: spacing.sm, backgroundColor: colors.surface },
   topTitle: { ...type.h2, flex: 1, textAlign: "center", fontSize: 15 },
   player: { aspectRatio: 16 / 9, backgroundColor: "#000" },
+  recordingOverlay: {
+    position: "absolute",
+    left: 0, right: 0, top: 0, bottom: 0,
+    zIndex: 20,
+    backgroundColor: "rgba(15,15,19,0.95)",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.sm,
+    paddingHorizontal: spacing.lg,
+  },
+  recordingTitle: { ...type.h1, color: "#fff", letterSpacing: 1, textAlign: "center", fontSize: 18 },
+  recordingSub: { ...type.bodyMuted, color: "rgba(255,255,255,0.7)", textAlign: "center", fontSize: 13, lineHeight: 18 },
   lockedBox: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.surfaceSecondary, overflow: "hidden" },
   lockedInner: { alignItems: "center", padding: spacing.xl, gap: spacing.sm, backgroundColor: "rgba(15,15,19,0.78)", borderRadius: radius.md, maxWidth: "94%" },
   lockedTitle: { ...type.h1, color: colors.brandPrimary, letterSpacing: 1, marginTop: spacing.sm },

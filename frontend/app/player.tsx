@@ -5,13 +5,24 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
+import { useEffect, useState } from "react";
 import { colors, spacing, type, radius } from "@/src/theme";
 import { usePlayer } from "@/src/context/player";
+import { useScreenshotDetected } from "@/src/hooks/use-screen-capture-guard";
 
 export default function PlayerScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { nowPlaying, isPlaying, toggle } = usePlayer();
+  const screenshotCount = useScreenshotDetected();
+  const [showWarning, setShowWarning] = useState(false);
+
+  useEffect(() => {
+    if (screenshotCount === 0) return;
+    setShowWarning(true);
+    const t = setTimeout(() => setShowWarning(false), 4000);
+    return () => clearTimeout(t);
+  }, [screenshotCount]);
 
   if (!nowPlaying) return <View style={styles.container} />;
 
@@ -32,6 +43,13 @@ export default function PlayerScreen() {
 
       {/* Video area */}
       <View style={styles.videoWrap}>
+        {showWarning && (
+          <View style={styles.recOverlay} testID="recording-warning">
+            <Ionicons name="warning" size={40} color="#fff" />
+            <Text style={styles.recTitle}>SCREENSHOT DETECTED</Text>
+            <Text style={styles.recSub}>Please respect our content.</Text>
+          </View>
+        )}
         {isPlaying && embedUrl ? (
           Platform.OS === "web" ? (
             <iframe
@@ -92,6 +110,9 @@ const styles = StyleSheet.create({
   dot: { width: 6, height: 6, borderRadius: 3, backgroundColor: "#fff" },
   liveText: { color: colors.onBrandPrimary, fontFamily: "BarlowCondensed-Bold", fontSize: 11, letterSpacing: 1.5 },
   videoWrap: { aspectRatio: 16 / 9, backgroundColor: "#000", marginHorizontal: spacing.md, borderRadius: radius.md, overflow: "hidden" },
+  recOverlay: { position: "absolute", left: 0, right: 0, top: 0, bottom: 0, zIndex: 20, backgroundColor: "rgba(15,15,19,0.95)", alignItems: "center", justifyContent: "center", gap: spacing.sm, paddingHorizontal: spacing.lg },
+  recTitle: { ...type.h1, color: "#fff", letterSpacing: 1, textAlign: "center", fontSize: 16 },
+  recSub: { ...type.bodyMuted, color: "rgba(255,255,255,0.7)", textAlign: "center", fontSize: 12 },
   poster: { flex: 1, alignItems: "center", justifyContent: "center", gap: spacing.md },
   playCircle: { width: 80, height: 80, borderRadius: 40, backgroundColor: colors.brandPrimary, alignItems: "center", justifyContent: "center" },
   tapHint: { color: "#fff", fontFamily: "BarlowCondensed-Bold", fontSize: 14, letterSpacing: 1.5 },
