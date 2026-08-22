@@ -40,7 +40,8 @@ export default function VideoPlayerScreen() {
   const [orderId, setOrderId] = useState<string | null>(null);
   const [stripeSessionId, setStripeSessionId] = useState<string | null>(null);
   const [buying, setBuying] = useState(false);
-  const [momoPhone, setMomoPhone] = useState<string>(user?.phone || "+250");
+  // Blank prefix so admins never accidentally pay themselves — customer must enter their own MoMo.
+  const [momoPhone, setMomoPhone] = useState<string>("+250 ");
   const [showMomo, setShowMomo] = useState(false);
   const [momoStatus, setMomoStatus] = useState<string | null>(null);
   const [suggestStripe, setSuggestStripe] = useState(false);
@@ -48,6 +49,7 @@ export default function VideoPlayerScreen() {
 
   const loadShow = async () => {
     try {
+      // `auth: true` sends the token if we have one, but the backend accepts guest requests too now.
       const s = await api<Show>(`/shows/${id}`, { auth: true });
       setShow(s);
     } catch (e: any) { setErr(e.message); }
@@ -56,6 +58,7 @@ export default function VideoPlayerScreen() {
   useEffect(() => { void loadShow(); }, [id]);
 
   const buyVod = async () => {
+    if (!user) { router.push("/auth/phone"); return; }
     setBuying(true);
     try {
       const r = await api<{ orderId?: string; approveUrl?: string; alreadyUnlocked?: boolean }>(
@@ -69,6 +72,7 @@ export default function VideoPlayerScreen() {
   };
 
   const buyVodStripe = async () => {
+    if (!user) { router.push("/auth/phone"); return; }
     setBuying(true); setErr(null);
     try {
       const r = await api<{ sessionId: string; checkoutUrl: string }>(
@@ -108,6 +112,7 @@ export default function VideoPlayerScreen() {
   };
 
   const buyVodMomo = async () => {
+    if (!user) { router.push("/auth/phone"); return; }
     if (momoPhone.replace(/\D/g, "").length < 9) { setErr("Enter a valid MoMo phone"); return; }
     setBuying(true); setErr(null); setSuggestStripe(false);
     try {

@@ -24,10 +24,25 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (loading) return;
     const seg0 = segments[0] as string | undefined;
-    const inAuth = seg0 === "auth" || seg0 === "onboarding";
-    if (!user && !inAuth) {
-      router.replace("/onboarding");
-    } else if (user && (inAuth || !seg0)) {
+    const inAuth = seg0 === "auth";
+    const inOnboarding = seg0 === "onboarding";
+    // Screens that REQUIRE an authenticated user (paying/admin/private).
+    // Public browsing (tabs, video preview, program details, paywall CTA) is now open to guests.
+    const requiresAuth =
+      seg0 === "admin" ||
+      seg0 === "checkout" ||
+      seg0 === "player";
+
+    if (!user && requiresAuth) {
+      // Send guest through the fast phone-login flow, then bounce back.
+      router.replace("/auth/phone");
+      return;
+    }
+    if (user && (inAuth || inOnboarding)) {
+      router.replace("/(tabs)");
+    }
+    if (!user && !seg0) {
+      // Cold-start to landing tabs so listeners immediately see the content.
       router.replace("/(tabs)");
     }
   }, [user, loading, segments, router]);

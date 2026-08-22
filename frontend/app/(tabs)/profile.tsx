@@ -26,7 +26,36 @@ export default function Profile() {
     (async () => { try { setPayments(await api<Payment[]>("/billing/history", { auth: true })); } catch {} })();
   }, []);
 
-  if (!user) return null;
+  if (!user) {
+    return (
+      <ScrollView
+        style={{ flex: 1, backgroundColor: colors.surface }}
+        contentContainerStyle={{ paddingTop: insets.top + spacing.md, paddingBottom: 220, paddingHorizontal: spacing.lg }}
+        testID="profile-guest"
+      >
+        <View style={styles.header}>
+          <Text style={styles.title}>ACCOUNT</Text>
+        </View>
+        <View style={[styles.userCard, { flexDirection: "column", alignItems: "center", paddingVertical: spacing.xl, marginHorizontal: 0, gap: spacing.sm }]}>
+          <Ionicons name="person-circle-outline" size={72} color={colors.brandPrimary} />
+          <Text style={[type.h2, { marginTop: spacing.md, textAlign: "center" }]}>
+            Sign in to unlock premium content
+          </Text>
+          <Text style={[type.bodyMuted, { marginTop: spacing.sm, textAlign: "center", paddingHorizontal: spacing.md }]}>
+            Browse everything for free. Sign in only when you want to listen live, watch a show, or subscribe.
+          </Text>
+          <Pressable
+            onPress={() => router.push("/auth/phone")}
+            style={[styles.signOutBtn, { backgroundColor: colors.brandPrimary, marginTop: spacing.lg, paddingHorizontal: spacing.xl }]}
+            testID="profile-guest-signin"
+          >
+            <Ionicons name="log-in-outline" size={18} color={colors.onBrandPrimary} />
+            <Text style={[styles.signOutText, { color: colors.onBrandPrimary }]}>SIGN IN WITH PHONE</Text>
+          </Pressable>
+        </View>
+      </ScrollView>
+    );
+  }
   const tier = TIER_META[user.tier] || TIER_META.free;
   const exp = user.subscriptionExpiresAt ? new Date(user.subscriptionExpiresAt) : null;
 

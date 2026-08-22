@@ -1,0 +1,39 @@
+{
+  "summary": "Verified the 'browse freely, gate on play' business rule. Backend: 10/10 pytest tests pass — all public browse endpoints (/api/shows, /api/shows/{id}, /api/categories, /api/programs, /api/news) return 200 for guests (no Authorization). /api/shows/{id} for guest returns locked:true + loginRequired:true + videoUrl:null + unlockPrice + unlockCurrency:'EUR' + unlockPriceRwf, exactly per spec. Invalid bearer also gets the guest view (get_optional_user returns None). Admin bearer on /api/shows/{id} returns locked:true (free tier) with NO loginRequired flag. Admin protection intact: /api/admin/users returns 401 without auth, 403 for non-admin, 200 for admin. Frontend: 12/13 flows pass. Guest can enter app cold-start and lands on Home tab (NOT onboarding). All 4 bottom tabs (Home, Shows, News, Profile) accessible as guest without login gating. Shows list renders 7 seeded shows with category chips. Tapping a show opens video detail with locked-box + 3 unlock buttons (buy-vod-stripe-btn/buy-vod-btn/buy-vod-momo-btn). Tapping any of the 3 buttons (PayPal, Stripe, MoMo confirm) redirects guest to /auth/phone. Home 'Watch Live' (home-play-live) redirects guest to /auth/phone. After admin login the same show still shows locked state + 3 buttons; tapping PayPal opens the real live PayPal 'PAY 1.00 EUR' WebView (no login redirect). Admin console at /admin renders all 7 dashboard cards (Live URLs & Branding, Payments & Revenue, Users & Admins, SMS Providers, Categories, Programs, VOD & Podcasts). ONLY REGRESSION FOUND: Profile tab as guest renders an empty screen (blank) instead of a 'Sign in' prompt because /app/frontend/app/(tabs)/profile.tsx line 29 short-circuits with 'if (!user) return null;'. Guest flow otherwise fully compliant with the business rule.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "(tabs)/profile.tsx", "issue": "When guest (no user) taps Profile tab, screen renders empty (blank) instead of a 'Sign in' CTA. Root cause: line 29 `if (!user) return null;`. Spec requires a Sign in prompt for guests, not a blank screen. Reference: /app/frontend/app/(tabs)/profile.tsx:29", "testID": "profile-screen", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_browse_freely_gate_on_play.py (10 tests, all pass)",
+    "/app/test_reports/pytest/pytest_iter14.xml"
+  ],
+  "action_items": [
+    "FIX profile.tsx guest state — replace `if (!user) return null;` with a full guest view: 'ACCOUNT' header + card explaining benefits + a primary 'Sign in with phone' button that pushes /auth/phone (and optionally a 'Continue with Google' shortcut). Currently guests see a blank white/dark area which looks like a broken screen.",
+    "OPTIONAL: consider adding testID='guest-signin-cta' to the new Sign in button so future tests can pin down the guest profile state.",
+    "OPTIONAL: on home-play-live tap, `void toggle();` is invoked before the AuthGate redirects to /auth/phone (index.tsx:106). For guests this may still fire the player context. Consider gating with `if (!user) { router.push('/auth/phone'); return; }` inside the onPress handler for cleaner UX and to avoid starting the audio stream for logged-out users."
+  ],
+  "critical_code_review_comments": [
+    "server.py:175-186 get_optional_user correctly swallows HTTPException and returns None for missing/invalid bearer. /shows/{id} guest branch (server.py:644-645) attaches loginRequired:true + videoUrl:null + unlockPrice/unlockCurrency:'EUR'/unlockPriceRwf — spec-compliant.",
+    "_layout.tsx AuthGate: `requiresAuth = seg0 === 'admin' || 'checkout' || 'player'`. Public routes (tabs, video/[id], program/[id], paywall, live-news, index) allow guests. Cold-start with no segment routes guests to /(tabs). Logged-in users still bounced from /auth/* and /onboarding to /(tabs). Correct.",
+    "video/[id].tsx: buyVod, buyVodStripe, buyVodMomo all short-circuit with `if (!user) { router.push('/auth/phone'); return; }` before hitting /billing/*. Confirmed live: PayPal WebView only opens for authed user; guest gets redirected. Correct.",
+    "(tabs)/profile.tsx:29 `if (!user) return null;` is the ONLY guest-facing regression — profile tab appears blank. Recommend refactor to render a Sign in CTA for guests."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_browse_freely_gate_on_play.py (new — 10 tests covering guest browse + admin bearer + admin protection)"
+  ],
+  "success_rate": {"backend": "100% (10/10)", "frontend": "92% (12/13 — profile guest state is empty instead of Sign in CTA)"},
+  "seed_data_creation": "None (used existing seeded shows/categories/programs/news + auto-created admin user via OTP verify)",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Guest-browse rule is fully wired on backend and mostly on frontend. The only remaining item is /app/frontend/app/(tabs)/profile.tsx — line 29 `if (!user) return null;` must be replaced with a guest-facing Sign in view. Storage note for future test agents: `bbfm.token` in localStorage/SecureStore is stored as JSON.stringify(token), so when injecting a JWT you MUST do `localStorage.setItem('bbfm.token', JSON.stringify(token))`, not the raw string. Otherwise the storage layer parse-fails and the auth context stays null (this caused a red herring in the first auth-flow run). Backend admin login: POST /api/auth/otp/start with '+250798875272' returns testCode:'123456' (admin fast-path), then POST /api/auth/otp/verify with that code returns accessToken.",
+  "rca_of_issue": "N/A — this is a behavior verification, not a bug fix. All spec items pass except the profile guest empty-screen described above."
+}

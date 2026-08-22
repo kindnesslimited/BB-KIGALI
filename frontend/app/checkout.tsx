@@ -23,9 +23,11 @@ export default function Checkout() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { plan, amount } = useLocalSearchParams<{ plan: string; amount: string }>();
-  const { refresh, user } = useAuth();
+  const { refresh } = useAuth();
   const [method, setMethod] = useState<Method>("paypal");
-  const [phone, setPhone] = useState(user?.phone && user.phone.startsWith("+") ? user.phone : (user?.phone ? "+" + user.phone : "+250"));
+  // NOTE: default to blank "+250 " prefix so the admin never accidentally pays THEMSELVES.
+  // The customer's MoMo number MUST be entered explicitly; the collection account cannot be debited.
+  const [phone, setPhone] = useState("+250 ");
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -327,7 +329,7 @@ export default function Checkout() {
 
         {METHODS.find((m) => m.id === method)?.needsPhone && (
           <View style={{ marginTop: spacing.lg }}>
-            <Text style={styles.sectionLabel}>MOBILE MONEY NUMBER</Text>
+            <Text style={styles.sectionLabel}>YOUR MOBILE MONEY NUMBER</Text>
             <TextInput
               testID="momo-phone-input"
               value={phone}
@@ -337,6 +339,9 @@ export default function Checkout() {
               placeholderTextColor={colors.onSurfaceSecondary}
               style={styles.momoInput}
             />
+            <Text style={styles.phoneHint}>
+              Enter the MoMo number you want to pay from. You&apos;ll receive a prompt on your phone to confirm.
+            </Text>
           </View>
         )}
 
@@ -423,6 +428,7 @@ const styles = StyleSheet.create({
   demoBox: { flexDirection: "row", alignItems: "center", gap: spacing.sm, marginTop: spacing.lg, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.md, borderWidth: 1, borderColor: colors.warning },
   demoText: { ...type.caption, flex: 1, color: colors.onSurfaceTertiary },
   err: { color: colors.error, marginTop: spacing.md, textAlign: "center" },
+  phoneHint: { ...type.caption, marginTop: 6, color: colors.onSurfaceSecondary, lineHeight: 15 },
   fallbackBanner: {
     flexDirection: "row",
     alignItems: "center",

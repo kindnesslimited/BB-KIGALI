@@ -1,0 +1,49 @@
+{
+  "summary": "Re-tested the two fixes from iteration 14. FUNCTIONAL: BOTH FIXES PASS. (1) Profile tab as guest is NO LONGER blank — [data-testid=profile-guest] renders with all required content: 'ACCOUNT' title, person-circle-outline icon, 'Sign in to unlock premium content' heading, sub-text, and the [data-testid=profile-guest-signin] 'SIGN IN WITH PHONE' button. Tapping the button navigates guest to /auth/phone. (2) home-play-live 'WATCH LIVE' hero button now correctly short-circuits for guests: no player toggle() fires, no audio starts, router pushes /auth/phone. Verified via /player URL check + /auth/phone URL check. After admin OTP login (+250798875272 → testCode 123456), the Profile tab now renders [data-testid=profile-screen] with sub-card / upgrade-btn / logout-btn visible (guest view no longer shown). Tapping WATCH LIVE from home as authed user opens /player and starts the radio stream (no auth redirect). VISUAL REGRESSION FOUND: The new guest ScrollView reuses styles.userCard as base, which has flexDirection:'row'. The inline override at profile.tsx:39 does not switch it to column, so the icon (72px), title, sub-text, and SIGN IN button lay out HORIZONTALLY inside a 358px card. Result: 'Sign in to unlock premium content' wraps into a 57px-wide vertical column, sub-text into an 89px column, and the SIGN IN WITH PHONE button is 193px wide starting at x≈340 — its label is CLIPPED to 'SIGN IN WIT…' (H PHONE is off-screen). Everything is testID-accessible so tests pass, but a real user sees a broken card. This is a small style-only fix — add flexDirection:'column' to the inline override or introduce a dedicated guestCard style. No backend testing performed this iteration (out of scope per request).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "(tabs)/profile.tsx (guest view card)",
+        "issue": "Guest card at line 39 spreads styles.userCard (flexDirection:'row') without overriding it. Icon + title + sub-text + SIGN IN button render horizontally in a 358px-wide card. 'SIGN IN WITH PHONE' label is clipped to 'SIGN IN WIT…'; heading and sub-text wrap into narrow vertical columns and become hard to read. Fix: add flexDirection:'column' (and remove alignItems:'center' from row-mode) to the inline override, or extract a dedicated guestCard style. Reference: /app/frontend/app/(tabs)/profile.tsx:39 combined with styles.userCard at :153.",
+        "testID": "profile-guest",
+        "priority": "MEDIUM"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Profile (guest state)",
+        "issues": [
+          "Guest sign-in CTA card is rendered as a horizontal row instead of a vertical stack (icon → title → subtitle → button). Button text is truncated. Fix requires adding flexDirection:'column' to the guest card override."
+        ]
+      }
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "Screenshots at /tmp/1_home_guest.png, /tmp/2_profile_guest.png (shows the layout regression), /tmp/3_auth_phone.png, /tmp/step6_auth.png, /tmp/step7_auth.png, /tmp/guest_layout.png"
+  ],
+  "action_items": [
+    "FIX guest card layout in /app/frontend/app/(tabs)/profile.tsx:39 — the inline override `[styles.userCard, { alignItems: 'center', paddingVertical: spacing.xl, marginHorizontal: 0 }]` needs `flexDirection: 'column'` added (and gap:spacing.md for spacing) so the icon, headings, and SIGN IN button stack vertically. Currently the SIGN IN WITH PHONE button label is clipped and the copy wraps into unreadable narrow columns.",
+    "OPTIONAL: consider giving the guest card its own dedicated `guestCard` style block rather than reusing `userCard` — the two views have very different content shapes (row vs column), so the base-style reuse invites regressions like this one."
+  ],
+  "critical_code_review_comments": [
+    "profile.tsx:29-58 guest branch is now correctly implemented (proper ScrollView + testIDs + navigation), fixing the previous 'return null' blank screen. Only the flex direction inheritance from styles.userCard remains to be corrected.",
+    "index.tsx:105-114 home-play-live onPress now correctly gates with `if (!user) { router.push('/auth/phone'); return; }` BEFORE calling toggle() and pushing /player. Verified: guest tap only navigates to /auth/phone; authed tap opens /player and toggles the stream. Matches spec.",
+    "storage layer note for next agent: iteration_14's hint 'store token as localStorage.setItem(bbfm.token, JSON.stringify(token))' is OUT OF DATE — @react-native-async-storage/async-storage on web now uses IndexedDB (per storage/index.web.ts), so injecting via localStorage does NOT reach AsyncStorage. Instead, login through the UI (/auth/phone flow with admin phone +250798875272 + testCode 123456) which correctly stores via storage.secureSet."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "N/A (not tested this iteration per request)",
+    "frontend": "100% functional (7/7 flows) — 1 visual layout regression on guest profile card (MEDIUM)"
+  },
+  "seed_data_creation": "None — used existing admin user (+250798875272) auto-created via OTP verify.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Both spec fixes from iter 14 work: profile guest view + home-play-live guest gate. The only follow-up is the cramped/clipped guest card layout in profile.tsx:39 — needs flexDirection:'column' override. For authenticated testing on web, do NOT try to inject tokens via localStorage — AsyncStorage on web uses IndexedDB, so injection is ineffective. Log in through the UI: goto /auth/phone → type 798875272 (country code +250 is pre-filled) → CONTINUE WITH PHONE → type 123456 into the 6 OTP inputs (auto-submits or click VERIFY & CONTINUE). Admin fast-path returns testCode '123456' for +250798875272. testIDs used: home-screen, tab-home, tab-profile, home-play-live, profile-guest, profile-guest-signin, profile-screen, sub-card, upgrade-btn, logout-btn.",
+  "rca_of_issue": "Guest card visual bug RCA: profile.tsx:39 uses `[styles.userCard, { alignItems: 'center', paddingVertical: spacing.xl, marginHorizontal: 0 }]`. The base `styles.userCard` (line 153) declares `flexDirection: 'row'` for the AUTHENTICATED avatar+name layout. When reused for the guest view, the inline override forgot to switch to `flexDirection: 'column'`. React Native still lays it out row, so icon/title/subtext/button sit side-by-side inside 358px. Reproduction: open app as guest → tap Profile tab → observe the ACCOUNT card. Expected: vertical stack with full-width button. Actual: horizontal row with clipped button label ('SIGN IN WIT...'). Mitigation: add `flexDirection: 'column'` to the inline override, or introduce a separate `guestCard` StyleSheet block."
+}

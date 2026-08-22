@@ -103,7 +103,12 @@ export default function Home() {
             <Text style={styles.heroTitle} numberOfLines={2}>{nowPlaying.showTitle.toUpperCase()}</Text>
             <Text style={styles.heroDj}>with {nowPlaying.djName}</Text>
             <Pressable
-              onPress={(e) => { e.stopPropagation(); void toggle(); router.push("/player"); }}
+              onPress={(e) => {
+                e.stopPropagation();
+                if (!user) { router.push("/auth/phone"); return; }
+                void toggle();
+                router.push("/player");
+              }}
               style={styles.heroBtn}
               testID="home-play-live"
             >

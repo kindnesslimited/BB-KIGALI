@@ -1,0 +1,41 @@
+{
+  "summary": "Re-verification of the MoMo payer-vs-merchant safety guard after the _normalize_msisdn fix. **ALL TESTS PASS.** Backend: 20/20 pytest tests pass (expanded from the previous 14 to also cover the 2 new formats required by the review — `798875272` bare 9-digit, `+2500798875272` country-code + accidental leading zero — for both merchant-reject and customer-accept paths, plus VOD parity). The previously-failing 10-digit local format `0798875272` is now correctly normalized to `250798875272` and rejected with HTTP 400 + `You entered our collection account…` on both `/api/billing/momo/initiate` and `/api/billing/vod/{id}/momo`. Customer number `+250 794 230 137` (and its local + bare 9-digit variants) all pass the guard and reach BeSoft (which may fail downstream — that's expected and out of scope). MongoDB verification: every new payment doc created with a customer number persists `phone=250794230137` (normalized) and merchant MSISDN `250798875272` never appears as a debit phone for new docs. Frontend: all 3 checkout re-verification cases pass — MoMo phone input renders blank `+250 ` on load, entering `0798875272` shows the `checkout-error` banner with the exact 'You entered our collection account. Please enter YOUR own Mobile Money number to pay.' message, and entering `+250 794 230 137` passes the guard (shows 'MTN MoMo temporarily unavailable' downstream banner, which is expected). Direction audit still confirms `debit.payer_identifier=payer` and `credits[0].payee_identifier=BESOFT_PAYOUT_MSISDN` are never swapped, and the guard is invoked in both endpoints. Safety bug from iteration_12 is FIXED.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "N/A (pre-existing UI display, not a security issue)", "issue": "Checkout screen renders 'NaN RWF' and '≈ 1.00 EUR via Card / PayPal' subtitle even when MTN Mobile Money is the selected method. Root cause: `amount` query param is not populated for the /checkout?plan=basic_monthly deep-link, so Number(amount) → NaN. Reference: /app/frontend/app/checkout.tsx:208,211. Unrelated to this iteration's safety fix — flagging for future cleanup."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "checkout.tsx amount display", "issue": "Shows 'NaN RWF' and mismatched 'via Card / PayPal' subtitle when MoMo is the selected method and amount query param is missing. Not a safety issue but confusing UX.", "testID": "checkout-screen", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_momo_payer_guard.py (expanded — 20 tests, all pass)",
+    "/app/test_reports/pytest/pytest_iter13.xml"
+  ],
+  "action_items": [
+    "OPTIONAL cleanup: consider deleting the 1 legacy MongoDB payment doc (reference `bbfm-b5c7f9f9eee94f43`, status='failed') that has `besoftPayload.debit.payer_identifier == '250798875272'` — a leftover from a pre-fix test run.  db.payments.deleteMany({'besoftPayload.debit.payer_identifier': '250798875272'})",
+    "OPTIONAL follow-up: fix `NaN RWF` display on /checkout when the `amount` query param is missing (checkout.tsx:208-212). Not related to the safety guard.",
+    "OPTIONAL: promote _normalize_msisdn to its own module + add a dedicated unit-test file `tests/test_normalize_msisdn.py` (pure-function tests, no HTTP) covering every Rwandan input variant so future regressions surface without needing a live backend."
+  ],
+  "critical_code_review_comments": [
+    "server.py:728-748 `_normalize_msisdn` now correctly handles all 5 canonical Rwandan formats plus the pathological `+2500798875272` (country code + accidental leading zero). Verified via 14 parametrized HTTP tests (7 merchant formats × 2 endpoints).",
+    "server.py:751-764 guard logic unchanged and still correct — depends on normalizer, which is now robust.",
+    "server.py:794 (subscription) and server.py:1409 (VOD): payer_identifier bound to normalized user input, payee_identifier bound to BESOFT_PAYOUT_MSISDN — direction never swapped.",
+    "Frontend checkout.tsx & video/[id].tsx: MoMo phone input renders '+250 ' blank on load (no auto-fill from `user?.phone`), hint text visible, error banner via testID=`checkout-error` (in-page red text)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_momo_payer_guard.py — extended MERCHANT_FORMATS to 7 entries (added `798875272` bare 9-digit and `+2500798875272` cc-plus-leading-zero) and parametrized customer-accept over 3 formats (`+250 794 230 137`, `0794230137`, `794230137`). Total: 20 tests, all pass."
+  ],
+  "success_rate": {"backend": "100% (20/20)", "frontend": "100% (3/3 checkout re-verification cases)"},
+  "seed_data_creation": "3 new payment docs inserted during this run, all with phone='250794230137' (correctly normalized customer). No new merchant-as-payer leaks.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "The MoMo payer/merchant safety bug is fully fixed and covered by 20 parametrized tests in /app/backend/tests/test_momo_payer_guard.py. If _normalize_msisdn is refactored again, re-run `python -m pytest backend/tests/test_momo_payer_guard.py -v -o addopts=''`. Note: BeSoft downstream is currently returning 'MTN MoMo temporarily unavailable' for all live requests — do NOT count that as a guard failure; it is expected per the review and confirmed by the presence of the Stripe fallback banner.",
+  "rca_of_issue": "Previous iteration_12 root cause was `_normalize_msisdn` only handled 9-digit local numbers. This iteration verifies the applied fix (add `if len(digits) == 10 and digits.startswith('0'): return '250' + digits[1:]` plus `if len(digits) == 13 and digits.startswith('2500'): return '250' + digits[4:]`) via 7 merchant formats × 2 endpoints (14 guard-reject tests) + 3 customer formats (3 accept tests) + auth + source-audit + VOD accept = 20 tests total, all passing. Frontend UI banner confirmed via testID=checkout-error."
+}

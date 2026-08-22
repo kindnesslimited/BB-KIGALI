@@ -172,6 +172,21 @@ def sign_jwt(user_id: str) -> str:
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
 
 
+async def get_optional_user(authorization: Optional[str] = Header(None)):
+    """Same as get_current_user but returns None instead of raising when no/invalid token.
+
+    Used on public browse endpoints (like /shows/{id}) so guests can PREVIEW content
+    metadata without logging in first. Playback still requires a real subscription check.
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return None
+    try:
+        return await get_current_user(authorization)
+    except HTTPException:
+        return None
+
+
+
 async def get_current_user(authorization: Optional[str] = Header(None)):
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(401, "Missing bearer token")
@@ -621,12 +636,16 @@ async def list_shows(category: Optional[str] = None):
 
 
 @api.get("/shows/{show_id}")
-async def get_show(show_id: str, user = Depends(get_current_user)):
+async def get_show(show_id: str, user = Depends(get_optional_user)):
     show = await db.shows.find_one({"id": show_id}, {"_id": 0})
     if not show:
         raise HTTPException(404, "Show not found")
+    # Guests (no login) see the preview only — locked with a login prompt.
+    if not user:
+        return {**show, "locked": True, "videoUrl": None, "unlockPrice": VOD_PRICE_EUR, "unlockCurrency": "EUR", "unlockPriceRwf": VOD_PRICE_RWF, "loginRequired": True}
     # Premium users get all VOD free. Non-premium users must purchase per-VOD (1 EUR).
     if user.get("tier") == "premium":
+        # Also enforce expiry (once we have subscriptionExpiresAt in the future, _tier_refresh downgrades)
         return {**show, "locked": False, "unlockedFor": "premium"}
     # Check if user already purchased this specific VOD
     owned = await db.vod_purchases.find_one({"userId": user["id"], "showId": show_id, "status": "success"}, {"_id": 0})
@@ -726,11 +745,42 @@ def _besoft_headers():
 
 
 def _normalize_msisdn(phone: str) -> str:
-    """Strip +, spaces. Ensure starts with a country code. Assume 250 (Rwanda) if 9 digits (e.g. 78xxxxxxx)."""
-    digits = "".join(ch for ch in phone if ch.isdigit())
-    if len(digits) == 9 and digits.startswith(("7", "0")):
-        digits = "250" + digits.lstrip("0")
+    """Normalize any Rwandan number to canonical E.164-without-plus: 250XXXXXXXXX (12 digits).
+
+    Handles:
+      +250 798 875 272 → 250798875272  (spaces, dashes, +)
+      250 798 875 272  → 250798875272
+      0798875272       → 250798875272  (local 10-digit starting with 0)
+      798875272        → 250798875272  (9-digit MTN/Airtel format starting with 7)
+      +2500798875272   → 250798875272  (country code + accidental leading 0)
+    """
+    digits = "".join(ch for ch in (phone or "") if ch.isdigit())
+    if len(digits) == 13 and digits.startswith("2500"):
+        # Country code + accidental leading local zero
+        return "250" + digits[4:]
+    if len(digits) == 12 and digits.startswith("250"):
+        return digits
+    if len(digits) == 10 and digits.startswith("0"):
+        return "250" + digits[1:]
+    if len(digits) == 9 and digits.startswith("7"):
+        return "250" + digits
     return digits
+
+
+def _guard_payer_not_merchant(payer: str) -> None:
+    """CRITICAL SAFETY CHECK: the customer's payer number MUST NOT equal the merchant collection account.
+
+    The merchant (BESOFT_PAYOUT_MSISDN, e.g. +250 798 875 272) receives funds. It must NEVER be debited.
+    Called on every MoMo debit request (both subscription and VOD). Raises 400 if the payer is the
+    merchant account.
+    """
+    merchant = _normalize_msisdn(BESOFT_PAYOUT_MSISDN or "")
+    if merchant and payer == merchant:
+        logger.error("[momo][safety] Refusing to debit merchant account %s — payer must be a customer number, not the collection account.", merchant)
+        raise HTTPException(
+            400,
+            "You entered our collection account. Please enter YOUR own Mobile Money number to pay.",
+        )
 
 
 @api.post("/billing/momo/initiate")
@@ -741,6 +791,7 @@ async def momo_initiate(body: MoMoInitiateIn, user = Depends(get_current_user)):
     payer = _normalize_msisdn(body.phone)
     if len(payer) < 10:
         raise HTTPException(400, "Invalid payer phone number")
+    _guard_payer_not_merchant(payer)
 
     reference = f"bbfm-{uuid.uuid4().hex[:16]}"
     debit_amount = float(plan["amount"])
@@ -1382,6 +1433,7 @@ async def vod_purchase_momo(show_id: str, body: VodMoMoIn, user = Depends(get_cu
     payer = _normalize_msisdn(body.phone)
     if len(payer) < 10:
         raise HTTPException(400, "Invalid payer phone number")
+    _guard_payer_not_merchant(payer)
     reference = f"vod-{show_id[:8]}-{uuid.uuid4().hex[:10]}"
     amount = float(VOD_PRICE_RWF)
     payload = {

@@ -1,0 +1,42 @@
+{
+  "summary": "MoMo payer-vs-merchant safety-guard verification. 12/14 backend tests PASS. Frontend: all 8 review-request UI assertions PASS. CRITICAL SAFETY BUG DISCOVERED: `_normalize_msisdn` in server.py:728-733 does NOT convert the 10-digit local Rwandan format `0798875272` to `250798875272`. Result: when a user types the merchant number as `0798875272`, the guard `_guard_payer_not_merchant` fails to match (compares '0798875272' vs '250798875272') and the request reaches BeSoft. Same bug affects both /api/billing/momo/initiate and /api/billing/vod/{id}/momo endpoints. All other formats (`+250798875272`, `250798875272`, `+250 798 875 272`, `250-798-875-272`) are correctly rejected with HTTP 400 and 'You entered our collection account...' message. Root cause: the normalizer's if-condition `len(digits) == 9 and digits.startswith(('7', '0'))` never fires for `0798875272` because that string has 10 digits — the branch was written for 9-digit numbers only. This is a HIGH-priority safety fix — the merchant MSISDN is currently NOT protected from the local leading-zero format the review explicitly listed as a required blocked format. Direction audit (source grep) confirmed: `debit.payer_identifier=payer` (user input) and `credits[0].payee_identifier=BESOFT_PAYOUT_MSISDN` — never swapped. Guard is invoked in both endpoints. Frontend: checkout MoMo phone input renders blank `+250 ` (no auto-fill), hint text visible, merchant number → 'You entered our collection account...' banner, customer number → 'MTN MoMo temporarily unavailable...' + Stripe fallback banner. VOD screen MoMo phone input also renders blank `+250 `.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "POST /api/billing/momo/initiate & POST /api/billing/vod/{id}/momo", "issue": "SAFETY BUG: `_normalize_msisdn` in server.py:728-733 does not normalize 10-digit local format `0798875272` — the `if len(digits) == 9` branch skips it. Result: merchant MSISDN entered as `0798875272` (a natural Rwandan format) BYPASSES the safety guard `_guard_payer_not_merchant` and reaches BeSoft. The user's review explicitly listed `0798875272` as a required blocked format. Reproduced via pytest (2 failures) and via `python -c 'from server import _normalize_msisdn; print(_normalize_msisdn(\"0798875272\"))'` → returns `0798875272` (unchanged). FIX: expand the normalizer to also strip a single leading `0` from 10-digit local numbers, e.g.:\n\n    if len(digits) == 10 and digits.startswith('0'):\n        digits = '250' + digits[1:]\n    elif len(digits) == 9 and digits.startswith('7'):\n        digits = '250' + digits\n\nAfter this fix, `0798875272` → `250798875272` and the guard catches it.", "priority": "CRITICAL"}
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_momo_payer_guard.py (NEW — 14 parametrized tests; 12 pass, 2 fail exposing the normalizer bug)",
+    "/app/test_reports/pytest/pytest_iter12.xml"
+  ],
+  "action_items": [
+    "CRITICAL (safety): Fix `_normalize_msisdn` in /app/backend/server.py (lines 728-733) to convert 10-digit local numbers starting with '0' to E.164 (prefix '250', strip the leading '0'). Suggested code:\n    digits = ''.join(ch for ch in phone if ch.isdigit())\n    if len(digits) == 10 and digits.startswith('0'):\n        digits = '250' + digits[1:]\n    elif len(digits) == 9 and digits.startswith('7'):\n        digits = '250' + digits\n    return digits\nAfter fix, re-run /app/backend/tests/test_momo_payer_guard.py — all 14 tests should pass.",
+    "OPTIONAL: consider also normalizing `+2500798875272` (both country code AND leading zero) — user input can be messy. E.g. if digits starts with '2500' and length is 13, strip the extra 0."
+  ],
+  "critical_code_review_comments": [
+    "server.py:736-749 `_guard_payer_not_merchant` is correct in intent — compares normalized payer vs normalized merchant — but it inherits the normalizer's weakness. Because normalization is not idempotent for all input formats, the guard is only as strong as `_normalize_msisdn`. Any new format bypass in the normalizer becomes a safety hole in the guard.",
+    "server.py:794 and server.py:1409 both bind `payer_identifier` to the locally-computed `payer` (normalized user input) — direction is correct.",
+    "server.py:804 and server.py:1415 both bind `payee_identifier` to `BESOFT_PAYOUT_MSISDN` — direction is correct.",
+    "server.py:760, 1402: guard invoked in both endpoints — good.",
+    "frontend/app/checkout.tsx:30 `useState('+250 ')` — no auto-fill from `user?.phone`, verified in browser.",
+    "frontend/app/video/[id].tsx:44 `useState<string>('+250 ')` — same, verified.",
+    "frontend/app/checkout.tsx:343 hint text 'Enter the MoMo number you want to pay from...' renders under MoMo input — verified.",
+    "Consider adding a unit test file `test_normalize_msisdn.py` that covers every possible Rwandan input format (+250x, 250x, 07x, 7x, spaced, dashed, mixed) so future regressions in the normalizer surface immediately."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_momo_payer_guard.py (created — 14 tests, 12 pass, 2 fail proving the bug)"
+  ],
+  "success_rate": {"backend": "86% (12/14) — 2 failures both trace to same _normalize_msisdn bug", "frontend": "100% (all 8 review-request UI assertions pass)"},
+  "seed_data_creation": "3 payments docs inserted with phone=250794230137 (customer) and 2 with phone=0798875272 (unnormalized merchant leak — cleanup recommended). Clean with `db.payments.deleteMany({phone: {$in: ['250794230137','0798875272']}, status:'failed'})` after the fix is deployed.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Re-run `python -m pytest backend/tests/test_momo_payer_guard.py -v -o addopts=''` after the `_normalize_msisdn` fix — all 14 should pass. If the main agent also normalises other input variants (e.g. `+2500798875272`), consider parametrising more formats into MERCHANT_FORMATS in test_momo_payer_guard.py. Frontend behaviour is already correct — no re-test required for UI.",
+  "rca_of_issue": "REPRODUCTION: POST /api/billing/momo/initiate with body {plan:'basic_monthly', phone:'0798875272'} (or same via VOD endpoint) returns HTTP 200 and reaches BeSoft, instead of the expected HTTP 400 'collection account' rejection. Verified via curl and pytest.\n\nROOT CAUSE: `_normalize_msisdn` at /app/backend/server.py:728-733 only recognises 9-digit local numbers:\n    if len(digits) == 9 and digits.startswith(('7', '0')):\n        digits = '250' + digits.lstrip('0')\nThe common Rwandan MTN format is 10 digits: `0798875272` (leading zero + 9 subscriber digits). This 10-digit string never satisfies `len(digits) == 9`, so it is returned unchanged. Result: guard compares '0798875272' vs '250798875272' → not equal → request forwarded to BeSoft. BeSoft then rejects with HTTP_400 (unrelated), so the user sees a generic error and never learns they accidentally targeted the merchant account.\n\nMITIGATION (main agent to apply): update `_normalize_msisdn` to also handle 10-digit local format:\n    if len(digits) == 10 and digits.startswith('0'):\n        digits = '250' + digits[1:]\n    elif len(digits) == 9 and digits.startswith('7'):\n        digits = '250' + digits\nAfter this, `_normalize_msisdn('0798875272')` → `250798875272` and the guard rejects the request with HTTP 400 as required.\n\nIMPACT: safety-critical. Without the fix, a user could accidentally attempt to debit the merchant's own collection account using the natural leading-zero format they see on their phone. Even though BeSoft currently rejects downstream (HTTP_400 provider), if BeSoft ever accepted the request the merchant would be debited into their own account — a real financial risk."
+}

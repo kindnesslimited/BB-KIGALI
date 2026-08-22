@@ -102,10 +102,10 @@
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
 
-user_problem_statement: "USER-REPORTED BUG: 'MoMo declined: provider error [HTTP_400]: unexpected status 400: (retryable: false)'. Root cause: BeSoft's debit-credit atomic endpoint fails at MTN provider level. Fix: add automatic fallback to pure /debit endpoint + humanize the error message + suggest Stripe as alternative in the UI (frontend already does this via suggestStripe banner)."
+user_problem_statement: "CRITICAL BUSINESS REQUIREMENT: 'EVERYONE CAN SEE WHAT IS AVAILABLE, BUT ONLY ACTIVE SUBSCRIBERS CAN WATCH/LISTEN/ACCESS ACTUAL CONTENT.' Users must be able to enter the app and freely navigate all tabs (Home, Shows, News, Profile), see all programs, categories, videos, without logging in first. Only when they try to PLAY content (video, live radio) or access checkout, the system asks them to log in and subscribe. Also verify: MoMo payer/payee still correct, Stripe error tracking, PayPal simplification is deferred."
 
 backend:
-  - task: "MoMo debit-credit → debit fallback"
+  - task: "Guest browsing / optional auth on /shows/{id}"
     implemented: true
     working: true
     file: "/app/backend/server.py"
@@ -115,37 +115,34 @@ backend:
     status_history:
       - working: true
         agent: "main"
-        comment: "Refactored /billing/momo/initiate to try /public/payments/debit-credit first; if that returns provider error HTTP_400 (or non-2xx), automatically retry with /public/payments/debit (pure collection). Records besoftAttempt='debit_credit' or 'debit_only_fallback' on the payment row so admin can trace which endpoint served each transaction. Also added new friendly error branch for HTTP_400/provider errors: 'MTN MoMo temporarily unavailable. Please try Card payment or try again in a few minutes.' Curl-verified: fallback attempts both endpoints; both currently fail (confirming BeSoft/MTN gateway is the root cause, not our payload)."
+        comment: "Added get_optional_user() helper — returns None instead of 401 when no bearer. Changed GET /api/shows/{id} to use get_optional_user. Guests get {locked:true, loginRequired:true, videoUrl:null, unlockPrice, unlockPriceRwf} so they can preview details. Authenticated users get premium/purchase logic as before. /shows list + /categories + /programs were already public. Curl-verified: all 4 endpoints return data for guests."
 
 frontend:
-  - task: "MoMo → Stripe auto-suggest banner (existing feature)"
+  - task: "AuthGate refactor — public browsing, gated play"
     implemented: true
-    working: true
-    file: "/app/frontend/app/checkout.tsx, /app/frontend/app/video/[id].tsx"
+    working: "NA"
+    file: "/app/frontend/app/_layout.tsx"
     stuck_count: 0
     priority: "high"
     needs_retesting: true
     status_history:
-      - working: true
+      - working: "NA"
         agent: "main"
-        comment: "Existing suggestStripe banner already fires when MoMo returns status='failed'. Now with the new humanized message the user sees a clearer explanation before deciding to switch. No new frontend changes needed."
+        comment: "Rewrote AuthGate: only 'admin', 'checkout', 'player' segments require a logged-in user. All other segments (index, tabs, video preview, program details, paywall) are PUBLIC. Cold-start now routes guests to /(tabs) instead of /onboarding. Video/[id] handlers (buyVod, buyVodStripe, buyVodMomo) route guests to /auth/phone before opening any payment WebView."
 
 metadata:
   created_by: "main_agent"
   version: "1.0"
-  test_sequence: 11
+  test_sequence: 14
   run_ui: true
 
 test_plan:
   current_focus:
-    - "MoMo debit-credit → debit fallback"
-    - "MoMo → Stripe auto-suggest banner (existing feature)"
+    - "Guest browsing / optional auth on /shows/{id}"
+    - "AuthGate refactor — public browsing, gated play"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
   - agent: "main"
-    message: "Verify: (1) POST /api/billing/momo/initiate {plan:basic_monthly, phone:+250788999888} returns status='failed' with message that includes 'MTN MoMo temporarily unavailable' or 'Card payment'. (2) The payment row in db.payments has besoftAttempt field set to either 'debit_credit' (if fallback wasn't reached) or 'debit_only_fallback' (if fallback succeeded but the payment still failed at MTN). (3) Response has both 'message' (humanized) and 'failureReason' (raw) fields. (4) Frontend: on checkout screen selecting MoMo → tap PAY → verify humanized error appears + 'Try card payment instead?' fallback banner is visible (non-iOS). Tap banner → verify method flips to Stripe. Do NOT test actual MoMo success — BeSoft gateway is genuinely broken for this account. Admin phone +250798875272, OTP in testCode."
-
-
