@@ -75,11 +75,11 @@ class TestSmsProvidersEndpoint:
             assert "configured" in p and isinstance(p["configured"], bool)
             assert p.get("notes"), f"{key} notes should be non-empty"
 
-        # Only route_mobile should be configured in preview env
+        # In preview env: route_mobile and whatsapp are configured
         assert providers["route_mobile"]["configured"] is True
         assert providers["africas_talking"]["configured"] is False
         assert providers["twilio"]["configured"] is False
-        assert providers["whatsapp"]["configured"] is False
+        assert providers["whatsapp"]["configured"] is True
 
         # senderId surfaced for route_mobile, no secrets leaked
         assert providers["route_mobile"].get("senderId") == "BBKIGALI"
@@ -127,7 +127,8 @@ class TestSmsTestEndpoint:
         assert "route_mobile" in attempts
         assert "africas_talking:not_configured" in attempts
         assert "twilio:not_configured" in attempts
-        assert "whatsapp:not_configured" in attempts
+        # whatsapp is now configured (nostress.vip) — expect code=... response
+        assert "whatsapp:" in attempts and "not_configured" not in attempts.split("whatsapp:")[1].split("|")[0]
 
         # Since Route Mobile IP whitelist not effective in preview, expect failure
         # But we do NOT assert sent=False strictly, as this could occasionally pass.

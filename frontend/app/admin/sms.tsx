@@ -30,6 +30,13 @@ type ProvidersResp = {
   providers: Record<string, Provider>;
 };
 
+type Analytics = {
+  windowDays: number;
+  totals: { attempts: number; delivered: number; successRate: number };
+  providers: { provider: string; attempts: number; delivered: number; skipped: number; successRate: number }[];
+  byDay: { day: string; delivered: number; failed: number }[];
+};
+
 const PROVIDER_META: Record<string, { label: string; icon: any; signup: string }> = {
   route_mobile: { label: "Route Mobile SMS", icon: "phone-portrait-outline", signup: "https://www.routemobile.com/" },
   twilio: { label: "Twilio", icon: "chatbubbles-outline", signup: "https://www.twilio.com/try-twilio" },
@@ -41,6 +48,7 @@ export default function AdminSmsScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const [data, setData] = useState<ProvidersResp | null>(null);
+  const [analytics, setAnalytics] = useState<Analytics | null>(null);
   const [loading, setLoading] = useState(true);
   const [testPhone, setTestPhone] = useState("+250");
   const [testing, setTesting] = useState(false);
@@ -49,7 +57,12 @@ export default function AdminSmsScreen() {
   const load = async () => {
     try {
       setLoading(true);
-      setData(await api<ProvidersResp>("/admin/sms/providers", { auth: true }));
+      const [providersRes, analyticsRes] = await Promise.all([
+        api<ProvidersResp>("/admin/sms/providers", { auth: true }),
+        api<Analytics>("/admin/sms/analytics?days=7", { auth: true }),
+      ]);
+      setData(providersRes);
+      setAnalytics(analyticsRes);
     } catch (e: any) {
       Alert.alert("Load failed", e.message);
     } finally {
@@ -126,6 +139,47 @@ export default function AdminSmsScreen() {
             </Text>
           </View>
         </View>
+
+        {analytics && analytics.totals.attempts > 0 && (
+          <View style={styles.analyticsCard} testID="sms-analytics">
+            <Text style={styles.sectionLabel}>LAST {analytics.windowDays} DAYS</Text>
+            <View style={styles.statsGrid}>
+              <View style={styles.statCell}>
+                <Text style={styles.statNum}>{analytics.totals.delivered}</Text>
+                <Text style={styles.statLabel}>Delivered</Text>
+              </View>
+              <View style={styles.statCell}>
+                <Text style={styles.statNum}>{analytics.totals.attempts}</Text>
+                <Text style={styles.statLabel}>Attempts</Text>
+              </View>
+              <View style={styles.statCell}>
+                <Text style={[styles.statNum, { color: colors.success }]}>
+                  {(analytics.totals.successRate * 100).toFixed(0)}%
+                </Text>
+                <Text style={styles.statLabel}>Success rate</Text>
+              </View>
+            </View>
+            <View style={{ marginTop: spacing.sm, gap: 6 }}>
+              {analytics.providers
+                .filter((p) => p.attempts + p.skipped > 0)
+                .map((p) => {
+                  const meta = PROVIDER_META[p.provider] || { label: p.provider };
+                  const barW = p.attempts > 0 ? Math.max(2, (p.delivered / p.attempts) * 100) : 0;
+                  return (
+                    <View key={p.provider} style={styles.analyticsRow}>
+                      <Text style={styles.analyticsName}>{meta.label}</Text>
+                      <View style={styles.barTrack}>
+                        <View style={[styles.barFill, { width: `${barW}%` }]} />
+                      </View>
+                      <Text style={styles.analyticsCount}>
+                        {p.delivered}/{p.attempts}
+                      </Text>
+                    </View>
+                  );
+                })}
+            </View>
+          </View>
+        )}
 
         {loading ? (
           <ActivityIndicator color={colors.brandPrimary} style={{ marginTop: spacing.xl }} />
@@ -342,4 +396,21 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
   },
   resultText: { ...type.caption, fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }), lineHeight: 17, color: colors.onSurface },
+  analyticsCard: {
+    padding: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    gap: spacing.sm,
+    backgroundColor: colors.surfaceSecondary,
+  },
+  statsGrid: { flexDirection: "row", gap: spacing.md },
+  statCell: { flex: 1, alignItems: "center" },
+  statNum: { ...type.h1, fontSize: 24, color: colors.brandPrimary, letterSpacing: 0.5 },
+  statLabel: { ...type.caption, color: colors.onSurfaceSecondary, marginTop: 2 },
+  analyticsRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  analyticsName: { ...type.caption, width: 100, color: colors.onSurface, fontFamily: "BarlowCondensed-Bold", fontSize: 11 },
+  barTrack: { flex: 1, height: 6, borderRadius: 3, backgroundColor: colors.surfaceTertiary, overflow: "hidden" },
+  barFill: { height: "100%", backgroundColor: colors.success, borderRadius: 3 },
+  analyticsCount: { ...type.caption, minWidth: 40, textAlign: "right", color: colors.onSurfaceSecondary, fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }), fontSize: 11 },
 });

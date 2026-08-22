@@ -1,0 +1,46 @@
+{
+  "summary": "Verified user-reported bug 'Check if OTP can deliver via WhatsApp'. WhatsApp integration with nostress.vip is CORRECTLY implemented — POSTs JSON {action,auth,tel,msg} to https://whatsapp.nostress.vip/api_com.php as documented. User-provided token returns code=101 (invalid token), which is a user-config issue, not a code bug. Also verified new SMS analytics dashboard endpoint + UI, and Stripe webhook secret env var. Backend: 24/24 tests pass (14 new + 10 existing SMS chain, after updating 2 stale assertions for now-configured whatsapp provider). Frontend: full admin login → /admin/sms flow works, WhatsApp row shows READY badge with visible nostress.vip endpoint, SEND TEST returns whatsapp:code=101 as expected, Analytics card renders 3-stat grid + per-provider bars, attempt counter increments after each test.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "N/A (user config)", "issue": "WHATSAPP_API_TOKEN '18237d895903355010bb85cc3dc46a46fb31110' rejected by nostress.vip with code=101 (invalid token). This is a USER CONFIG issue — the API code, URL, method, JSON body, and response parsing are all correct. User needs to obtain a valid token from nostress.vip."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "admin/sms.tsx refresh button", "issue": "Top-right refresh icon at line 123 lacks a testID (e.g. 'sms-refresh') — not blocking but recommended for E2E coverage of the 'tap refresh → analytics updates' flow.", "testID": "missing", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "admin/sms (Analytics card)", "issues": ["Success rate = 0% for every provider currently. Once a valid WhatsApp token OR Route Mobile IP-whitelist takes effect, this will populate — cosmetic only."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_whatsapp_and_analytics.py (new, 14 tests)",
+    "/app/backend/tests/test_sms_providers.py (updated for now-configured whatsapp — 10 tests)",
+    "/app/test_reports/pytest/pytest_iter9.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: Add testID='sms-refresh' to the top-right refresh Pressable in /app/frontend/app/admin/sms.tsx line 123 to enable stable E2E coverage of the analytics-refresh flow.",
+    "Inform user that WHATSAPP_API_TOKEN is rejected by nostress.vip (code=101). Ask them to regenerate/copy the token exactly from https://whatsapp.nostress.vip/ dashboard. The integration code is verified correct — no code change needed.",
+    "Once a valid token is provided, /api/admin/sms/test with phone +250798875272 should return whatsapp:code=110 and the WhatsApp row in Analytics will start showing delivered>0."
+  ],
+  "critical_code_review_comments": [
+    "server.py:319-362 _sms_whatsapp: implementation matches nostress.vip docs exactly — POST JSON with action/auth/tel(no +)/msg keys, parses code=='110' for success. LGTM.",
+    "server.py:1992-2013 stripe webhook: STRIPE_WEBHOOK_SECRET is properly loaded from env and passed to stripe.Webhook.construct_event. Falls back to json parse (with warning) if unset — safe.",
+    "server.py:1726-1791 sms analytics: correctly aggregates by provider AND ensures all 4 known providers appear even with 0 data. Days range is clamped 1..90. LGTM.",
+    "server.py:373-411 _send_sms: correctly records EVERY attempt (success or fail, skipped or not) into db.sms_deliveries with weekKey + provider + skipped flag — clean design.",
+    "admin/sms.tsx: analytics card correctly gated by totals.attempts > 0 so screen isn't empty on fresh installs."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_sms_providers.py (updated stale assertions: whatsapp is now configured, so it no longer returns 'not_configured')",
+    "/app/backend/tests/test_whatsapp_and_analytics.py (NEW)"
+  ],
+  "success_rate": {"backend": "100% (24/24)", "frontend": "100% (all UI checks passed)"},
+  "seed_data_creation": "During testing several SMS test-sends were fired (both from pytest and Playwright). Each recorded in db.sms_deliveries with provider=route_mobile/whatsapp and success=false. These are throwaway records; can be cleared via `db.sms_deliveries.deleteMany({message:'TEST_analytics_probe'})` or similar filter if desired, but harmless as analytics only shows last N days.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend tests are at /app/backend/tests/test_whatsapp_and_analytics.py and /app/backend/tests/test_sms_providers.py. Run with `python -m pytest backend/tests/test_whatsapp_and_analytics.py backend/tests/test_sms_providers.py -v -o addopts=''` — the -o addopts='' bypasses the xdist parallel config which causes fixture races when both files share the same admin phone (both call _login on +250798875272). If user supplies a valid WhatsApp token later, TestSmsTestRecordsAttempt::test_whatsapp_response_has_code_number will still pass (accepts both code=110 and code=101).",
+  "rca_of_issue": "User reported 'Check if OTP can deliver via WhatsApp'. Verified end-to-end: (1) Backend POSTs correctly formatted JSON to https://whatsapp.nostress.vip/api_com.php with keys action=send, auth=<token>, tel=<E.164 without +>, msg=<text> — confirmed via source inspection (TestWhatsAppRequestFormat) and live network call from _send_sms. (2) The nostress.vip API returned HTTP 200 with body {\"code\":\"101\",\"status\":\"Error: invalid token\"} — proving the CODE FORMAT is correct; the token 18237d895903355010bb85cc3dc46a46fb31110 in .env is rejected by nostress.vip. (3) Response is correctly interpreted (code=='110' → success, else failure). (4) Every attempt is recorded in db.sms_deliveries so analytics tracks the attempt (whatsapp attempts=23 in preview env). MITIGATION: User must provide a valid API token from https://whatsapp.nostress.vip dashboard. No code change required."
+}

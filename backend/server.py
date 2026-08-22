@@ -317,33 +317,49 @@ async def _sms_africas_talking(destination: str, message: str) -> tuple[bool, st
 
 
 async def _sms_whatsapp(destination: str, message: str) -> tuple[bool, str]:
-    """Send OTP via WhatsApp (whatsapp.nostress.vip or any compatible endpoint).
+    """Send OTP via WhatsApp using the nostress.vip API.
 
-    Body shape auto-detected from the endpoint path — for the nostress-style service, the request is
-    a POST with JSON `{token, session, to, message}` or query-string equivalent. Provide the exact
-    endpoint via WHATSAPP_API_URL.
+    Documented format (https://whatsapp.nostress.vip/api/):
+      POST https://whatsapp.nostress.vip/api_com.php
+      Content-Type: application/json
+      {"action":"send","auth":"<token>","tel":"<E.164 without +>","msg":"<text>"}
+      → response {"code":"110","status":"request accepted","output":"Message sent"} on success
+      → response {"code":"101","status":"Error: invalid token"} etc on failure
     """
     if not WHATSAPP_API_URL or not WHATSAPP_API_TOKEN:
         return False, "not_configured"
-    dst_no_plus = destination.lstrip("+")
-    body_json = {
-        "token": WHATSAPP_API_TOKEN,
-        "session": WHATSAPP_SESSION_ID or None,
-        "to": dst_no_plus,
-        "phone": dst_no_plus,       # some services want "phone"
-        "number": dst_no_plus,      # some services want "number"
-        "message": message,
-        "text": message,             # some services want "text"
+    tel = destination.lstrip("+").strip()
+    payload = {
+        "action": "send",
+        "auth": WHATSAPP_API_TOKEN,
+        "tel": tel,
+        "msg": message,
     }
-    body_json = {k: v for k, v in body_json.items() if v is not None}
+    if WHATSAPP_SESSION_ID:
+        payload["session"] = WHATSAPP_SESSION_ID
     try:
         async with httpx.AsyncClient(timeout=20.0) as c:
-            r = await c.post(WHATSAPP_API_URL, json=body_json)
+            r = await c.post(WHATSAPP_API_URL, json=payload, headers={"Content-Type": "application/json"})
     except httpx.RequestError as e:
         return False, f"network:{e}"
-    resp_txt = r.text[:300]
-    logger.info("[whatsapp] %s %s", r.status_code, resp_txt)
-    return (200 <= r.status_code < 300), resp_txt
+    body_txt = (r.text or "").strip()
+    logger.info("[whatsapp] %s %s", r.status_code, body_txt[:200])
+    if r.status_code >= 300:
+        return False, body_txt[:200]
+    # Parse structured response
+    try:
+        j = r.json()
+        code = str(j.get("code", "")).strip()
+        status = j.get("status", "")
+        # nostress.vip uses code "110" for success ("request accepted")
+        if code == "110" or "accepted" in status.lower() or "sent" in str(j.get("output", "")).lower():
+            return True, f"code={code} {status}"[:120]
+        return False, f"code={code} {status}"[:120]
+    except Exception:
+        # If not JSON, treat 200 as success only if body contains no "error"
+        if "error" in body_txt.lower():
+            return False, body_txt[:200]
+        return True, body_txt[:120]
 
 
 _SMS_PROVIDERS = {
@@ -355,15 +371,39 @@ _SMS_PROVIDERS = {
 
 
 async def _send_sms(destination: str, message: str) -> tuple[bool, str]:
-    """Try each configured provider in SMS_PROVIDER_ORDER. First success wins."""
+    """Try each configured provider in SMS_PROVIDER_ORDER. First success wins.
+
+    Also records every attempt into db.sms_deliveries for analytics.
+    """
     attempts: list[str] = []
+    winning_provider = None
+    winning_resp = ""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    week_key = datetime.now(timezone.utc).strftime("%Y-W%V")
     for name in SMS_PROVIDER_ORDER:
         fn = _SMS_PROVIDERS.get(name)
         if not fn:
             continue
         ok, resp = await fn(destination, message)
         attempts.append(f"{name}:{resp[:60]}")
+        # Record every attempt for analytics
+        skipped = resp == "not_configured"
+        try:
+            await db.sms_deliveries.insert_one({
+                "id": str(uuid.uuid4()),
+                "provider": name,
+                "destination": destination,
+                "success": ok,
+                "skipped": skipped,
+                "response": resp[:400],
+                "weekKey": week_key,
+                "createdAt": now_iso,
+            })
+        except Exception as e:  # pragma: no cover
+            logger.warning("Failed to record sms_delivery: %s", e)
         if ok:
+            winning_provider = name
+            winning_resp = resp
             logger.info("[sms] delivered via %s (attempts: %d)", name, len(attempts))
             return True, f"{name}|{resp}"
     combined = " | ".join(attempts) if attempts else "no_providers_configured"
@@ -1681,6 +1721,75 @@ async def admin_sms_test(body: SmsTestIn, _ = Depends(require_admin)):
     if sent and "|" in resp:
         provider = resp.split("|", 1)[0]
     return {"sent": sent, "provider": provider, "attempts": resp}
+
+
+@api.get("/admin/sms/analytics")
+async def admin_sms_analytics(days: int = 7, _ = Depends(require_admin)):
+    """Provider analytics: attempts, deliveries, success rate. Filters last N days."""
+    if days < 1: days = 1
+    if days > 90: days = 90
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff_iso = cutoff.isoformat()
+
+    pipeline_per_provider = [
+        {"$match": {"createdAt": {"$gte": cutoff_iso}}},
+        {"$group": {
+            "_id": "$provider",
+            "attempts": {"$sum": {"$cond": [{"$ne": ["$skipped", True]}, 1, 0]}},
+            "delivered": {"$sum": {"$cond": [{"$eq": ["$success", True]}, 1, 0]}},
+            "skipped": {"$sum": {"$cond": [{"$eq": ["$skipped", True]}, 1, 0]}},
+        }},
+        {"$sort": {"delivered": -1}},
+    ]
+    per_provider = await db.sms_deliveries.aggregate(pipeline_per_provider).to_list(20)
+
+    providers_out = []
+    total_attempts = 0
+    total_delivered = 0
+    for p in per_provider:
+        attempts = p.get("attempts", 0) or 0
+        delivered = p.get("delivered", 0) or 0
+        skipped = p.get("skipped", 0) or 0
+        rate = (delivered / attempts) if attempts else 0.0
+        total_attempts += attempts
+        total_delivered += delivered
+        providers_out.append({
+            "provider": p["_id"],
+            "attempts": attempts,
+            "delivered": delivered,
+            "skipped": skipped,
+            "successRate": round(rate, 4),
+        })
+
+    # Ensure all 4 known providers appear even with zero data
+    known = {p["provider"] for p in providers_out}
+    for name in _SMS_PROVIDERS.keys():
+        if name not in known:
+            providers_out.append({"provider": name, "attempts": 0, "delivered": 0, "skipped": 0, "successRate": 0.0})
+
+    pipeline_by_day = [
+        {"$match": {"createdAt": {"$gte": cutoff_iso}, "skipped": {"$ne": True}}},
+        {"$group": {
+            "_id": {"$substr": ["$createdAt", 0, 10]},
+            "delivered": {"$sum": {"$cond": [{"$eq": ["$success", True]}, 1, 0]}},
+            "failed": {"$sum": {"$cond": [{"$eq": ["$success", False]}, 1, 0]}},
+        }},
+        {"$sort": {"_id": 1}},
+    ]
+    by_day_raw = await db.sms_deliveries.aggregate(pipeline_by_day).to_list(days + 5)
+    by_day = [{"day": d["_id"], "delivered": d.get("delivered", 0), "failed": d.get("failed", 0)} for d in by_day_raw]
+
+    return {
+        "windowDays": days,
+        "totals": {
+            "attempts": total_attempts,
+            "delivered": total_delivered,
+            "successRate": round((total_delivered / total_attempts) if total_attempts else 0.0, 4),
+        },
+        "providers": providers_out,
+        "byDay": by_day,
+    }
+
 
 
 

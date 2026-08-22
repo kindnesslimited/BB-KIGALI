@@ -102,10 +102,10 @@
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
 
-user_problem_statement: "Route Mobile SMS needs IP whitelisting which Emergent K8s can't guarantee (no static IP). User wants a multi-provider SMS chain that tries each in order — if one fails, use the next. Providers: Route Mobile, Twilio, Africa's Talking, WhatsApp (whatsapp.nostress.vip)."
+user_problem_statement: "Wire the WhatsApp API (whatsapp.nostress.vip/api_com.php) with the user-provided token 18237d895903355010bb85cc3dc46a46fb31110 so OTP can deliver via WhatsApp. Add Stripe webhook secret whsec_OwJWz4MgxKAogBu7TYrZOt1Qw7pSQTKn to secure webhook signature verification. Build a Provider Analytics dashboard that shows attempt/delivered counts + success rate per SMS provider over the last 7 days. USER-REPORTED BUG: 'Check if OTP can deliver via WhatsApp'."
 
 backend:
-  - task: "Multi-provider SMS chain"
+  - task: "WhatsApp OTP wiring (nostress.vip api_com.php)"
     implemented: true
     working: true
     file: "/app/backend/server.py"
@@ -115,8 +115,19 @@ backend:
     status_history:
       - working: true
         agent: "main"
-        comment: "Refactored _send_sms into a pluggable chain. Added 4 providers: _sms_route_mobile (existing), _sms_twilio (Basic auth, MG-prefix messaging service support), _sms_africas_talking (apiKey header + Recipients.status='Success' check), _sms_whatsapp (POSTs JSON with multi-key body — to/phone/number/message/text — to any nostress-compatible endpoint). SMS_PROVIDER_ORDER env var controls sequence. First success wins. OTP start now checks 'any_provider_ready' instead of only Route Mobile. Curl-verified: Route Mobile still returns 1703, chain falls through to unconfigured providers, response shows all attempts."
-  - task: "Admin SMS provider status + test endpoint"
+        comment: "Rewrote _sms_whatsapp per the actual nostress.vip API docs (crawled from whatsapp.nostress.vip/api/). Correct format is POST to https://whatsapp.nostress.vip/api_com.php with JSON {action:'send',auth:<token>,tel:<phone-no-plus>,msg:<text>}. Success indicator is code=='110' or status contains 'accepted'. Parses JSON response; treats code=='101' invalid token, code=='102' invalid phone, etc. Curl-verified: our request now reaches the API correctly and returns {code:'101', status:'Error: invalid token'} — the token in .env is being REJECTED by the WhatsApp gateway. Code is correct; user must verify their token."
+  - task: "Stripe webhook signing secret"
+    implemented: true
+    working: true
+    file: "/app/backend/.env"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Set STRIPE_WEBHOOK_SECRET='whsec_OwJWz4MgxKAogBu7TYrZOt1Qw7pSQTKn' (the production BB KIGALI endpoint secret). Existing webhook handler /api/billing/stripe/webhook already uses stripe.Webhook.construct_event with this secret; unsigned events now rejected in prod."
+  - task: "SMS provider analytics"
     implemented: true
     working: true
     file: "/app/backend/server.py"
@@ -126,10 +137,10 @@ backend:
     status_history:
       - working: true
         agent: "main"
-        comment: "GET /api/admin/sms/providers returns {order, providers{name:{configured, senderId, from, endpoint, notes}}} — booleans only, secrets never exposed. POST /api/admin/sms/test {phone, message?} runs full chain and returns {sent, provider, attempts}. Curl-verified."
+        comment: "Added db.sms_deliveries collection — every provider attempt is now recorded with {provider, success, skipped, response, weekKey, createdAt}. GET /api/admin/sms/analytics?days=7 returns {windowDays, totals, providers[], byDay[]} with success rate per provider. Includes zero-data providers so UI always shows all 4. Curl-verified with real test SMS run that recorded 4 rows (2 attempts + 2 skipped)."
 
 frontend:
-  - task: "Admin SMS providers screen"
+  - task: "SMS Providers screen: Analytics dashboard"
     implemented: true
     working: "NA"
     file: "/app/frontend/app/admin/sms.tsx"
@@ -139,24 +150,26 @@ frontend:
     status_history:
       - working: "NA"
         agent: "main"
-        comment: "New screen at /admin/sms shows providers in priority order with READY/OFF badges, sender IDs, and inline notes. Has a Send Test SMS input + button that surfaces which provider succeeded. Card added to admin home with icon 'chatbubbles-outline'. Route registered in root layout."
+        comment: "Added Analytics card at top of screen (only visible when attempts>0): 3-stat grid (Delivered, Attempts, Success rate %) + horizontal bar chart per provider showing delivered/attempts ratio. Fetched in parallel with providers list."
 
 metadata:
   created_by: "main_agent"
   version: "1.0"
-  test_sequence: 8
+  test_sequence: 9
   run_ui: true
 
 test_plan:
   current_focus:
-    - "Multi-provider SMS chain"
-    - "Admin SMS provider status + test endpoint"
-    - "Admin SMS providers screen"
+    - "WhatsApp OTP wiring (nostress.vip api_com.php)"
+    - "Stripe webhook signing secret"
+    - "SMS provider analytics"
+    - "SMS Providers screen: Analytics dashboard"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
   - agent: "main"
-    message: "Built pluggable SMS provider chain with fallback. Currently only Route Mobile is configured (and returning 1703 = credentials/IP not whitelisted). User is expected to add Twilio/Africa's Talking/WhatsApp API keys later. Please verify: (1) GET /api/admin/sms/providers returns 4 providers with correct .configured booleans. (2) POST /api/admin/sms/test with a phone tries each provider and returns attempts string with all providers listed. (3) Non-admin auth is rejected. (4) Frontend: admin can navigate to Admin > SMS Providers, see 4-row list with priority badges, see READY/OFF badges, can send a test SMS. Admin phone +250798875272, OTP in testCode field of otp/start."
+    message: "USER-REPORTED BUG: 'check if OTP can deliver via WhatsApp'. I have wired WhatsApp per the nostress.vip API docs. Curl test confirms the request format is correct — but their API returned {code:'101', status:'Error: invalid token'} for the token the user provided. So: (1) validate the WhatsApp integration CODE is correct (the request body must be {action:'send', auth:<token>, tel:<phone-no-+>, msg:<text>} POSTed as JSON to https://whatsapp.nostress.vip/api_com.php); (2) confirm the token is being sent as-is from .env; (3) confirm the failure path is being recorded in sms_deliveries collection; (4) confirm analytics endpoint returns provider-level counts; (5) frontend: SMS Providers screen shows the analytics card when there's data. Please do NOT test actual delivery to a WhatsApp number — token is confirmed rejected by the gateway. Admin phone +250798875272, OTP in testCode field."
+
 
