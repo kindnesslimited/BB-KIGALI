@@ -68,11 +68,15 @@ export default function VideoPlayerScreen() {
     if (momoPhone.replace(/\D/g, "").length < 9) { setErr("Enter a valid MoMo phone"); return; }
     setBuying(true); setErr(null);
     try {
-      const r = await api<{ reference: string; status: string }>(
+      const r = await api<{ reference: string; status: string; message?: string; failureReason?: string }>(
         `/billing/vod/${id}/momo`,
         { method: "POST", auth: true, body: { phone: momoPhone } }
       );
       setMomoStatus(r.status);
+      if (r.status === "failed") {
+        setErr(r.message || r.failureReason || "Payment was declined by the mobile money provider.");
+        return;
+      }
       const started = Date.now();
       while (Date.now() - started < 90_000) {
         try {
@@ -137,7 +141,14 @@ export default function VideoPlayerScreen() {
               <WebView
                 source={{ uri: payUrl }}
                 onNavigationStateChange={onPayNav}
-                onShouldStartLoadWithRequest={(req) => { onPayNav(req as any); return true; }}
+                onShouldStartLoadWithRequest={(req) => {
+                  const u = req.url || "";
+                  if (u.includes("/paypal/success") || u.includes("/paypal/cancel")) {
+                    onPayNav(req as any);
+                    return false;
+                  }
+                  return true;
+                }}
                 startInLoadingState
                 javaScriptEnabled
                 domStorageEnabled

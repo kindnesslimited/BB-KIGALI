@@ -102,10 +102,10 @@
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
 
-user_problem_statement: "Add admin management for Categories (unlimited, admin-created) so admins can add show categories like News, Sports, Music beyond the fixed VOD/Podcast/Interview."
+user_problem_statement: "1) Payments failing on Android — MoMo shows a generic error and PayPal on Android WebView may fail to detect success. 2) Add admin ability to promote other users to admin. 3) Better MoMo error surfacing so users know WHY payment failed."
 
 backend:
-  - task: "Categories CRUD"
+  - task: "Admin Users CRUD + Invite"
     implemented: true
     working: true
     file: "/app/backend/server.py"
@@ -115,59 +115,72 @@ backend:
     status_history:
       - working: true
         agent: "main"
-        comment: "Added GET /api/categories (public), GET/POST/PUT/DELETE /api/admin/categories. Includes: slug auto-generation, duplicate detection (409), cascade slug rename on shows.category, delete guard when shows still reference the category. Seeded default categories (vod, podcast, interview) with isDefault=true. Manually curl-tested full CRUD + all edge cases; all passed."
+        comment: "Added GET /api/admin/users (with optional ?q= search), PUT /api/admin/users/{id}/role (promote/demote with self-lockout + last-admin guard), POST /api/admin/users/invite (create-or-promote by phone/email), DELETE /api/admin/users/{id} (same guards). Curl-tested: list returned 19 users, invite promoted existing +250788111222 to admin."
+  - task: "MoMo failure_reason surfacing"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Both /billing/momo/initiate and /billing/vod/{id}/momo now return a human-readable `message` and raw `failureReason` when BeSoft/MTN rejects the debit (insufficient balance, invalid number, not registered, timeout). Confirmed via curl the message returns 'MoMo declined: provider error [HTTP_400]...'"
 
 frontend:
-  - task: "Admin Categories screen"
+  - task: "Admin Users screen"
     implemented: true
     working: "NA"
-    file: "/app/frontend/app/admin/categories.tsx"
+    file: "/app/frontend/app/admin/users.tsx"
     stuck_count: 0
     priority: "high"
     needs_retesting: true
     status_history:
       - working: "NA"
         agent: "main"
-        comment: "New screen with list + create/edit form. Toggle isActive, delete, edit name/order. Card added to /admin/index.tsx."
-  - task: "Dynamic categories in Admin Shows"
+        comment: "New screen: search bar, admin/user role toggle (with confirmation), delete user, and an Invite modal (phone or email tab) that creates or promotes to admin. Card added to /admin/index.tsx (icon: people-outline, route: /admin/users). Route registered in root layout."
+  - task: "PayPal WebView Android return URL fix"
     implemented: true
     working: "NA"
-    file: "/app/frontend/app/admin/shows.tsx"
+    file: "/app/frontend/app/checkout.tsx"
     stuck_count: 0
     priority: "high"
     needs_retesting: true
     status_history:
       - working: "NA"
         agent: "main"
-        comment: "Replaced hardcoded CATS array with API-loaded categories. Show list rows now display category name (not slug)."
-  - task: "Dynamic category chips on Shows tab"
+        comment: "Changed onShouldStartLoadWithRequest to return false when URL contains /paypal/success or /paypal/cancel — previously it returned true, so on Android the WebView attempted to load bbkigali.com/paypal/success (which is behind Netlify password protection = 401) before the modal closed, causing an error page flash. Also applied to /app/frontend/app/video/[id].tsx for VOD unlock PayPal WebView."
+  - task: "MoMo error surface in checkout + video"
     implemented: true
     working: "NA"
-    file: "/app/frontend/app/(tabs)/shows.tsx"
+    file: "/app/frontend/app/checkout.tsx, /app/frontend/app/video/[id].tsx"
     stuck_count: 0
     priority: "high"
     needs_retesting: true
     status_history:
       - working: "NA"
         agent: "main"
-        comment: "Chips are now loaded from /api/categories (with 'All' prepended)."
+        comment: "If backend returns status='failed' immediately (BeSoft/MTN rejects the debit), show the humanized `message` instead of entering pointless polling loop."
 
 metadata:
   created_by: "main_agent"
   version: "1.0"
-  test_sequence: 5
+  test_sequence: 6
   run_ui: true
 
 test_plan:
   current_focus:
-    - "Categories CRUD"
-    - "Admin Categories screen"
-    - "Dynamic categories in Admin Shows"
-    - "Dynamic category chips on Shows tab"
+    - "Admin Users CRUD + Invite"
+    - "MoMo failure_reason surfacing"
+    - "Admin Users screen"
+    - "PayPal WebView Android return URL fix"
+    - "MoMo error surface in checkout + video"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
   - agent: "main"
-    message: "Implemented dynamic category management. Backend endpoints tested via curl and all pass (create, dedupe, slug cascade rename, delete guard). Please validate the frontend flow end-to-end: login as admin (+250798875272, OTP code returned in /api/auth/otp/start response's testCode field), open Admin > Categories, add a new category (e.g. 'Music'), then open Admin > VOD & Podcasts to confirm the new chip appears, then open the public Shows tab to confirm it appears there too. Do not test payments/auth/SMS — only categories."
+    message: "User reported: 'Payments not working for all channels on Android — payment page opens but errors out'. Root cause analysis: (a) MoMo debit is being genuinely rejected by BeSoft/MTN with HTTP 400 (this is a real gateway rejection, not our code — user needs to contact BeSoft support to resolve their MTN provider status); however the frontend was showing a generic 'Payment failed' message instead of the specific reason. Now shows humanized reason. (b) PayPal WebView on Android was allowing navigation to bbkigali.com/paypal/success which is behind Netlify password protection — this caused an error page flash before the modal could close. Fixed by returning false from onShouldStartLoadWithRequest. Also added new Admin Users management screen (search, toggle role, invite by phone/email). Please test: (1) admin can navigate to Admin > Users, see list, toggle roles, invite new user; (2) MoMo failure returns human-readable message; (3) PayPal WebView modal closes cleanly on success URL (returns false to avoid loading broken bbkigali.com). Admin phone: +250798875272 (OTP is returned in testCode field of /api/auth/otp/start response)."
+

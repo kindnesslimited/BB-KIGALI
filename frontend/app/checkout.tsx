@@ -94,11 +94,16 @@ export default function Checkout() {
         return;
       }
       if (method === "mtn_momo") {
-        const r = await api<{ reference: string; status: string }>(
+        const r = await api<{ reference: string; status: string; message?: string; failureReason?: string }>(
           "/billing/momo/initiate",
           { method: "POST", auth: true, body: { plan, phone } }
         );
         setMomoStatus(r.status);
+        // If BeSoft already returned "failed" (e.g. MTN rejected debit immediately),
+        // surface the real reason instead of entering the polling loop.
+        if (r.status === "failed") {
+          throw new Error(r.message || r.failureReason || "MoMo request was declined.");
+        }
         await pollMomo(r.reference);
         return;
       }
@@ -160,7 +165,16 @@ export default function Checkout() {
               <WebView
                 source={{ uri: paypalUrl }}
                 onNavigationStateChange={onPayPalNav}
-                onShouldStartLoadWithRequest={(req) => { onPayPalNav(req as any); return true; }}
+                onShouldStartLoadWithRequest={(req) => {
+                  const u = req.url || "";
+                  // Intercept our terminal URLs BEFORE the WebView tries to load them
+                  // (bbkigali.com may be unreachable / password-protected).
+                  if (u.includes("/paypal/success") || u.includes("/paypal/cancel")) {
+                    onPayPalNav(req as any);
+                    return false;
+                  }
+                  return true;
+                }}
                 startInLoadingState
                 javaScriptEnabled
                 domStorageEnabled

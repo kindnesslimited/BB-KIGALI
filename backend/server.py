@@ -588,24 +588,67 @@ async def momo_initiate(body: MoMoInitiateIn, user = Depends(get_current_user)):
 
     if r.status_code >= 300:
         logger.error("BeSoft transfer failed %s %s", r.status_code, r.text)
-        await db.payments.update_one({"reference": reference}, {"$set": {"status": "failed", "error": r.text[:500]}})
-        raise HTTPException(502, f"MoMo provider rejected the request: {r.text[:200]}")
+        try:
+            err_data = r.json()
+        except Exception:
+            err_data = {}
+        provider_msg = (
+            (err_data.get("message") if isinstance(err_data, dict) else None)
+            or (err_data.get("data", {}).get("message") if isinstance(err_data, dict) else None)
+            or r.text[:200]
+        )
+        await db.payments.update_one({"reference": reference}, {"$set": {"status": "failed", "error": r.text[:500], "failureReason": provider_msg}})
+        # Instead of raising 502 (opaque to users), return a structured "failed" so the frontend
+        # shows the humanized message uniformly. Android WebView renders this cleanly.
+        return {
+            "reference": reference,
+            "besoftTxId": None,
+            "status": "failed",
+            "message": f"MoMo provider rejected the request: {provider_msg[:120]}",
+            "failureReason": provider_msg,
+            "amount": plan["amount"],
+            "currency": plan["currency"],
+            "pollUrl": f"{PUBLIC_BASE_URL}/api/billing/momo/{reference}",
+        }
 
     data = r.json().get("data") or {}
     debit = (data.get("debit") or {}) if isinstance(data, dict) else {}
     besoft_tx_id = debit.get("id") or data.get("id")
     besoft_status = (debit.get("status") or data.get("status") or "pending").lower()
+    failure_reason = debit.get("failure_reason") or data.get("failure_reason")
 
-    await db.payments.update_one(
-        {"reference": reference},
-        {"$set": {"besoftTxId": besoft_tx_id, "besoftPayload": data, "status": besoft_status if besoft_status in ("pending", "processing", "success", "failed") else "pending"}},
-    )
+    normalized_status = besoft_status if besoft_status in ("pending", "processing", "success", "failed") else "pending"
+    update_fields = {"besoftTxId": besoft_tx_id, "besoftPayload": data, "status": normalized_status}
+    if failure_reason:
+        update_fields["failureReason"] = failure_reason
+    await db.payments.update_one({"reference": reference}, {"$set": update_fields})
+
+    # Friendly message
+    if normalized_status == "failed":
+        friendly = "MoMo declined the payment"
+        if failure_reason:
+            # Simplify BeSoft's technical string into something user-friendly
+            fr_lower = failure_reason.lower()
+            if "insufficient" in fr_lower:
+                friendly = "Insufficient MoMo balance. Please top up and try again."
+            elif "invalid" in fr_lower and "number" in fr_lower:
+                friendly = "MoMo number is invalid. Please check and try again."
+            elif "not registered" in fr_lower or "not found" in fr_lower:
+                friendly = "This number is not registered for MTN Mobile Money."
+            elif "timeout" in fr_lower or "timed out" in fr_lower:
+                friendly = "MoMo request timed out. Please try again."
+            else:
+                friendly = f"MoMo declined: {failure_reason[:120]}"
+        message = friendly
+    else:
+        message = "Approve the payment on your phone. We'll notify you when it completes."
 
     return {
         "reference": reference,
         "besoftTxId": besoft_tx_id,
-        "status": besoft_status,
-        "message": "Approve the payment on your phone. We'll notify you when it completes.",
+        "status": normalized_status,
+        "message": message,
+        "failureReason": failure_reason,
         "amount": plan["amount"],
         "currency": plan["currency"],
         "pollUrl": f"{PUBLIC_BASE_URL}/api/billing/momo/{reference}",
@@ -1111,9 +1154,29 @@ async def vod_purchase_momo(show_id: str, body: VodMoMoIn, user = Depends(get_cu
     debit = (data.get("debit") or {}) if isinstance(data, dict) else {}
     besoft_tx_id = debit.get("id") or data.get("id")
     besoft_status = (debit.get("status") or "pending").lower()
+    failure_reason = debit.get("failure_reason") or data.get("failure_reason")
     normalized = besoft_status if besoft_status in ("pending", "processing", "success", "failed") else "pending"
-    await db.vod_purchases.update_one({"reference": reference}, {"$set": {"besoftTxId": besoft_tx_id, "besoftPayload": data, "status": normalized}})
-    return {"reference": reference, "besoftTxId": besoft_tx_id, "status": normalized, "amount": amount, "currency": "RWF"}
+    update_fields = {"besoftTxId": besoft_tx_id, "besoftPayload": data, "status": normalized}
+    if failure_reason:
+        update_fields["failureReason"] = failure_reason
+    await db.vod_purchases.update_one({"reference": reference}, {"$set": update_fields})
+
+    message = "Approve the payment on your phone."
+    if normalized == "failed":
+        fr = (failure_reason or "").lower()
+        if "insufficient" in fr:
+            message = "Insufficient MoMo balance. Please top up and try again."
+        elif "invalid" in fr and "number" in fr:
+            message = "MoMo number is invalid. Please check and try again."
+        elif "not registered" in fr or "not found" in fr:
+            message = "This number is not registered for MTN Mobile Money."
+        elif "timeout" in fr or "timed out" in fr:
+            message = "MoMo request timed out. Please try again."
+        elif failure_reason:
+            message = f"MoMo declined: {failure_reason[:120]}"
+        else:
+            message = "MoMo declined the payment."
+    return {"reference": reference, "besoftTxId": besoft_tx_id, "status": normalized, "amount": amount, "currency": "RWF", "message": message, "failureReason": failure_reason}
 
 
 @api.get("/billing/vod/{show_id}/momo/{reference}")
@@ -1274,6 +1337,132 @@ async def admin_create_show(body: ShowIn, _ = Depends(require_admin)):
 @api.delete("/admin/shows/{show_id}")
 async def admin_delete_show(show_id: str, _ = Depends(require_admin)):
     await db.shows.delete_one({"id": show_id})
+    return {"ok": True}
+
+
+# ---------- Admin Users management ----------
+class AdminUserRoleIn(BaseModel):
+    role: Literal["user", "admin"]
+
+
+class AdminInviteIn(BaseModel):
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    role: Literal["user", "admin"] = "admin"
+    displayName: Optional[str] = None
+
+
+def _clean_user(u: dict) -> dict:
+    """Strip internal fields from a user document for admin API responses."""
+    return {
+        "id": u.get("id"),
+        "phone": u.get("phone"),
+        "email": u.get("email"),
+        "displayName": u.get("displayName"),
+        "picture": u.get("picture"),
+        "role": u.get("role", "user"),
+        "tier": u.get("tier", "free"),
+        "subscriptionExpiresAt": u.get("subscriptionExpiresAt"),
+        "createdAt": u.get("createdAt"),
+        "provider": u.get("provider"),
+    }
+
+
+@api.get("/admin/users")
+async def admin_list_users(_ = Depends(require_admin), q: Optional[str] = None):
+    """List all users. Optional ?q= filter searches phone/email/displayName."""
+    query: dict = {}
+    if q:
+        import re as _re
+        rx = _re.compile(_re.escape(q), _re.IGNORECASE)
+        query = {"$or": [
+            {"phone": {"$regex": rx}},
+            {"email": {"$regex": rx}},
+            {"displayName": {"$regex": rx}},
+        ]}
+    docs = await db.users.find(query, {"_id": 0}).sort("createdAt", -1).to_list(500)
+    return [_clean_user(u) for u in docs]
+
+
+@api.put("/admin/users/{user_id}/role")
+async def admin_set_user_role(user_id: str, body: AdminUserRoleIn, current = Depends(require_admin)):
+    """Promote/demote a user. Guard: an admin cannot demote themselves (avoid locking out the last admin)."""
+    target = await db.users.find_one({"id": user_id})
+    if not target:
+        raise HTTPException(404, "User not found")
+    if user_id == current["id"] and body.role != "admin":
+        raise HTTPException(400, "You cannot demote yourself. Ask another admin to do it.")
+    if body.role != "admin" and target.get("role") == "admin":
+        # About to demote an admin — make sure at least one other admin remains
+        remaining = await db.users.count_documents({"role": "admin", "id": {"$ne": user_id}})
+        if remaining == 0:
+            raise HTTPException(400, "At least one admin must remain.")
+    await db.users.update_one(
+        {"id": user_id},
+        {"$set": {"role": body.role, "updatedAt": datetime.now(timezone.utc).isoformat()}},
+    )
+    updated = await db.users.find_one({"id": user_id}, {"_id": 0})
+    return _clean_user(updated)
+
+
+@api.post("/admin/users/invite")
+async def admin_invite_user(body: AdminInviteIn, _ = Depends(require_admin)):
+    """Create an admin (or user) account by phone or email. If they already exist, updates their role."""
+    if not body.phone and not body.email:
+        raise HTTPException(400, "Provide phone or email")
+
+    phone = body.phone.strip() if body.phone else None
+    email = body.email.strip().lower() if body.email else None
+
+    # Try to find existing user by phone or email
+    existing = None
+    if phone:
+        # Match with or without leading + and prefix
+        normalized = phone.lstrip("+")
+        existing = await db.users.find_one({
+            "$or": [{"phone": phone}, {"phone": normalized}, {"phone": "+" + normalized}],
+        })
+    if not existing and email:
+        existing = await db.users.find_one({"email": email})
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if existing:
+        await db.users.update_one(
+            {"id": existing["id"]},
+            {"$set": {"role": body.role, "updatedAt": now_iso}},
+        )
+        u = await db.users.find_one({"id": existing["id"]}, {"_id": 0})
+        return {**_clean_user(u), "created": False}
+
+    # Create a brand-new stub user
+    new_id = str(uuid.uuid4())
+    doc = {
+        "id": new_id,
+        "phone": phone,
+        "email": email,
+        "displayName": body.displayName,
+        "role": body.role,
+        "tier": "free",
+        "subscriptionExpiresAt": None,
+        "createdAt": now_iso,
+        "provider": "admin-invite",
+    }
+    await db.users.insert_one(doc.copy())
+    return {**_clean_user(doc), "created": True}
+
+
+@api.delete("/admin/users/{user_id}")
+async def admin_delete_user(user_id: str, current = Depends(require_admin)):
+    if user_id == current["id"]:
+        raise HTTPException(400, "You cannot delete yourself.")
+    target = await db.users.find_one({"id": user_id})
+    if not target:
+        raise HTTPException(404, "User not found")
+    if target.get("role") == "admin":
+        remaining = await db.users.count_documents({"role": "admin", "id": {"$ne": user_id}})
+        if remaining == 0:
+            raise HTTPException(400, "At least one admin must remain.")
+    await db.users.delete_one({"id": user_id})
     return {"ok": True}
 
 
