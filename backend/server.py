@@ -746,11 +746,33 @@ async def momo_initiate(body: MoMoInitiateIn, user = Depends(get_current_user)):
     debit_amount = float(plan["amount"])
     # Merchant charge_percent is 0 on this account (confirmed via /transfer response). Adjust if BeSoft changes it.
     credit_amount = debit_amount
+
+    async def _try_besoft(endpoint: str, payload: dict) -> tuple[int, str, dict]:
+        """Attempt a BeSoft call and return (status, raw_text, parsed_data)."""
+        async with httpx.AsyncClient(timeout=30.0, verify=BESOFT_VERIFY_SSL) as c:
+            r = await c.post(f"{BESOFT_BASE_URL}{endpoint}", headers=_besoft_headers(), json=payload)
+        parsed: dict = {}
+        try:
+            parsed = r.json() or {}
+        except Exception:
+            parsed = {}
+        return r.status_code, r.text or "", parsed
+
+    def _extract_debit(data: dict) -> tuple[str, str | None, str | None]:
+        """Return (normalized_status, besoft_tx_id, failure_reason) from a BeSoft response.data payload."""
+        d = (data.get("data") or {}) if isinstance(data, dict) else {}
+        debit = (d.get("debit") or {}) if isinstance(d, dict) else {}
+        besoft_id = debit.get("id") or d.get("id")
+        raw_status = (debit.get("status") or d.get("status") or "pending").lower()
+        norm = raw_status if raw_status in ("pending", "processing", "success", "failed") else "pending"
+        return norm, besoft_id, debit.get("failure_reason") or d.get("failure_reason")
+
+    # ---- Attempt 1: debit-credit atomic ----
     payload = {
         "idempotency_key": reference,
         "debit": {
             "amount": debit_amount,
-            "currency": plan["currency"],  # RWF
+            "currency": plan["currency"],
             "payment_method": "mtn_momo_collection",
             "payer_identifier": payer,
             "description": f"BB FM Kigali — {plan['label']}",
@@ -786,26 +808,59 @@ async def momo_initiate(body: MoMoInitiateIn, user = Depends(get_current_user)):
     await db.payments.insert_one(payment_doc.copy())
 
     try:
-        async with httpx.AsyncClient(timeout=30.0, verify=BESOFT_VERIFY_SSL) as c:
-            r = await c.post(f"{BESOFT_BASE_URL}/public/payments/debit-credit", headers=_besoft_headers(), json=payload)
+        status_code, resp_text, resp_data = await _try_besoft("/public/payments/debit-credit", payload)
     except httpx.RequestError as e:
         await db.payments.update_one({"reference": reference}, {"$set": {"status": "failed", "error": f"network: {e}"}})
         raise HTTPException(502, f"Unable to reach payment provider: {e}")
 
-    if r.status_code >= 300:
-        logger.error("BeSoft transfer failed %s %s", r.status_code, r.text)
+    debit_norm, besoft_tx_id, failure_reason = _extract_debit(resp_data)
+    attempt_note = "debit_credit"
+
+    # ---- Fallback: if the debit-credit atomic fails at provider level (HTTP 400 from MTN),
+    # retry with a pure /debit call (collection only). Many BeSoft accounts are provisioned for
+    # MoMo collections but NOT for atomic disbursement, so this often clears the failure.
+    should_fallback = (
+        status_code >= 300 or debit_norm == "failed"
+    ) and (
+        failure_reason is None or "HTTP_400" in (failure_reason or "") or "provider error" in (failure_reason or "").lower()
+    )
+    if should_fallback:
+        logger.info("[momo] debit-credit failed, trying pure /debit fallback (reason=%s)", (failure_reason or resp_text[:120]))
+        pure_debit_payload = {
+            "idempotency_key": reference + "-fb",
+            "amount": debit_amount,
+            "currency": plan["currency"],
+            "payment_method": "mtn_momo_collection",
+            "payer_identifier": payer,
+            "description": f"BB FM Kigali — {plan['label']}",
+            "country": "RW",
+            "metadata": {"userId": user["id"], "plan": body.plan, "fallback": True},
+        }
         try:
-            err_data = r.json()
-        except Exception:
-            err_data = {}
+            status_code2, resp_text2, resp_data2 = await _try_besoft("/public/payments/debit", pure_debit_payload)
+        except httpx.RequestError:
+            status_code2, resp_text2, resp_data2 = 599, "network_error", {}
+        if status_code2 < 300:
+            # Fallback succeeded; use its status/data.
+            debit_norm2, besoft_tx_id2, failure_reason2 = _extract_debit(resp_data2)
+            if debit_norm2 != "failed":
+                status_code, resp_text, resp_data = status_code2, resp_text2, resp_data2
+                debit_norm, besoft_tx_id, failure_reason = debit_norm2, besoft_tx_id2, failure_reason2
+                attempt_note = "debit_only_fallback"
+
+    # ---- Persist and respond ----
+    if status_code >= 300:
+        logger.error("BeSoft transfer failed %s %s (attempt=%s)", status_code, resp_text[:200], attempt_note)
         provider_msg = (
-            (err_data.get("message") if isinstance(err_data, dict) else None)
-            or (err_data.get("data", {}).get("message") if isinstance(err_data, dict) else None)
-            or r.text[:200]
+            (resp_data.get("message") if isinstance(resp_data, dict) else None)
+            or (resp_data.get("data", {}).get("message") if isinstance(resp_data, dict) else None)
+            or failure_reason
+            or resp_text[:200]
         )
-        await db.payments.update_one({"reference": reference}, {"$set": {"status": "failed", "error": r.text[:500], "failureReason": provider_msg}})
-        # Instead of raising 502 (opaque to users), return a structured "failed" so the frontend
-        # shows the humanized message uniformly. Android WebView renders this cleanly.
+        await db.payments.update_one(
+            {"reference": reference},
+            {"$set": {"status": "failed", "error": resp_text[:500], "failureReason": provider_msg, "besoftAttempt": attempt_note}},
+        )
         return {
             "reference": reference,
             "besoftTxId": None,
@@ -817,24 +872,26 @@ async def momo_initiate(body: MoMoInitiateIn, user = Depends(get_current_user)):
             "pollUrl": f"{PUBLIC_BASE_URL}/api/billing/momo/{reference}",
         }
 
-    data = r.json().get("data") or {}
-    debit = (data.get("debit") or {}) if isinstance(data, dict) else {}
-    besoft_tx_id = debit.get("id") or data.get("id")
-    besoft_status = (debit.get("status") or data.get("status") or "pending").lower()
-    failure_reason = debit.get("failure_reason") or data.get("failure_reason")
-
-    normalized_status = besoft_status if besoft_status in ("pending", "processing", "success", "failed") else "pending"
-    update_fields = {"besoftTxId": besoft_tx_id, "besoftPayload": data, "status": normalized_status}
-    if failure_reason:
-        update_fields["failureReason"] = failure_reason
+    # 2xx from BeSoft — apply normal handling
+    data_top = resp_data.get("data") if isinstance(resp_data, dict) else {}
+    besoft_status = debit_norm
+    failure_reason_final = failure_reason
+    normalized_status = besoft_status
+    update_fields = {
+        "besoftTxId": besoft_tx_id,
+        "besoftPayload": data_top,
+        "status": normalized_status,
+        "besoftAttempt": attempt_note,
+    }
+    if failure_reason_final:
+        update_fields["failureReason"] = failure_reason_final
     await db.payments.update_one({"reference": reference}, {"$set": update_fields})
 
     # Friendly message
     if normalized_status == "failed":
         friendly = "MoMo declined the payment"
-        if failure_reason:
-            # Simplify BeSoft's technical string into something user-friendly
-            fr_lower = failure_reason.lower()
+        if failure_reason_final:
+            fr_lower = failure_reason_final.lower()
             if "insufficient" in fr_lower:
                 friendly = "Insufficient MoMo balance. Please top up and try again."
             elif "invalid" in fr_lower and "number" in fr_lower:
@@ -843,8 +900,10 @@ async def momo_initiate(body: MoMoInitiateIn, user = Depends(get_current_user)):
                 friendly = "This number is not registered for MTN Mobile Money."
             elif "timeout" in fr_lower or "timed out" in fr_lower:
                 friendly = "MoMo request timed out. Please try again."
+            elif "http_400" in fr_lower or "provider error" in fr_lower:
+                friendly = "MTN MoMo temporarily unavailable. Please try Card payment or try again in a few minutes."
             else:
-                friendly = f"MoMo declined: {failure_reason[:120]}"
+                friendly = f"MoMo declined: {failure_reason_final[:120]}"
         message = friendly
     else:
         message = "Approve the payment on your phone. We'll notify you when it completes."
@@ -854,7 +913,7 @@ async def momo_initiate(body: MoMoInitiateIn, user = Depends(get_current_user)):
         "besoftTxId": besoft_tx_id,
         "status": normalized_status,
         "message": message,
-        "failureReason": failure_reason,
+        "failureReason": failure_reason_final,
         "amount": plan["amount"],
         "currency": plan["currency"],
         "pollUrl": f"{PUBLIC_BASE_URL}/api/billing/momo/{reference}",

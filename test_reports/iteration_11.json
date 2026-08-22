@@ -1,0 +1,42 @@
+{
+  "summary": "MoMo user-reported error fix verified end-to-end. Backend: 10/10 pytest cases pass. POST /api/billing/momo/initiate {plan:basic_monthly,phone:+250788999888} returns 200 with all required fields (reference, besoftTxId, status, message, failureReason, amount, currency, pollUrl). status=='failed' as expected (BeSoft gateway broken). message='MTN MoMo temporarily unavailable. Please try Card payment or try again in a few minutes.' (humanized). failureReason='provider error [HTTP_400]: unexpected status 400: (retryable: false)' (raw preserved for debugging). Payment doc in Mongo has besoftAttempt='debit_credit' (fallback /debit also failed at BeSoft, so original attempt_note is kept — verified in server logs: '[momo] debit-credit failed, trying pure /debit fallback' logged for every request). All 4 plans (basic_monthly=1000, basic_yearly=10000, premium_monthly=3000, premium_yearly=30000) return the humanized failure. Non-admin user (+250799001234) receives the same friendly error. Bad plan → 422 (Pydantic Literal validation — noted below), bad phone → 400 'Invalid payer phone number'. VOD MoMo endpoint /api/billing/vod/{show_id}/momo unaffected (still uses debit-credit directly, returns 200 with its own humanized 'temporarily unavailable' text). Frontend: admin login via seeded token → /checkout?plan=basic_monthly → tap 'MTN Mobile Money' → enter '+250788999888' → tap PAY → after ~5s the error text 'MTN MoMo temporarily unavailable. Please try Card payment or try again in a few minutes.' renders in checkout-error and the momo-fallback-stripe banner ('Try card payment instead?') appears just below. Tapping the fallback banner switches method to Card (Stripe) — radio moves, phone input hides, PAY btn label changes to 'PAY 1.00 EUR', error clears, fallback banner hides. All flows work exactly as specified.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/billing/momo/initiate", "issue": "Bad plan returns HTTP 422 (Pydantic Literal validation) instead of 400 as spec suggested. Behaviour is correct FastAPI/Pydantic default — server-side 'Invalid plan' check at server.py:740 is unreachable because the request is rejected earlier by the MoMoInitiateIn model. If a 400 code is preferred, either loosen MoMoInitiateIn.plan to str and rely on the manual check, or add a custom exception handler. Not a functional bug — malformed plans are still correctly rejected before hitting BeSoft."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "checkout.tsx fallback banner (momo-fallback-stripe)", "issue": "When the MoMo error + fallback banner render, they sit at the very bottom of the ScrollView and the last row (banner) is partially obscured by the sticky footer PAY button on iPhone-size screens (390x844). Users on shorter viewports have to scroll to reach it. Consider raising ScrollView paddingBottom from 160 to ~220, or animate a scrollToEnd when suggestStripe becomes true so the banner is fully in view.", "testID": "momo-fallback-stripe", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_momo_fallback_fix.py (NEW — 10 tests, all pass)",
+    "/app/test_reports/pytest/pytest_iter11.xml"
+  ],
+  "action_items": [
+    "OPTIONAL (LOW): In /app/frontend/app/checkout.tsx after `setSuggestStripe(true)` (in `pay()` handler around line ~165) add `setTimeout(() => scrollViewRef.current?.scrollToEnd({animated:true}), 100)` so the fallback banner is auto-scrolled into view on smaller devices. Alternatively bump paddingBottom of the ScrollView from 160 to ~220.",
+    "OPTIONAL: If a 400 (not 422) response is required for invalid plans, change MoMoInitiateIn.plan from Literal to str so the manual `if not plan:` server-side check at server.py:740 fires."
+  ],
+  "critical_code_review_comments": [
+    "server.py:750-768 _try_besoft + _extract_debit helpers are clean DRY wrappers — normalize both /debit-credit and /debit response shapes into a single (status, tx_id, failure_reason) tuple.",
+    "server.py:770-849 debit-credit → /debit fallback logic is correct: triggers on status_code>=300 OR debit_norm=='failed' when failure_reason mentions HTTP_400/provider error. Fallback only overwrites the original attempt when its own debit succeeds (debit_norm2!='failed'), so besoftAttempt stays 'debit_credit' when both fail — accurate accounting.",
+    "server.py:891-909 humanized error branch: correctly maps failure_reason substrings (insufficient/invalid number/not registered/timeout/HTTP_400) to friendly copy. HTTP_400 branch delivers exactly 'MTN MoMo temporarily unavailable. Please try Card payment...' which is what the user requested.",
+    "server.py:864-872 non-2xx BeSoft branch: falls back to 'MoMo provider rejected the request: <msg>' message. This branch is NOT what the user sees today (BeSoft returns HTTP 200 with debit.status=failed), so the humanized copy at line 904 fires. If BeSoft ever starts returning 5xx, users would see the raw provider_msg — consider adding the same humanized mapping here for consistency.",
+    "frontend/app/checkout.tsx:157-167 correctly reads r.message (humanized) as the thrown Error, so the checkout-error banner shows the friendly copy. setSuggestStripe(true) triggers the fallback CTA. Clean flow.",
+    "frontend/app/checkout.tsx:375-388 fallback banner has proper testID='momo-fallback-stripe' and onPress switches method + clears err + hides banner in one shot. Only concern is layout height vs sticky footer (see ui_bugs above)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_momo_fallback_fix.py (created)"
+  ],
+  "success_rate": {"backend": "100% (10/10)", "frontend": "100% (humanized error + fallback banner + method-switch flow all verified)"},
+  "seed_data_creation": "Test inserted ~7 payment docs (all status=failed, plan=basic_monthly/basic_yearly/premium_monthly/premium_yearly, method=mtn_momo) + 1 OTP challenge for +250799001234. Payment docs are harmless (admin dashboard filters by createdAt window). Clear with `db.payments.deleteMany({phone:'250788999888', status:'failed'})` if desired.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend tests: `python -m pytest backend/tests/test_momo_fallback_fix.py -v -o addopts=''`. Non-admin OTP now delivers via WhatsApp so /otp/start no longer returns testCode for random phones — the user_token fixture seeds the OTP challenge directly into mongo (helper `_get_token_via_mongo`). Admin phone +250798875272 still returns testCode='123456'. To reach /checkout in the web preview, set localStorage.setItem('bbfm.token', JSON.stringify(rawJwt)) then go to /checkout?plan=basic_monthly&amount=1000. Note: the momo-fallback-stripe banner is at the bottom of the ScrollView and can be partially hidden behind the sticky PAY button footer — scroll it into view before clicking in Playwright.",
+  "rca_of_issue": "N/A — fix works as designed. Reproduction: POST /api/billing/momo/initiate {plan:basic_monthly, phone:+250788999888} → BeSoft's /public/payments/debit-credit returns HTTP 200 with data.debit.status='failed' and failure_reason='provider error [HTTP_400]: unexpected status 400: (retryable: false)'. Fallback is triggered → /public/payments/debit is attempted — also fails at BeSoft provider. Backend keeps besoftAttempt='debit_credit' (accurate — fallback didn't succeed) and returns the humanized 'MTN MoMo temporarily unavailable...' message. Frontend renders it in checkout-error and shows the Stripe fallback CTA. User no longer sees the cryptic 'MoMo declined: provider error [HTTP_400]...' string. Original underlying BeSoft gateway issue is out of scope — Emergent code is doing everything it can (retry with simpler endpoint, humanize, offer alternative)."
+}
