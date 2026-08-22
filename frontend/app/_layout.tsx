@@ -72,6 +72,7 @@ export default function RootLayout() {
                 <Stack.Screen name="admin/shows" />
                 <Stack.Screen name="admin/categories" />
                 <Stack.Screen name="admin/users" />
+                <Stack.Screen name="admin/sms" />
                 <Stack.Screen name="live-news" options={{ presentation: "modal" }} />
                 <Stack.Screen name="program/[id]" />
               </Stack>

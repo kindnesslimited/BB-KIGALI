@@ -102,10 +102,10 @@
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
 
-user_problem_statement: "Enable Stripe LIVE card payments for subscriptions + VOD unlock (Android + Web only, hidden on iOS). Add MoMo→Stripe auto-fallback suggestion when MoMo declines. Route Mobile SMS: preview server IP is 34.7.135.173 (to be whitelisted). Airtel stays 'Coming soon'."
+user_problem_statement: "Route Mobile SMS needs IP whitelisting which Emergent K8s can't guarantee (no static IP). User wants a multi-provider SMS chain that tries each in order — if one fails, use the next. Providers: Route Mobile, Twilio, Africa's Talking, WhatsApp (whatsapp.nostress.vip)."
 
 backend:
-  - task: "Stripe LIVE integration"
+  - task: "Multi-provider SMS chain"
     implemented: true
     working: true
     file: "/app/backend/server.py"
@@ -115,48 +115,48 @@ backend:
     status_history:
       - working: true
         agent: "main"
-        comment: "Added Stripe endpoints per integration_expert playbook: GET /api/billing/stripe/config, POST /api/billing/stripe/create-checkout (subscription OR vod), GET /api/billing/stripe/session-status/{id}, POST /api/billing/stripe/webhook (idempotent via db.stripe_events), GET /api/billing/stripe/return (HTML), GET /api/billing/stripe/cancel (HTML). Uses hosted Checkout with inline price_data (EUR). Curl-tested: subscription and VOD both return cs_live_ session IDs with proper checkout URLs. Managed Payments disabled per-session (was causing 'tax code required' error). LIVE keys stored in backend/.env; iOS clients gate the UI so Stripe purchase surface never renders there."
+        comment: "Refactored _send_sms into a pluggable chain. Added 4 providers: _sms_route_mobile (existing), _sms_twilio (Basic auth, MG-prefix messaging service support), _sms_africas_talking (apiKey header + Recipients.status='Success' check), _sms_whatsapp (POSTs JSON with multi-key body — to/phone/number/message/text — to any nostress-compatible endpoint). SMS_PROVIDER_ORDER env var controls sequence. First success wins. OTP start now checks 'any_provider_ready' instead of only Route Mobile. Curl-verified: Route Mobile still returns 1703, chain falls through to unconfigured providers, response shows all attempts."
+  - task: "Admin SMS provider status + test endpoint"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "GET /api/admin/sms/providers returns {order, providers{name:{configured, senderId, from, endpoint, notes}}} — booleans only, secrets never exposed. POST /api/admin/sms/test {phone, message?} runs full chain and returns {sent, provider, attempts}. Curl-verified."
 
 frontend:
-  - task: "Checkout: Add Stripe method + iOS gating + MoMo→Stripe fallback"
+  - task: "Admin SMS providers screen"
     implemented: true
     working: "NA"
-    file: "/app/frontend/app/checkout.tsx"
+    file: "/app/frontend/app/admin/sms.tsx"
     stuck_count: 0
     priority: "high"
     needs_retesting: true
     status_history:
       - working: "NA"
         agent: "main"
-        comment: "Added stripe method row (hidden on iOS via ALL_METHODS.filter). WebView modal with #635bff header opens hosted Stripe Checkout URL. onShouldStartLoadWithRequest intercepts /billing/stripe/return and /billing/stripe/cancel URLs. On web, opens Stripe in new tab and polls session-status. When MoMo returns status='failed' on non-iOS, shows a tap-to-switch 'Try card payment instead?' fallback banner."
-  - task: "VOD Player: Add Stripe unlock button + fallback"
-    implemented: true
-    working: "NA"
-    file: "/app/frontend/app/video/[id].tsx"
-    stuck_count: 0
-    priority: "high"
-    needs_retesting: true
-    status_history:
-      - working: "NA"
-        agent: "main"
-        comment: "Locked box now shows 3 payment options stacked vertically: Card (Stripe, hidden on iOS), PayPal, MoMo. buyVodStripe calls /billing/stripe/create-checkout with purchase_type='vod', opens the same WebView. Same URL interception applied. Post-MoMo-failure suggests Stripe (non-iOS)."
+        comment: "New screen at /admin/sms shows providers in priority order with READY/OFF badges, sender IDs, and inline notes. Has a Send Test SMS input + button that surfaces which provider succeeded. Card added to admin home with icon 'chatbubbles-outline'. Route registered in root layout."
 
 metadata:
   created_by: "main_agent"
   version: "1.0"
-  test_sequence: 7
+  test_sequence: 8
   run_ui: true
 
 test_plan:
   current_focus:
-    - "Stripe LIVE integration"
-    - "Checkout: Add Stripe method + iOS gating + MoMo→Stripe fallback"
-    - "VOD Player: Add Stripe unlock button + fallback"
+    - "Multi-provider SMS chain"
+    - "Admin SMS provider status + test endpoint"
+    - "Admin SMS providers screen"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
   - agent: "main"
-    message: "Enabled Stripe LIVE with user-provided keys. Please validate the endpoints work and the frontend flow renders correctly. IMPORTANT — since these are LIVE keys, do NOT attempt to complete a real payment. Instead: (1) hit /api/billing/stripe/config and expect enabled=true, publishableKey starts with pk_live_. (2) POST /api/billing/stripe/create-checkout with subscription+plan and with vod+show_id — both should return sessionId (starts with cs_live_) and checkoutUrl. (3) Session-status for a non-owner should return 404 (auth boundary). (4) Frontend: on the checkout screen (via paywall → pick plan), verify 3 methods visible (PayPal / Stripe / MoMo) with Airtel showing 'Coming soon'. On iOS platform simulation the Stripe row should be hidden — since we can only test web/Android on the emulator, confirm the isIOS gate is correct in code but skip iOS runtime test. (5) On the VOD screen with a locked video, verify the three payment buttons render vertically. Admin phone +250798875272, OTP in testCode field of otp/start response. Do NOT test actual Stripe payment completion (would charge the real card)."
+    message: "Built pluggable SMS provider chain with fallback. Currently only Route Mobile is configured (and returning 1703 = credentials/IP not whitelisted). User is expected to add Twilio/Africa's Talking/WhatsApp API keys later. Please verify: (1) GET /api/admin/sms/providers returns 4 providers with correct .configured booleans. (2) POST /api/admin/sms/test with a phone tries each provider and returns attempts string with all providers listed. (3) Non-admin auth is rejected. (4) Frontend: admin can navigate to Admin > SMS Providers, see 4-row list with priority badges, see READY/OFF badges, can send a test SMS. Admin phone +250798875272, OTP in testCode field of otp/start."
 

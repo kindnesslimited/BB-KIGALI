@@ -10,6 +10,8 @@ const CARDS: { key: string; label: string; sub: string; icon: any; route: any }[
     icon: "settings-outline", route: "/admin/settings" },
   { key: "users", label: "Users & Admins", sub: "Grant admin access, invite new admins by phone",
     icon: "people-outline", route: "/admin/users" },
+  { key: "sms", label: "SMS Providers", sub: "Route Mobile, Twilio, Africa's Talking, WhatsApp — auto-fallback",
+    icon: "chatbubbles-outline", route: "/admin/sms" },
   { key: "categories", label: "Categories", sub: "Add unlimited show categories (News, Sports, Music…)",
     icon: "pricetags-outline", route: "/admin/categories" },
   { key: "programs", label: "Programs", sub: "BBSPORTSTALK, B&B SPORTS BAR, IMPUMEKOYIWACU",

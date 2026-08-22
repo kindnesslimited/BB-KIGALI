@@ -84,12 +84,37 @@ try:
 except Exception:  # pragma: no cover
     stripe = None  # type: ignore
 
-# Route Mobile SMSPLUS Bulk HTTP API
+# SMS providers — chained fallback (tries each provider in order, uses first success)
+# ------------------------------------------------------------------
+# Provider 1: Route Mobile SMSPLUS Bulk HTTP API
 SMS_API_URL = os.environ.get("SMS_API_URL", "").strip()
 SMS_USERNAME = os.environ.get("SMS_USERNAME", "").strip()
 SMS_PASSWORD = os.environ.get("SMS_PASSWORD", "").strip()
 SMS_SENDER_ID = os.environ.get("SMS_SENDER_ID", "BBKIGALI").strip()
 SMS_VERIFY_SSL = os.environ.get("SMS_VERIFY_SSL", "false").lower() == "true"
+
+# Provider 2: Twilio (global — accepts API key auth, no IP whitelist)
+TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "").strip()
+TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "").strip()
+TWILIO_FROM = os.environ.get("TWILIO_FROM", "").strip()  # phone number or messaging service SID
+
+# Provider 3: Africa's Talking (best for Rwanda — cheap, native, API-key auth)
+AT_USERNAME = os.environ.get("AT_USERNAME", "").strip()
+AT_API_KEY = os.environ.get("AT_API_KEY", "").strip()
+AT_SENDER_ID = os.environ.get("AT_SENDER_ID", "").strip()  # optional
+
+# Provider 4: WhatsApp (via whatsapp.nostress.vip or any custom endpoint)
+WHATSAPP_API_URL = os.environ.get("WHATSAPP_API_URL", "").strip()          # e.g. https://whatsapp.nostress.vip/api/send-message
+WHATSAPP_API_TOKEN = os.environ.get("WHATSAPP_API_TOKEN", "").strip()       # API key / token
+WHATSAPP_SESSION_ID = os.environ.get("WHATSAPP_SESSION_ID", "").strip()     # session/instance ID (some services)
+
+# Provider ordering (comma-separated). Providers not in list are skipped.
+# Options: route_mobile, twilio, africas_talking, whatsapp
+SMS_PROVIDER_ORDER = [
+    p.strip() for p in os.environ.get(
+        "SMS_PROVIDER_ORDER", "route_mobile,africas_talking,twilio,whatsapp"
+    ).split(",") if p.strip()
+]
 SMS_DEV_RETURN_CODE = os.environ.get("SMS_DEV_RETURN_CODE", "false").lower() == "true"
 
 client = AsyncIOMotorClient(MONGO_URL)
@@ -217,15 +242,15 @@ PLAN_CATALOG = {
 
 
 # ---------- Auth ----------
-async def _send_sms(destination: str, message: str) -> tuple[bool, str]:
-    """Send SMS via Route Mobile SMSPLUS Bulk HTTP API. Returns (ok, provider_response)."""
+async def _sms_route_mobile(destination: str, message: str) -> tuple[bool, str]:
+    """Route Mobile SMSPLUS Bulk HTTP API. Returns (ok, provider_response)."""
     if not SMS_API_URL or not SMS_USERNAME or not SMS_PASSWORD:
-        return False, "sms_not_configured"
+        return False, "not_configured"
     params = {
         "username": SMS_USERNAME,
         "password": SMS_PASSWORD,
-        "type": "0",              # plain text (GSM 03.38)
-        "dlr": "1",               # delivery report requested
+        "type": "0",
+        "dlr": "1",
         "destination": destination.lstrip("+"),
         "source": SMS_SENDER_ID,
         "message": message,
@@ -234,13 +259,116 @@ async def _send_sms(destination: str, message: str) -> tuple[bool, str]:
         async with httpx.AsyncClient(timeout=15.0, verify=SMS_VERIFY_SSL) as c:
             r = await c.get(SMS_API_URL, params=params)
     except httpx.RequestError as e:
-        logger.warning("SMS network error: %s", e)
         return False, f"network:{e}"
     body = (r.text or "").strip()
-    logger.info("SMS provider response: %s %s", r.status_code, body[:200])
-    # Success format: 1701|<cell>|<msgid>
-    ok = body.startswith("1701") and r.status_code < 400
-    return ok, body
+    logger.info("[route_mobile] %s %s", r.status_code, body[:200])
+    return (body.startswith("1701") and r.status_code < 400), body
+
+
+async def _sms_twilio(destination: str, message: str) -> tuple[bool, str]:
+    """Twilio SMS API. Uses HTTP Basic auth with SID + auth token."""
+    if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN or not TWILIO_FROM:
+        return False, "not_configured"
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json"
+    dst = destination if destination.startswith("+") else "+" + destination.lstrip("+")
+    from_field = TWILIO_FROM.strip()
+    payload = {"To": dst, "Body": message}
+    if from_field.startswith("MG"):
+        payload["MessagingServiceSid"] = from_field
+    else:
+        payload["From"] = from_field
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as c:
+            r = await c.post(url, data=payload, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN))
+    except httpx.RequestError as e:
+        return False, f"network:{e}"
+    logger.info("[twilio] %s %s", r.status_code, r.text[:200])
+    return (200 <= r.status_code < 300), r.text[:200]
+
+
+async def _sms_africas_talking(destination: str, message: str) -> tuple[bool, str]:
+    """Africa's Talking SMS API — great for Rwanda MTN/Airtel."""
+    if not AT_USERNAME or not AT_API_KEY:
+        return False, "not_configured"
+    # Production endpoint; sandbox users have a different URL but same shape
+    url = "https://api.africastalking.com/version1/messaging"
+    dst = destination if destination.startswith("+") else "+" + destination.lstrip("+")
+    headers = {"apiKey": AT_API_KEY, "Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"}
+    data = {"username": AT_USERNAME, "to": dst, "message": message}
+    if AT_SENDER_ID:
+        data["from"] = AT_SENDER_ID
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as c:
+            r = await c.post(url, data=data, headers=headers)
+    except httpx.RequestError as e:
+        return False, f"network:{e}"
+    body = r.text[:300]
+    logger.info("[africas_talking] %s %s", r.status_code, body)
+    if r.status_code >= 300:
+        return False, body
+    try:
+        j = r.json()
+        recipients = j.get("SMSMessageData", {}).get("Recipients", [])
+        # Success = at least one recipient status "Success"
+        ok = any((rec.get("status") == "Success") for rec in recipients)
+        return ok, body
+    except Exception:
+        return False, body
+
+
+async def _sms_whatsapp(destination: str, message: str) -> tuple[bool, str]:
+    """Send OTP via WhatsApp (whatsapp.nostress.vip or any compatible endpoint).
+
+    Body shape auto-detected from the endpoint path — for the nostress-style service, the request is
+    a POST with JSON `{token, session, to, message}` or query-string equivalent. Provide the exact
+    endpoint via WHATSAPP_API_URL.
+    """
+    if not WHATSAPP_API_URL or not WHATSAPP_API_TOKEN:
+        return False, "not_configured"
+    dst_no_plus = destination.lstrip("+")
+    body_json = {
+        "token": WHATSAPP_API_TOKEN,
+        "session": WHATSAPP_SESSION_ID or None,
+        "to": dst_no_plus,
+        "phone": dst_no_plus,       # some services want "phone"
+        "number": dst_no_plus,      # some services want "number"
+        "message": message,
+        "text": message,             # some services want "text"
+    }
+    body_json = {k: v for k, v in body_json.items() if v is not None}
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as c:
+            r = await c.post(WHATSAPP_API_URL, json=body_json)
+    except httpx.RequestError as e:
+        return False, f"network:{e}"
+    resp_txt = r.text[:300]
+    logger.info("[whatsapp] %s %s", r.status_code, resp_txt)
+    return (200 <= r.status_code < 300), resp_txt
+
+
+_SMS_PROVIDERS = {
+    "route_mobile":    _sms_route_mobile,
+    "twilio":          _sms_twilio,
+    "africas_talking": _sms_africas_talking,
+    "whatsapp":        _sms_whatsapp,
+}
+
+
+async def _send_sms(destination: str, message: str) -> tuple[bool, str]:
+    """Try each configured provider in SMS_PROVIDER_ORDER. First success wins."""
+    attempts: list[str] = []
+    for name in SMS_PROVIDER_ORDER:
+        fn = _SMS_PROVIDERS.get(name)
+        if not fn:
+            continue
+        ok, resp = await fn(destination, message)
+        attempts.append(f"{name}:{resp[:60]}")
+        if ok:
+            logger.info("[sms] delivered via %s (attempts: %d)", name, len(attempts))
+            return True, f"{name}|{resp}"
+    combined = " | ".join(attempts) if attempts else "no_providers_configured"
+    logger.warning("[sms] all providers failed: %s", combined)
+    return False, combined
 
 
 @api.post("/auth/otp/start")
@@ -252,8 +380,16 @@ async def otp_start(body: OTPStartIn):
     normalized = phone.lstrip("+").strip()
     is_admin_phone = phone in ADMIN_PHONES or normalized in ADMIN_PHONES
 
+    # Any provider configured?
+    any_provider_ready = any([
+        SMS_API_URL and SMS_USERNAME and SMS_PASSWORD,
+        TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_FROM,
+        AT_USERNAME and AT_API_KEY,
+        WHATSAPP_API_URL and WHATSAPP_API_TOKEN,
+    ])
+
     # Generate a fresh 6-digit code. Admin phones + missing SMS credentials => keep the universal test code 123456.
-    if is_admin_phone or not (SMS_API_URL and SMS_USERNAME and SMS_PASSWORD):
+    if is_admin_phone or not any_provider_ready:
         code = MOCK_OTP_CODE
     else:
         import secrets as _secrets
@@ -270,10 +406,10 @@ async def otp_start(body: OTPStartIn):
         upsert=True,
     )
 
-    # Attempt to send SMS via Route Mobile. Non-fatal — dev fallback returns the code in the response.
+    # Attempt to send via the SMS provider chain. Non-fatal — falls through to dev code if all fail.
     sms_sent = False
     provider_resp = "sms_not_attempted"
-    if not is_admin_phone and SMS_API_URL and SMS_USERNAME and SMS_PASSWORD:
+    if not is_admin_phone and any_provider_ready:
         message = f"BB Kigali 89.7 FM: your verification code is {code}. Valid 10 min."
         sms_sent, provider_resp = await _send_sms(normalized, message)
 
@@ -285,9 +421,12 @@ async def otp_start(body: OTPStartIn):
         resp["message"] = f"SMS delivery failed ({provider_resp[:60]}) — dev mode: use the code below."
         resp["testCode"] = code
     elif sms_sent:
-        resp["message"] = "OTP sent via SMS."
+        # provider_resp is "name|response" — extract provider name for user feedback
+        provider_name = provider_resp.split("|", 1)[0]
+        resp["message"] = f"OTP sent via {provider_name.replace('_', ' ')}."
+        resp["provider"] = provider_name
     else:
-        resp["message"] = "OTP recorded. If you don't receive the SMS, contact support."
+        resp["message"] = "OTP recorded. If you don't receive it in 1 minute, contact support."
     return resp
 
 
@@ -1491,6 +1630,58 @@ async def admin_delete_user(user_id: str, current = Depends(require_admin)):
             raise HTTPException(400, "At least one admin must remain.")
     await db.users.delete_one({"id": user_id})
     return {"ok": True}
+
+
+# ---------- Admin SMS providers ----------
+@api.get("/admin/sms/providers")
+async def admin_sms_providers(_ = Depends(require_admin)):
+    """Report which SMS providers are configured. Booleans only — never expose secrets."""
+    return {
+        "order": SMS_PROVIDER_ORDER,
+        "providers": {
+            "route_mobile": {
+                "configured": bool(SMS_API_URL and SMS_USERNAME and SMS_PASSWORD),
+                "senderId": SMS_SENDER_ID if (SMS_API_URL and SMS_USERNAME) else None,
+                "notes": "Requires IP whitelisting by Route Mobile.",
+            },
+            "twilio": {
+                "configured": bool(TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_FROM),
+                "from": TWILIO_FROM or None,
+                "notes": "Global. API-key auth, no IP whitelist. Sign up at twilio.com.",
+            },
+            "africas_talking": {
+                "configured": bool(AT_USERNAME and AT_API_KEY),
+                "senderId": AT_SENDER_ID or None,
+                "notes": "Cheapest for Rwanda MTN/Airtel. API-key auth. Sign up at africastalking.com.",
+            },
+            "whatsapp": {
+                "configured": bool(WHATSAPP_API_URL and WHATSAPP_API_TOKEN),
+                "endpoint": WHATSAPP_API_URL or None,
+                "notes": "Delivers OTP via WhatsApp instead of SMS.",
+            },
+        },
+    }
+
+
+class SmsTestIn(BaseModel):
+    phone: str
+    message: Optional[str] = None
+
+
+@api.post("/admin/sms/test")
+async def admin_sms_test(body: SmsTestIn, _ = Depends(require_admin)):
+    """Send a real test SMS through the provider chain (admin only). Useful to confirm which providers work."""
+    phone = body.phone.strip()
+    if len(phone) < 7:
+        raise HTTPException(400, "Invalid phone")
+    normalized = phone.lstrip("+")
+    text = (body.message or "").strip() or "BB Kigali 89.7 FM: SMS provider test — please ignore."
+    sent, resp = await _send_sms(normalized, text)
+    provider = None
+    if sent and "|" in resp:
+        provider = resp.split("|", 1)[0]
+    return {"sent": sent, "provider": provider, "attempts": resp}
+
 
 
 # ---------- Stripe (LIVE — card payments, Android + Web only, hidden on iOS) ----------
