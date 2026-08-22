@@ -21,7 +21,13 @@ load_dotenv(ROOT_DIR / ".env")
 
 MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
-JWT_SECRET = os.environ.get("JWT_SECRET", "bbfm-kigali-dev-secret-change-me")
+# JWT_SECRET is required — never fall back to a hardcoded value (would allow attackers to forge tokens if env fails to load).
+JWT_SECRET = os.environ.get("JWT_SECRET") or os.environ.get("SECRET_KEY")
+if not JWT_SECRET:
+    # Local dev convenience: generate an ephemeral secret so the server can boot, but log loudly.
+    import secrets as _secrets
+    JWT_SECRET = _secrets.token_urlsafe(48)
+    logging.warning("JWT_SECRET not set in environment — generated an ephemeral secret. Existing sessions will be invalidated. Set JWT_SECRET in .env for production.")
 JWT_ALG = "HS256"
 MOCK_OTP_CODE = "123456"
 YOUTUBE_LIVE_ID = "wPD77ygQKfo"
@@ -29,6 +35,10 @@ YOUTUBE_LIVE_URL = f"https://www.youtube.com/watch?v={YOUTUBE_LIVE_ID}"
 YOUTUBE_EMBED_URL = f"https://www.youtube.com/embed/{YOUTUBE_LIVE_ID}?autoplay=1&playsinline=1&rel=0"
 DEMO_AUDIO_STREAM = "https://stream.zeno.fm/0r0xa792kwzuv"
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "https://radio-vod-platform.preview.emergentagent.com")
+EMERGENT_AUTH_SESSION_URL = os.environ.get(
+    "EMERGENT_AUTH_SESSION_URL",
+    "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+)
 
 # PayPal config
 PAYPAL_ENV = os.environ.get("PAYPAL_ENV", "sandbox").lower()
@@ -535,7 +545,7 @@ async def google_session(body: GoogleSessionIn):
     try:
         async with httpx.AsyncClient(timeout=15.0) as c:
             r = await c.get(
-                "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+                EMERGENT_AUTH_SESSION_URL,
                 headers={"X-Session-ID": session_id},
             )
     except httpx.RequestError as e:
@@ -2389,6 +2399,23 @@ async def root():
     return {"service": "BB FM Kigali", "ok": True}
 
 
+@api.get("/health")
+async def health():
+    """Deployment readiness probe — verifies DB and env are ready."""
+    try:
+        await db.command("ping")
+        db_ok = True
+    except Exception:
+        db_ok = False
+    return {
+        "ok": db_ok,
+        "service": "bb-fm-kigali",
+        "db": "ok" if db_ok else "unreachable",
+        "stripe": bool(STRIPE_SECRET_KEY),
+        "sms_providers": SMS_PROVIDER_ORDER,
+    }
+
+
 # ---------- Seed data ----------
 async def seed():
     # ----- Categories (dynamic, admin-managed) -----
@@ -2580,6 +2607,18 @@ async def on_shutdown():
 
 
 app.include_router(api)
+
+
+# Root-level /health for the deployment platform's readiness probe.
+# (Emergent probes /health without the /api prefix.)
+@app.get("/health")
+async def app_health():
+    try:
+        await db.command("ping")
+        db_ok = True
+    except Exception:
+        db_ok = False
+    return {"ok": db_ok, "service": "bb-fm-kigali", "db": "ok" if db_ok else "unreachable"}
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,

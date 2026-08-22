@@ -1,0 +1,35 @@
+{
+  "summary": "Verified deployment-readiness fixes. BACKEND: 11/11 tests pass. Both health probes work — GET /health returns {ok:true, service:'bb-fm-kigali', db:'ok'} (200), GET /api/health returns {ok:true, service:'bb-fm-kigali', db:'ok', stripe:true, sms_providers:['route_mobile','whatsapp']} (200). JWT_SECRET change did NOT break auth: OTP start returns testCode, OTP verify returns accessToken with 'eyJ' prefix, and using that token against GET /api/admin/users returns 200 — proves JWT signed with new env-loaded secret validates correctly. All previously-working endpoints still work: GET /api/shows (200), GET /api/categories (200), GET /api/admin/sms/providers (200 with whatsapp.configured:true), GET /api/admin/payments/summary?days=30 (200), POST /api/billing/momo/initiate returns 400 with 'collection account' safety-guard message as expected, POST /api/billing/stripe/create-checkout returns 200 with cs_live_ sessionId. FRONTEND SMOKE: 3/3 pass — root loads home-screen as guest (no login wall), tab-shows renders shows-screen with categories + tiles, tab-profile renders profile-guest card with 'Sign in to unlock premium content' + 'SIGN IN WITH PHONE' button. The guest profile card layout regression reported in iter 15 is now VISUALLY FIXED (icon → title → subtext → full-width button stacked vertically). No RN red-screen, no deprecated-package usage introduced by these fixes. All 3 deployment-readiness fixes (.gitignore, backend JWT/env/health, frontend .env quoting) verified non-breaking.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_deployment_readiness.py",
+    "/app/test_reports/pytest/pytest_iter16.xml",
+    "Screenshots: /tmp/iter16_home.png, /tmp/iter16_shows.png, /tmp/iter16_profile.png"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py JWT_SECRET fallback: `os.environ.get('JWT_SECRET') or os.environ.get('SECRET_KEY')` with ephemeral-secret WARN fallback is a reasonable pattern for dev safety, but confirm the WARN branch never fires in prod (backend/.env now includes JWT_SECRET — verified present).",
+    "Root-level GET /health at app scope (bypassing /api prefix) is correct for K8s readiness probes since ingress only routes /api/* to backend. The dual-probe design (/health for K8s, /api/health for internal monitoring with richer payload) is sound.",
+    "frontend/.env: METRO_CACHE_ROOT is now properly quoted. All other keys use consistent quoting/no-comments convention required by preview env parser."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_deployment_readiness.py (new file — 11 regression tests for deployment-readiness fixes)"
+  ],
+  "success_rate": {
+    "backend": "100% (11/11)",
+    "frontend": "100% smoke (3/3)"
+  },
+  "seed_data_creation": "None — used existing admin user (+250798875272) via OTP dev-mode testCode.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteration 16 verified deployment-readiness changes. All backend regression tests live at /app/backend/tests/test_deployment_readiness.py — reuse for future auth/health/billing smoke checks. Note pytest.ini has default addopts using pytest-xdist parallel workers which can invalidate OTP challenges across workers; run with `-o addopts=''` to serialize when testing OTP flows. Admin login on web works via UI flow only (AsyncStorage on web = IndexedDB, so token injection via localStorage is ineffective). Home-tab guest browsing + guest profile card layout are both currently correct."
+}
