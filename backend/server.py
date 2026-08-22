@@ -10,6 +10,7 @@ from typing import List, Optional, Literal
 import jwt
 import httpx
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Header, Request
+from fastapi.responses import HTMLResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
@@ -56,6 +57,32 @@ BESOFT_VERIFY_SSL = os.environ.get("BESOFT_VERIFY_SSL", "false").lower() == "tru
 ADMIN_PHONES = {p.strip() for p in os.environ.get("ADMIN_PHONES", "").split(",") if p.strip()}
 VOD_PRICE_EUR = os.environ.get("VOD_PRICE_EUR", "1.00")
 VOD_PRICE_RWF = os.environ.get("VOD_PRICE_RWF", "1000")
+
+# Stripe (LIVE)
+STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "").strip()
+STRIPE_PUBLISHABLE_KEY = os.environ.get("STRIPE_PUBLISHABLE_KEY", "").strip()
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
+STRIPE_CURRENCY = os.environ.get("STRIPE_CURRENCY", "eur").lower()
+
+STRIPE_EUR_PRICES = {
+    "basic_monthly":   os.environ.get("PAYPAL_PRICE_BASIC_MONTHLY",   "1.00"),
+    "basic_yearly":    os.environ.get("PAYPAL_PRICE_BASIC_YEARLY",   "10.00"),
+    "premium_monthly": os.environ.get("PAYPAL_PRICE_PREMIUM_MONTHLY", "3.00"),
+    "premium_yearly":  os.environ.get("PAYPAL_PRICE_PREMIUM_YEARLY", "30.00"),
+}
+STRIPE_INTERVAL = {
+    "basic_monthly":   "month",
+    "basic_yearly":    "year",
+    "premium_monthly": "month",
+    "premium_yearly":  "year",
+}
+
+try:
+    import stripe  # noqa: E402
+    if STRIPE_SECRET_KEY:
+        stripe.api_key = STRIPE_SECRET_KEY
+except Exception:  # pragma: no cover
+    stripe = None  # type: ignore
 
 # Route Mobile SMSPLUS Bulk HTTP API
 SMS_API_URL = os.environ.get("SMS_API_URL", "").strip()
@@ -1464,6 +1491,277 @@ async def admin_delete_user(user_id: str, current = Depends(require_admin)):
             raise HTTPException(400, "At least one admin must remain.")
     await db.users.delete_one({"id": user_id})
     return {"ok": True}
+
+
+# ---------- Stripe (LIVE — card payments, Android + Web only, hidden on iOS) ----------
+class StripeCheckoutIn(BaseModel):
+    purchase_type: Literal["subscription", "vod"]
+    plan: Optional[Literal["basic_monthly", "basic_yearly", "premium_monthly", "premium_yearly"]] = None
+    show_id: Optional[str] = None
+
+
+def _stripe_ready() -> None:
+    if not stripe or not STRIPE_SECRET_KEY:
+        raise HTTPException(500, "Stripe is not configured on the server")
+
+
+def _stripe_return_url() -> str:
+    return f"{PUBLIC_BASE_URL}/api/billing/stripe/return?session_id={{CHECKOUT_SESSION_ID}}"
+
+
+def _stripe_cancel_url() -> str:
+    return f"{PUBLIC_BASE_URL}/api/billing/stripe/cancel"
+
+
+@api.get("/billing/stripe/config")
+async def stripe_config(_ = Depends(get_current_user)):
+    """Frontend uses this to know whether to render the Stripe payment option."""
+    return {
+        "enabled": bool(stripe and STRIPE_SECRET_KEY),
+        "publishableKey": STRIPE_PUBLISHABLE_KEY,
+        "currency": STRIPE_CURRENCY,
+    }
+
+
+@api.post("/billing/stripe/create-checkout")
+async def stripe_create_checkout(body: StripeCheckoutIn, user = Depends(get_current_user)):
+    _stripe_ready()
+    # Build a fixed server-side line item — client cannot alter price
+    email = (user.get("email") or "").strip() or None
+    if body.purchase_type == "subscription":
+        if not body.plan or body.plan not in STRIPE_EUR_PRICES:
+            raise HTTPException(400, "Invalid subscription plan")
+        price = STRIPE_EUR_PRICES[body.plan]
+        interval = STRIPE_INTERVAL[body.plan]
+        label = PLAN_CATALOG[body.plan]["label"]
+        line_item = {
+            "price_data": {
+                "currency": STRIPE_CURRENCY,
+                "product_data": {"name": f"BB FM Kigali — {label}"},
+                "unit_amount": int(round(float(price) * 100)),  # in cents
+                "recurring": {"interval": interval},
+            },
+            "quantity": 1,
+        }
+        mode = "subscription"
+        metadata = {"user_id": user["id"], "purchase_type": "subscription", "plan": body.plan}
+    else:  # vod
+        if not body.show_id:
+            raise HTTPException(400, "show_id is required for VOD purchase")
+        show = await db.shows.find_one({"id": body.show_id}, {"_id": 0, "title": 1})
+        if not show:
+            raise HTTPException(404, "Show not found")
+        line_item = {
+            "price_data": {
+                "currency": STRIPE_CURRENCY,
+                "product_data": {"name": f"BB FM VOD — {show.get('title', 'Unlock')}"},
+                "unit_amount": int(round(float(VOD_PRICE_EUR) * 100)),
+            },
+            "quantity": 1,
+        }
+        mode = "payment"
+        metadata = {"user_id": user["id"], "purchase_type": "vod", "show_id": body.show_id}
+
+    idem_key = f"stripe-{uuid.uuid4().hex}"
+    session_params = {
+        "mode": mode,
+        "line_items": [line_item],
+        "metadata": metadata,
+        "success_url": _stripe_return_url(),
+        "cancel_url": _stripe_cancel_url(),
+        "payment_method_types": ["card"],
+        # This account has Managed Payments enabled by default which requires a tax code.
+        # Disable it per-session so cards work immediately without configuring tax categories.
+        "managed_payments": {"enabled": False},
+    }
+    if email:
+        session_params["customer_email"] = email
+    if mode == "subscription":
+        session_params["subscription_data"] = {"metadata": metadata}
+    try:
+        session = stripe.checkout.Session.create(**session_params, idempotency_key=idem_key)
+    except stripe.error.StripeError as e:  # type: ignore
+        logger.error("Stripe create session error: %s", str(e))
+        raise HTTPException(502, f"Stripe error: {getattr(e, 'user_message', None) or str(e)[:180]}")
+
+    # Persist a pending payment record
+    now_iso = datetime.now(timezone.utc).isoformat()
+    payment_doc = {
+        "id": session.id,
+        "reference": session.id,
+        "userId": user["id"],
+        "plan": body.plan,
+        "showId": body.show_id,
+        "purchaseType": body.purchase_type,
+        "amount": (line_item["price_data"]["unit_amount"] / 100),
+        "currency": STRIPE_CURRENCY.upper(),
+        "method": "stripe",
+        "status": "pending",
+        "stripeSessionId": session.id,
+        "createdAt": now_iso,
+    }
+    await db.payments.insert_one(payment_doc.copy())
+
+    return {
+        "sessionId": session.id,
+        "checkoutUrl": session.url,
+        "publishableKey": STRIPE_PUBLISHABLE_KEY,
+    }
+
+
+async def _stripe_grant_from_session(session_obj) -> None:
+    """Fulfil a paid Stripe checkout — grant subscription or VOD unlock. Idempotent."""
+    md = getattr(session_obj, "metadata", None) or {}
+    user_id = md.get("user_id")
+    purchase_type = md.get("purchase_type")
+    if not user_id:
+        return
+    now = datetime.now(timezone.utc)
+
+    if purchase_type == "subscription":
+        plan_key = md.get("plan")
+        plan = PLAN_CATALOG.get(plan_key)
+        if not plan:
+            return
+        expires_at = now + timedelta(days=plan["days"])
+        await db.users.update_one(
+            {"id": user_id},
+            {"$set": {
+                "tier": plan["tier"],
+                "subscriptionExpiresAt": expires_at.isoformat(),
+                "provider": "stripe",
+                "updatedAt": now.isoformat(),
+            }},
+        )
+    elif purchase_type == "vod":
+        show_id = md.get("show_id")
+        if not show_id:
+            return
+        # Add to unlockedVods on user
+        await db.users.update_one({"id": user_id}, {"$addToSet": {"unlockedVods": show_id}})
+        # Also record in vod_purchases for history
+        await db.vod_purchases.update_one(
+            {"userId": user_id, "showId": show_id, "method": "stripe"},
+            {"$setOnInsert": {
+                "id": str(uuid.uuid4()),
+                "userId": user_id,
+                "showId": show_id,
+                "method": "stripe",
+                "createdAt": now.isoformat(),
+            }, "$set": {"status": "success"}},
+            upsert=True,
+        )
+
+    # Mark payment as success
+    await db.payments.update_one(
+        {"stripeSessionId": session_obj.id},
+        {"$set": {"status": "success", "updatedAt": now.isoformat()}},
+    )
+
+
+@api.get("/billing/stripe/session-status/{session_id}")
+async def stripe_session_status(session_id: str, user = Depends(get_current_user)):
+    _stripe_ready()
+    # Verify this session belongs to this user via our payments collection
+    p = await db.payments.find_one({"stripeSessionId": session_id, "userId": user["id"]}, {"_id": 0})
+    if not p:
+        raise HTTPException(404, "Session not found for this user")
+
+    try:
+        session = stripe.checkout.Session.retrieve(session_id)
+    except stripe.error.StripeError as e:  # type: ignore
+        raise HTTPException(502, f"Stripe error: {str(e)[:200]}")
+
+    if session.payment_status == "paid" and p.get("status") != "success":
+        # Webhook may not have arrived yet — fulfil directly. Function is idempotent.
+        try:
+            await _stripe_grant_from_session(session)
+        except Exception as e:  # pragma: no cover
+            logger.error("Stripe direct grant error: %s", str(e))
+
+    return {
+        "sessionId": session.id,
+        "status": session.status,                 # complete | open | expired
+        "paymentStatus": session.payment_status,  # paid | unpaid | no_payment_required
+        "purchaseType": (session.metadata or {}).get("purchase_type"),
+        "plan": (session.metadata or {}).get("plan"),
+        "showId": (session.metadata or {}).get("show_id"),
+    }
+
+
+@api.post("/billing/stripe/webhook")
+async def stripe_webhook(request: Request):
+    if not stripe:
+        raise HTTPException(500, "Stripe not configured")
+    payload = await request.body()
+    sig = request.headers.get("stripe-signature", "")
+    if STRIPE_WEBHOOK_SECRET:
+        try:
+            event = stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
+        except ValueError:
+            raise HTTPException(400, "Invalid payload")
+        except stripe.error.SignatureVerificationError:  # type: ignore
+            raise HTTPException(400, "Invalid signature")
+    else:
+        # If no webhook secret is configured (e.g. pre-launch), accept unsigned events but
+        # log a warning. The user should set STRIPE_WEBHOOK_SECRET before production.
+        import json as _json
+        try:
+            event = _json.loads(payload)
+        except Exception:
+            raise HTTPException(400, "Invalid payload")
+        logger.warning("Stripe webhook received without signing secret configured; recommend setting STRIPE_WEBHOOK_SECRET.")
+
+    event_id = event["id"] if isinstance(event, dict) else event.id
+    # Idempotency guard
+    if await db.stripe_events.find_one({"eventId": event_id}):
+        return {"received": True, "idempotent": True}
+
+    et = event["type"] if isinstance(event, dict) else event.type
+    obj = event["data"]["object"] if isinstance(event, dict) else event.data.object
+
+    if et in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
+        payment_status = obj.get("payment_status") if isinstance(obj, dict) else getattr(obj, "payment_status", None)
+        if payment_status == "paid":
+            # Convert dict → object-ish for shared helper
+            class _Obj:
+                pass
+            fake = _Obj()
+            fake.id = obj.get("id") if isinstance(obj, dict) else obj.id
+            fake.metadata = obj.get("metadata") if isinstance(obj, dict) else obj.metadata
+            await _stripe_grant_from_session(fake)
+
+    await db.stripe_events.insert_one({
+        "eventId": event_id,
+        "eventType": et,
+        "receivedAt": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"received": True}
+
+
+@api.get("/billing/stripe/return", response_class=HTMLResponse)
+async def stripe_return(session_id: str):
+    return HTMLResponse(
+        content=f"""<!doctype html><html><head><meta charset=utf-8>
+        <title>Payment received — BB FM Kigali</title>
+        <style>body{{background:#0F0F13;color:#fff;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;margin:0;height:100vh;display:flex;align-items:center;justify-content:center;padding:2rem;text-align:center}}
+        .box{{max-width:420px}}h1{{color:#FF6B00;letter-spacing:1px;font-size:20px;margin:0 0 8px}}p{{color:rgba(255,255,255,0.7);line-height:1.5;font-size:14px}}
+        .id{{font-family:ui-monospace,monospace;font-size:11px;color:rgba(255,255,255,0.4);word-break:break-all;margin-top:1rem}}</style></head>
+        <body><div class=box><h1>PAYMENT RECEIVED</h1>
+        <p>Thanks for supporting B&amp;B Kigali 89.7 FM. Your subscription or unlock will activate automatically. Returning to the app…</p>
+        <div class=id>Ref: {session_id}</div></div></body></html>""",
+        status_code=200,
+    )
+
+
+@api.get("/billing/stripe/cancel", response_class=HTMLResponse)
+async def stripe_cancel():
+    return HTMLResponse(
+        content="""<!doctype html><html><head><meta charset=utf-8><title>Payment cancelled</title>
+        <style>body{background:#0F0F13;color:#fff;font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;height:100vh;display:flex;align-items:center;justify-content:center;text-align:center;padding:2rem}</style></head>
+        <body><div><h1 style="color:#FF6B00">Payment cancelled</h1><p style="color:rgba(255,255,255,0.7)">You can retry anytime from the BB FM Kigali app.</p></div></body></html>""",
+        status_code=200,
+    )
 
 
 # ---------- Categories (dynamic, admin-managed) ----------

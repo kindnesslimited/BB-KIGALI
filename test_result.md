@@ -102,10 +102,10 @@
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
 
-user_problem_statement: "1) Payments failing on Android — MoMo shows a generic error and PayPal on Android WebView may fail to detect success. 2) Add admin ability to promote other users to admin. 3) Better MoMo error surfacing so users know WHY payment failed."
+user_problem_statement: "Enable Stripe LIVE card payments for subscriptions + VOD unlock (Android + Web only, hidden on iOS). Add MoMo→Stripe auto-fallback suggestion when MoMo declines. Route Mobile SMS: preview server IP is 34.7.135.173 (to be whitelisted). Airtel stays 'Coming soon'."
 
 backend:
-  - task: "Admin Users CRUD + Invite"
+  - task: "Stripe LIVE integration"
     implemented: true
     working: true
     file: "/app/backend/server.py"
@@ -115,32 +115,10 @@ backend:
     status_history:
       - working: true
         agent: "main"
-        comment: "Added GET /api/admin/users (with optional ?q= search), PUT /api/admin/users/{id}/role (promote/demote with self-lockout + last-admin guard), POST /api/admin/users/invite (create-or-promote by phone/email), DELETE /api/admin/users/{id} (same guards). Curl-tested: list returned 19 users, invite promoted existing +250788111222 to admin."
-  - task: "MoMo failure_reason surfacing"
-    implemented: true
-    working: true
-    file: "/app/backend/server.py"
-    stuck_count: 0
-    priority: "high"
-    needs_retesting: true
-    status_history:
-      - working: true
-        agent: "main"
-        comment: "Both /billing/momo/initiate and /billing/vod/{id}/momo now return a human-readable `message` and raw `failureReason` when BeSoft/MTN rejects the debit (insufficient balance, invalid number, not registered, timeout). Confirmed via curl the message returns 'MoMo declined: provider error [HTTP_400]...'"
+        comment: "Added Stripe endpoints per integration_expert playbook: GET /api/billing/stripe/config, POST /api/billing/stripe/create-checkout (subscription OR vod), GET /api/billing/stripe/session-status/{id}, POST /api/billing/stripe/webhook (idempotent via db.stripe_events), GET /api/billing/stripe/return (HTML), GET /api/billing/stripe/cancel (HTML). Uses hosted Checkout with inline price_data (EUR). Curl-tested: subscription and VOD both return cs_live_ session IDs with proper checkout URLs. Managed Payments disabled per-session (was causing 'tax code required' error). LIVE keys stored in backend/.env; iOS clients gate the UI so Stripe purchase surface never renders there."
 
 frontend:
-  - task: "Admin Users screen"
-    implemented: true
-    working: "NA"
-    file: "/app/frontend/app/admin/users.tsx"
-    stuck_count: 0
-    priority: "high"
-    needs_retesting: true
-    status_history:
-      - working: "NA"
-        agent: "main"
-        comment: "New screen: search bar, admin/user role toggle (with confirmation), delete user, and an Invite modal (phone or email tab) that creates or promotes to admin. Card added to /admin/index.tsx (icon: people-outline, route: /admin/users). Route registered in root layout."
-  - task: "PayPal WebView Android return URL fix"
+  - task: "Checkout: Add Stripe method + iOS gating + MoMo→Stripe fallback"
     implemented: true
     working: "NA"
     file: "/app/frontend/app/checkout.tsx"
@@ -150,37 +128,35 @@ frontend:
     status_history:
       - working: "NA"
         agent: "main"
-        comment: "Changed onShouldStartLoadWithRequest to return false when URL contains /paypal/success or /paypal/cancel — previously it returned true, so on Android the WebView attempted to load bbkigali.com/paypal/success (which is behind Netlify password protection = 401) before the modal closed, causing an error page flash. Also applied to /app/frontend/app/video/[id].tsx for VOD unlock PayPal WebView."
-  - task: "MoMo error surface in checkout + video"
+        comment: "Added stripe method row (hidden on iOS via ALL_METHODS.filter). WebView modal with #635bff header opens hosted Stripe Checkout URL. onShouldStartLoadWithRequest intercepts /billing/stripe/return and /billing/stripe/cancel URLs. On web, opens Stripe in new tab and polls session-status. When MoMo returns status='failed' on non-iOS, shows a tap-to-switch 'Try card payment instead?' fallback banner."
+  - task: "VOD Player: Add Stripe unlock button + fallback"
     implemented: true
     working: "NA"
-    file: "/app/frontend/app/checkout.tsx, /app/frontend/app/video/[id].tsx"
+    file: "/app/frontend/app/video/[id].tsx"
     stuck_count: 0
     priority: "high"
     needs_retesting: true
     status_history:
       - working: "NA"
         agent: "main"
-        comment: "If backend returns status='failed' immediately (BeSoft/MTN rejects the debit), show the humanized `message` instead of entering pointless polling loop."
+        comment: "Locked box now shows 3 payment options stacked vertically: Card (Stripe, hidden on iOS), PayPal, MoMo. buyVodStripe calls /billing/stripe/create-checkout with purchase_type='vod', opens the same WebView. Same URL interception applied. Post-MoMo-failure suggests Stripe (non-iOS)."
 
 metadata:
   created_by: "main_agent"
   version: "1.0"
-  test_sequence: 6
+  test_sequence: 7
   run_ui: true
 
 test_plan:
   current_focus:
-    - "Admin Users CRUD + Invite"
-    - "MoMo failure_reason surfacing"
-    - "Admin Users screen"
-    - "PayPal WebView Android return URL fix"
-    - "MoMo error surface in checkout + video"
+    - "Stripe LIVE integration"
+    - "Checkout: Add Stripe method + iOS gating + MoMo→Stripe fallback"
+    - "VOD Player: Add Stripe unlock button + fallback"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
   - agent: "main"
-    message: "User reported: 'Payments not working for all channels on Android — payment page opens but errors out'. Root cause analysis: (a) MoMo debit is being genuinely rejected by BeSoft/MTN with HTTP 400 (this is a real gateway rejection, not our code — user needs to contact BeSoft support to resolve their MTN provider status); however the frontend was showing a generic 'Payment failed' message instead of the specific reason. Now shows humanized reason. (b) PayPal WebView on Android was allowing navigation to bbkigali.com/paypal/success which is behind Netlify password protection — this caused an error page flash before the modal could close. Fixed by returning false from onShouldStartLoadWithRequest. Also added new Admin Users management screen (search, toggle role, invite by phone/email). Please test: (1) admin can navigate to Admin > Users, see list, toggle roles, invite new user; (2) MoMo failure returns human-readable message; (3) PayPal WebView modal closes cleanly on success URL (returns false to avoid loading broken bbkigali.com). Admin phone: +250798875272 (OTP is returned in testCode field of /api/auth/otp/start response)."
+    message: "Enabled Stripe LIVE with user-provided keys. Please validate the endpoints work and the frontend flow renders correctly. IMPORTANT — since these are LIVE keys, do NOT attempt to complete a real payment. Instead: (1) hit /api/billing/stripe/config and expect enabled=true, publishableKey starts with pk_live_. (2) POST /api/billing/stripe/create-checkout with subscription+plan and with vod+show_id — both should return sessionId (starts with cs_live_) and checkoutUrl. (3) Session-status for a non-owner should return 404 (auth boundary). (4) Frontend: on the checkout screen (via paywall → pick plan), verify 3 methods visible (PayPal / Stripe / MoMo) with Airtel showing 'Coming soon'. On iOS platform simulation the Stripe row should be hidden — since we can only test web/Android on the emulator, confirm the isIOS gate is correct in code but skip iOS runtime test. (5) On the VOD screen with a locked video, verify the three payment buttons render vertically. Admin phone +250798875272, OTP in testCode field of otp/start response. Do NOT test actual Stripe payment completion (would charge the real card)."
 

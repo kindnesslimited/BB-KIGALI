@@ -10,12 +10,14 @@ import { api } from "@/src/api";
 import { useAuth } from "@/src/context/auth";
 
 type Method = "stripe" | "paypal" | "mtn_momo" | "airtel";
-const METHODS: { id: Method; label: string; sub: string; icon: any; needsPhone?: boolean }[] = [
+const isIOS = Platform.OS === "ios";
+const ALL_METHODS: { id: Method; label: string; sub: string; icon: any; needsPhone?: boolean; hiddenOnIOS?: boolean }[] = [
   { id: "paypal", label: "PayPal", sub: "Live — Visa/Mastercard or PayPal balance", icon: "logo-paypal" },
+  { id: "stripe", label: "Card (Stripe)", sub: "Live — Visa, Mastercard, Amex, Apple Pay & Google Pay", icon: "card-outline", hiddenOnIOS: true },
   { id: "mtn_momo", label: "MTN Mobile Money", sub: "Live — Rwanda MTN MoMo via BeSoft Pay", icon: "phone-portrait-outline", needsPhone: true },
-  { id: "airtel", label: "Airtel Money", sub: "Coming soon — currently mocked", icon: "phone-portrait-outline", needsPhone: true },
-  { id: "stripe", label: "Card (Stripe)", sub: "Coming soon — currently mocked", icon: "card-outline" },
+  { id: "airtel", label: "Airtel Money", sub: "Coming soon", icon: "phone-portrait-outline", needsPhone: true },
 ];
+const METHODS = ALL_METHODS.filter((m) => !(isIOS && m.hiddenOnIOS));
 
 export default function Checkout() {
   const insets = useSafeAreaInsets();
@@ -29,6 +31,9 @@ export default function Checkout() {
   const [err, setErr] = useState<string | null>(null);
   const [paypalUrl, setPaypalUrl] = useState<string | null>(null);
   const [paypalSubId, setPaypalSubId] = useState<string | null>(null);
+  const [stripeUrl, setStripeUrl] = useState<string | null>(null);
+  const [stripeSessionId, setStripeSessionId] = useState<string | null>(null);
+  const [suggestStripe, setSuggestStripe] = useState(false);
 
   const onPayPalNav = async (nav: WebViewNavigation) => {
     const url = nav.url || "";
@@ -55,6 +60,47 @@ export default function Checkout() {
 
   const [momoStatus, setMomoStatus] = useState<string | null>(null);
 
+  const pollStripe = async (sessionId: string) => {
+    const started = Date.now();
+    while (Date.now() - started < 300_000) {
+      try {
+        const r = await api<{ paymentStatus: string; status: string }>(
+          `/billing/stripe/session-status/${sessionId}`,
+          { auth: true }
+        );
+        if (r.paymentStatus === "paid" || r.status === "complete") {
+          await refresh();
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+          setSuccess(true);
+          return;
+        }
+        if (r.status === "expired") {
+          setErr("Payment session expired. Please try again.");
+          return;
+        }
+      } catch { /* keep polling */ }
+      await new Promise((res) => setTimeout(res, 2500));
+    }
+    setErr("Timed out waiting for Stripe confirmation. Check Payment History or try again.");
+  };
+
+  const onStripeNav = async (nav: WebViewNavigation) => {
+    const url = nav.url || "";
+    if (url.includes("/billing/stripe/return") || url.includes("/billing/stripe/cancel")) {
+      const cancelled = url.includes("/cancel");
+      setStripeUrl(null);
+      if (cancelled) {
+        setErr("Payment cancelled.");
+        return;
+      }
+      if (stripeSessionId) {
+        setLoading(true);
+        await pollStripe(stripeSessionId);
+        setLoading(false);
+      }
+    }
+  };
+
   const pollMomo = async (reference: string) => {
     const started = Date.now();
     while (Date.now() - started < 90_000) {
@@ -78,7 +124,7 @@ export default function Checkout() {
   };
 
   const pay = async () => {
-    setErr(null); setLoading(true); setMomoStatus(null);
+    setErr(null); setLoading(true); setMomoStatus(null); setSuggestStripe(false);
     try {
       const chosen = METHODS.find((m) => m.id === method)!;
       if (chosen.needsPhone && phone.replace(/\D/g, "").length < 9) {
@@ -93,21 +139,36 @@ export default function Checkout() {
         setPaypalUrl(r.approveUrl);
         return;
       }
+      if (method === "stripe") {
+        const r = await api<{ sessionId: string; checkoutUrl: string }>(
+          "/billing/stripe/create-checkout",
+          { method: "POST", auth: true, body: { purchase_type: "subscription", plan } }
+        );
+        setStripeSessionId(r.sessionId);
+        if (Platform.OS === "web") {
+          // On web, open in a new tab and poll status
+          try { (window as any).open(r.checkoutUrl, "_blank"); } catch { /* ignore */ }
+          await pollStripe(r.sessionId);
+        } else {
+          setStripeUrl(r.checkoutUrl);
+        }
+        return;
+      }
       if (method === "mtn_momo") {
         const r = await api<{ reference: string; status: string; message?: string; failureReason?: string }>(
           "/billing/momo/initiate",
           { method: "POST", auth: true, body: { plan, phone } }
         );
         setMomoStatus(r.status);
-        // If BeSoft already returned "failed" (e.g. MTN rejected debit immediately),
-        // surface the real reason instead of entering the polling loop.
         if (r.status === "failed") {
+          // Auto-suggest Stripe as fallback (unless we're on iOS where Stripe is hidden)
+          if (!isIOS) setSuggestStripe(true);
           throw new Error(r.message || r.failureReason || "MoMo request was declined.");
         }
         await pollMomo(r.reference);
         return;
       }
-      // Fallback for stripe/airtel — currently mocked
+      // Fallback for airtel (mocked)
       await api("/billing/subscribe", { method: "POST", auth: true, body: { plan, method, phone: chosen.needsPhone ? phone : null } });
       await refresh();
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
@@ -133,22 +194,58 @@ export default function Checkout() {
     );
   }
 
-  // Compute display prices — Card (PayPal) uses EUR, MoMo/Airtel/Stripe use RWF
+  // Compute display prices — Card (PayPal or Stripe) uses EUR, MoMo/Airtel use RWF
   const eurPrice: Record<string, string> = {
     basic_monthly: "1.00", basic_yearly: "10.00", premium_monthly: "3.00", premium_yearly: "30.00",
   };
+  const isCardMethod = method === "paypal" || method === "stripe";
   const isPayPal = method === "paypal";
-  const displayCurrency = isPayPal ? "EUR" : "RWF";
-  const displayAmount = isPayPal
+  const displayCurrency = isCardMethod ? "EUR" : "RWF";
+  const displayAmount = isCardMethod
     ? eurPrice[String(plan)] || "0.00"
     : Number(amount).toLocaleString();
   // Parallel: always show both
-  const parallelText = isPayPal
+  const parallelText = isCardMethod
     ? `≈ ${Number(amount).toLocaleString()} RWF via Mobile Money`
     : `≈ ${eurPrice[String(plan)] || "0"} EUR via Card / PayPal`;
 
   return (
     <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1, backgroundColor: colors.surface }}>
+      <Modal visible={!!stripeUrl} animationType="slide" onRequestClose={() => setStripeUrl(null)}>
+        <View style={{ flex: 1, backgroundColor: "#fff" }}>
+          <View style={[styles.top, { paddingTop: insets.top + spacing.md, backgroundColor: "#635bff" }]}>
+            <Pressable onPress={() => setStripeUrl(null)} hitSlop={12} testID="stripe-close">
+              <Ionicons name="close" size={26} color="#fff" />
+            </Pressable>
+            <Text style={[styles.topTitle, { color: "#fff" }]}>SECURE CARD PAYMENT</Text>
+            <View style={{ width: 26 }} />
+          </View>
+          {stripeUrl && (
+            Platform.OS === "web" ? (
+              <iframe src={stripeUrl} style={{ flex: 1, width: "100%", height: "100%", border: 0 }} />
+            ) : (
+              <WebView
+                source={{ uri: stripeUrl }}
+                onNavigationStateChange={onStripeNav}
+                onShouldStartLoadWithRequest={(req) => {
+                  const u = req.url || "";
+                  if (u.includes("/billing/stripe/return") || u.includes("/billing/stripe/cancel")) {
+                    onStripeNav(req as any);
+                    return false;
+                  }
+                  return true;
+                }}
+                startInLoadingState
+                javaScriptEnabled
+                domStorageEnabled
+                thirdPartyCookiesEnabled
+                testID="stripe-webview"
+              />
+            )
+          )}
+        </View>
+      </Modal>
+
       <Modal visible={!!paypalUrl} animationType="slide" onRequestClose={() => setPaypalUrl(null)}>
         <View style={{ flex: 1, backgroundColor: "#fff" }}>
           <View style={[styles.top, { paddingTop: insets.top + spacing.md, backgroundColor: "#003087" }]}>
@@ -243,16 +340,22 @@ export default function Checkout() {
           </View>
         )}
 
-        {!isPayPal && method !== "mtn_momo" && (
-          <View style={styles.demoBox}>
-            <Ionicons name="information-circle-outline" size={16} color={colors.warning} />
-            <Text style={styles.demoText}>This method is currently mocked. Use PayPal or MTN MoMo for real payments.</Text>
-          </View>
-        )}
         {isPayPal && (
           <View style={[styles.demoBox, { borderColor: colors.success }]}>
             <Ionicons name="shield-checkmark-outline" size={16} color={colors.success} />
             <Text style={styles.demoText}>Live PayPal. You will be redirected to PayPal to complete payment.</Text>
+          </View>
+        )}
+        {method === "stripe" && (
+          <View style={[styles.demoBox, { borderColor: colors.success }]}>
+            <Ionicons name="shield-checkmark-outline" size={16} color={colors.success} />
+            <Text style={styles.demoText}>Live Stripe. Pay by Visa, Mastercard, Amex, or wallet — you&apos;ll be redirected to secure Stripe Checkout.</Text>
+          </View>
+        )}
+        {method === "airtel" && (
+          <View style={styles.demoBox}>
+            <Ionicons name="information-circle-outline" size={16} color={colors.warning} />
+            <Text style={styles.demoText}>Airtel Money is coming soon. Please use PayPal, Stripe, or MTN MoMo for now.</Text>
           </View>
         )}
         {method === "mtn_momo" && (
@@ -269,6 +372,20 @@ export default function Checkout() {
         )}
 
         {err && <Text style={styles.err} testID="checkout-error">{err}</Text>}
+        {suggestStripe && !isIOS && (
+          <Pressable
+            onPress={() => { setMethod("stripe"); setErr(null); setSuggestStripe(false); }}
+            style={styles.fallbackBanner}
+            testID="momo-fallback-stripe"
+          >
+            <Ionicons name="card" size={20} color={colors.brandPrimary} />
+            <View style={{ flex: 1, marginLeft: spacing.sm }}>
+              <Text style={styles.fallbackTitle}>Try card payment instead?</Text>
+              <Text style={styles.fallbackSub}>Pay with Visa, Mastercard, Amex, Apple Pay, or Google Pay via Stripe.</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={colors.brandPrimary} />
+          </Pressable>
+        )}
       </ScrollView>
 
       <View style={[styles.footer, { paddingBottom: insets.bottom + spacing.md }]}>
@@ -306,6 +423,18 @@ const styles = StyleSheet.create({
   demoBox: { flexDirection: "row", alignItems: "center", gap: spacing.sm, marginTop: spacing.lg, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.md, borderWidth: 1, borderColor: colors.warning },
   demoText: { ...type.caption, flex: 1, color: colors.onSurfaceTertiary },
   err: { color: colors.error, marginTop: spacing.md, textAlign: "center" },
+  fallbackBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: spacing.md,
+    padding: spacing.md,
+    backgroundColor: colors.brandTertiary,
+    borderRadius: radius.md,
+    borderWidth: 1.5,
+    borderColor: colors.brandPrimary,
+  },
+  fallbackTitle: { ...type.h2, fontSize: 14, color: colors.brandPrimary, letterSpacing: 0.5 },
+  fallbackSub: { ...type.caption, marginTop: 2, color: colors.onBrandTertiary },
   footer: { position: "absolute", left: 0, right: 0, bottom: 0, backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.border, padding: spacing.lg },
   payBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, backgroundColor: colors.brandPrimary, height: 56, borderRadius: radius.md },
   payText: { ...type.h2, color: colors.onBrandPrimary, letterSpacing: 1.5, fontSize: 15 },

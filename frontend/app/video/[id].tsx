@@ -36,11 +36,15 @@ export default function VideoPlayerScreen() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [payUrl, setPayUrl] = useState<string | null>(null);
+  const [payProvider, setPayProvider] = useState<"paypal" | "stripe">("paypal");
   const [orderId, setOrderId] = useState<string | null>(null);
+  const [stripeSessionId, setStripeSessionId] = useState<string | null>(null);
   const [buying, setBuying] = useState(false);
   const [momoPhone, setMomoPhone] = useState<string>(user?.phone || "+250");
   const [showMomo, setShowMomo] = useState(false);
   const [momoStatus, setMomoStatus] = useState<string | null>(null);
+  const [suggestStripe, setSuggestStripe] = useState(false);
+  const isIOS = Platform.OS === "ios";
 
   const loadShow = async () => {
     try {
@@ -59,14 +63,53 @@ export default function VideoPlayerScreen() {
         { method: "POST", auth: true }
       );
       if (r.alreadyUnlocked) { await loadShow(); return; }
-      if (r.approveUrl && r.orderId) { setOrderId(r.orderId); setPayUrl(r.approveUrl); }
+      if (r.approveUrl && r.orderId) { setOrderId(r.orderId); setPayUrl(r.approveUrl); setPayProvider("paypal"); }
     } catch (e: any) { setErr(e.message); }
     finally { setBuying(false); }
   };
 
+  const buyVodStripe = async () => {
+    setBuying(true); setErr(null);
+    try {
+      const r = await api<{ sessionId: string; checkoutUrl: string }>(
+        "/billing/stripe/create-checkout",
+        { method: "POST", auth: true, body: { purchase_type: "vod", show_id: id } }
+      );
+      setStripeSessionId(r.sessionId);
+      if (Platform.OS === "web") {
+        try { (window as any).open(r.checkoutUrl, "_blank"); } catch { /* ignore */ }
+        await pollStripe(r.sessionId);
+      } else {
+        setPayUrl(r.checkoutUrl);
+        setPayProvider("stripe");
+      }
+    } catch (e: any) { setErr(e.message); }
+    finally { setBuying(false); }
+  };
+
+  const pollStripe = async (sessionId: string) => {
+    const started = Date.now();
+    while (Date.now() - started < 300_000) {
+      try {
+        const r = await api<{ paymentStatus: string; status: string }>(
+          `/billing/stripe/session-status/${sessionId}`,
+          { auth: true }
+        );
+        if (r.paymentStatus === "paid" || r.status === "complete") {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+          await loadShow();
+          return;
+        }
+        if (r.status === "expired") { setErr("Stripe session expired."); return; }
+      } catch { /* keep polling */ }
+      await new Promise((res) => setTimeout(res, 2500));
+    }
+    setErr("Stripe timed out. Check Profile → payment history.");
+  };
+
   const buyVodMomo = async () => {
     if (momoPhone.replace(/\D/g, "").length < 9) { setErr("Enter a valid MoMo phone"); return; }
-    setBuying(true); setErr(null);
+    setBuying(true); setErr(null); setSuggestStripe(false);
     try {
       const r = await api<{ reference: string; status: string; message?: string; failureReason?: string }>(
         `/billing/vod/${id}/momo`,
@@ -74,6 +117,7 @@ export default function VideoPlayerScreen() {
       );
       setMomoStatus(r.status);
       if (r.status === "failed") {
+        if (!isIOS) setSuggestStripe(true);
         setErr(r.message || r.failureReason || "Payment was declined by the mobile money provider.");
         return;
       }
@@ -105,6 +149,16 @@ export default function VideoPlayerScreen() {
       finally { setBuying(false); }
     } else if (url.includes("/paypal/cancel")) {
       setPayUrl(null);
+    } else if (url.includes("/billing/stripe/return")) {
+      setPayUrl(null);
+      if (stripeSessionId) {
+        setBuying(true);
+        await pollStripe(stripeSessionId);
+        setBuying(false);
+      }
+    } else if (url.includes("/billing/stripe/cancel")) {
+      setPayUrl(null);
+      setErr("Payment cancelled.");
     }
   };
 
@@ -143,7 +197,8 @@ export default function VideoPlayerScreen() {
                 onNavigationStateChange={onPayNav}
                 onShouldStartLoadWithRequest={(req) => {
                   const u = req.url || "";
-                  if (u.includes("/paypal/success") || u.includes("/paypal/cancel")) {
+                  if (u.includes("/paypal/success") || u.includes("/paypal/cancel") ||
+                      u.includes("/billing/stripe/return") || u.includes("/billing/stripe/cancel")) {
                     onPayNav(req as any);
                     return false;
                   }
@@ -184,18 +239,24 @@ export default function VideoPlayerScreen() {
               <Text style={styles.lockedSub}>{price} EUR / {Number(priceRwf).toLocaleString()} RWF — or go Premium for all VOD free.</Text>
 
               {!showMomo ? (
-                <View style={styles.lockedActions}>
-                  <Pressable onPress={buyVod} disabled={buying} style={[styles.buyBtn, buying && { opacity: 0.6 }]} testID="buy-vod-btn">
-                    {buying ? <ActivityIndicator color={colors.onBrandPrimary} /> : (
-                      <>
-                        <Ionicons name="card" size={14} color={colors.onBrandPrimary} />
-                        <Text style={styles.buyBtnText}>PAY {price}€ (CARD)</Text>
-                      </>
-                    )}
+                <View style={styles.lockedActionsCol}>
+                  {!isIOS && (
+                    <Pressable onPress={buyVodStripe} disabled={buying} style={[styles.buyBtnFull, buying && { opacity: 0.6 }]} testID="buy-vod-stripe-btn">
+                      {buying ? <ActivityIndicator color={colors.onBrandPrimary} /> : (
+                        <>
+                          <Ionicons name="card" size={14} color={colors.onBrandPrimary} />
+                          <Text style={styles.buyBtnText}>PAY {price}€ (CARD)</Text>
+                        </>
+                      )}
+                    </Pressable>
+                  )}
+                  <Pressable onPress={buyVod} disabled={buying} style={[styles.buyBtnOutlineFull, buying && { opacity: 0.6 }]} testID="buy-vod-btn">
+                    <Ionicons name="logo-paypal" size={14} color={colors.brandPrimary} />
+                    <Text style={styles.momoBtnText}>PAY WITH PAYPAL</Text>
                   </Pressable>
-                  <Pressable onPress={() => { setErr(null); setShowMomo(true); }} disabled={buying} style={styles.momoBtn} testID="buy-vod-momo-btn">
+                  <Pressable onPress={() => { setErr(null); setShowMomo(true); }} disabled={buying} style={styles.buyBtnOutlineFull} testID="buy-vod-momo-btn">
                     <Ionicons name="phone-portrait" size={14} color={colors.brandPrimary} />
-                    <Text style={styles.momoBtnText}>{Number(priceRwf).toLocaleString()} RWF (MoMo)</Text>
+                    <Text style={styles.momoBtnText}>{Number(priceRwf).toLocaleString()} RWF (MOMO)</Text>
                   </Pressable>
                 </View>
               ) : (
@@ -227,6 +288,16 @@ export default function VideoPlayerScreen() {
                 <Text style={styles.premInline}>OR GO PREMIUM →</Text>
               </Pressable>
               {err && <Text style={styles.err}>{err}</Text>}
+              {suggestStripe && !isIOS && (
+                <Pressable
+                  onPress={() => { setShowMomo(false); setErr(null); setSuggestStripe(false); void buyVodStripe(); }}
+                  style={styles.fallbackBanner}
+                  testID="vod-fallback-stripe"
+                >
+                  <Ionicons name="card" size={16} color={colors.brandPrimary} />
+                  <Text style={styles.fallbackText}>Try Card (Stripe) instead →</Text>
+                </Pressable>
+              )}
             </View>
           </View>
         ) : embedUrl ? (
@@ -296,8 +367,13 @@ const styles = StyleSheet.create({
   lockedTitle: { ...type.h1, color: colors.brandPrimary, letterSpacing: 1, marginTop: spacing.sm },
   lockedSub: { ...type.bodyMuted, textAlign: "center", marginBottom: spacing.md, fontSize: 13 },
   lockedActions: { flexDirection: "row", gap: spacing.sm, alignItems: "center" },
+  lockedActionsCol: { flexDirection: "column", gap: spacing.sm, alignSelf: "stretch", marginTop: spacing.sm },
   buyBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, backgroundColor: colors.brandPrimary, paddingHorizontal: spacing.md, paddingVertical: 12, borderRadius: radius.pill, flex: 1 },
+  buyBtnFull: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, backgroundColor: colors.brandPrimary, paddingVertical: 14, borderRadius: radius.pill, alignSelf: "stretch" },
+  buyBtnOutlineFull: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 12, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.brandPrimary, alignSelf: "stretch" },
   buyBtnText: { ...type.h2, color: colors.onBrandPrimary, letterSpacing: 1, fontSize: 12 },
+  fallbackBanner: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, marginTop: spacing.md, paddingVertical: 10, paddingHorizontal: spacing.md, borderRadius: radius.pill, backgroundColor: colors.brandTertiary, borderWidth: 1, borderColor: colors.brandPrimary },
+  fallbackText: { color: colors.brandPrimary, fontFamily: "BarlowCondensed-Bold", fontSize: 12, letterSpacing: 0.5 },
   momoBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4, paddingHorizontal: spacing.md, paddingVertical: 12, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.brandPrimary, flex: 1 },
   momoBtnText: { color: colors.brandPrimary, fontFamily: "BarlowCondensed-Bold", fontSize: 11, letterSpacing: 1 },
   momoInput: { backgroundColor: colors.surface, borderRadius: radius.md, padding: 12, color: colors.onSurface, fontSize: 14, borderWidth: 1, borderColor: colors.border, textAlign: "center" },
