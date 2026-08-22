@@ -1277,6 +1277,104 @@ async def admin_delete_show(show_id: str, _ = Depends(require_admin)):
     return {"ok": True}
 
 
+# ---------- Categories (dynamic, admin-managed) ----------
+def _slugify(name: str) -> str:
+    import re as _re
+    s = (name or "").strip().lower()
+    s = _re.sub(r"[^a-z0-9]+", "-", s)
+    s = _re.sub(r"^-+|-+$", "", s)
+    return s or "category"
+
+
+class CategoryIn(BaseModel):
+    name: str
+    order: int = 100
+    isActive: bool = True
+
+
+@api.get("/categories")
+async def list_categories():
+    """Public — returns active categories sorted by order."""
+    items = await db.categories.find(
+        {"isActive": {"$ne": False}},
+        {"_id": 0},
+    ).sort("order", 1).to_list(200)
+    return items
+
+
+@api.get("/admin/categories")
+async def admin_list_categories(_ = Depends(require_admin)):
+    items = await db.categories.find({}, {"_id": 0}).sort("order", 1).to_list(200)
+    return items
+
+
+@api.post("/admin/categories")
+async def admin_create_category(body: CategoryIn, _ = Depends(require_admin)):
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(400, "Category name is required")
+    slug = _slugify(name)
+    # Prevent duplicates by slug
+    if await db.categories.find_one({"slug": slug}):
+        raise HTTPException(409, f"Category '{name}' already exists")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "name": name,
+        "slug": slug,
+        "order": body.order,
+        "isActive": body.isActive,
+        "isDefault": False,
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.categories.insert_one(doc.copy())
+    return doc
+
+
+@api.put("/admin/categories/{category_id}")
+async def admin_update_category(category_id: str, body: CategoryIn, _ = Depends(require_admin)):
+    existing = await db.categories.find_one({"id": category_id})
+    if not existing:
+        raise HTTPException(404, "Category not found")
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(400, "Category name is required")
+    new_slug = _slugify(name)
+    # Check duplicate slug on OTHER records
+    dup = await db.categories.find_one({"slug": new_slug, "id": {"$ne": category_id}})
+    if dup:
+        raise HTTPException(409, f"Another category already uses '{name}'")
+    old_slug = existing.get("slug")
+    updates = {
+        "name": name,
+        "slug": new_slug,
+        "order": body.order,
+        "isActive": body.isActive,
+        "updatedAt": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.categories.update_one({"id": category_id}, {"$set": updates})
+    # If slug changed, cascade-update shows using the old slug
+    if old_slug and old_slug != new_slug:
+        await db.shows.update_many({"category": old_slug}, {"$set": {"category": new_slug}})
+    return await db.categories.find_one({"id": category_id}, {"_id": 0})
+
+
+@api.delete("/admin/categories/{category_id}")
+async def admin_delete_category(category_id: str, _ = Depends(require_admin)):
+    existing = await db.categories.find_one({"id": category_id})
+    if not existing:
+        raise HTTPException(404, "Category not found")
+    slug = existing.get("slug")
+    # Count shows referencing this category
+    count = await db.shows.count_documents({"category": slug}) if slug else 0
+    if count > 0:
+        raise HTTPException(
+            409,
+            f"Cannot delete: {count} show(s) still use this category. Move or delete them first.",
+        )
+    await db.categories.delete_one({"id": category_id})
+    return {"ok": True}
+
+
 # ---------- Root health ----------
 @api.get("/")
 async def root():
@@ -1285,6 +1383,24 @@ async def root():
 
 # ---------- Seed data ----------
 async def seed():
+    # ----- Categories (dynamic, admin-managed) -----
+    default_cats = [
+        {"name": "VOD", "slug": "vod", "order": 1},
+        {"name": "Podcast", "slug": "podcast", "order": 2},
+        {"name": "Interview", "slug": "interview", "order": 3},
+    ]
+    for c in default_cats:
+        if not await db.categories.find_one({"slug": c["slug"]}):
+            await db.categories.insert_one({
+                "id": str(uuid.uuid4()),
+                "name": c["name"],
+                "slug": c["slug"],
+                "order": c["order"],
+                "isActive": True,
+                "isDefault": True,
+                "createdAt": datetime.now(timezone.utc).isoformat(),
+            })
+
     # ----- Shows (VOD/podcasts/interviews) -----
     if not await db.shows.count_documents({}):
         shows = [

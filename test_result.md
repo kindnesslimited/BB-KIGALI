@@ -101,3 +101,73 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+
+user_problem_statement: "Add admin management for Categories (unlimited, admin-created) so admins can add show categories like News, Sports, Music beyond the fixed VOD/Podcast/Interview."
+
+backend:
+  - task: "Categories CRUD"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Added GET /api/categories (public), GET/POST/PUT/DELETE /api/admin/categories. Includes: slug auto-generation, duplicate detection (409), cascade slug rename on shows.category, delete guard when shows still reference the category. Seeded default categories (vod, podcast, interview) with isDefault=true. Manually curl-tested full CRUD + all edge cases; all passed."
+
+frontend:
+  - task: "Admin Categories screen"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/admin/categories.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "New screen with list + create/edit form. Toggle isActive, delete, edit name/order. Card added to /admin/index.tsx."
+  - task: "Dynamic categories in Admin Shows"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/admin/shows.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Replaced hardcoded CATS array with API-loaded categories. Show list rows now display category name (not slug)."
+  - task: "Dynamic category chips on Shows tab"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/(tabs)/shows.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Chips are now loaded from /api/categories (with 'All' prepended)."
+
+metadata:
+  created_by: "main_agent"
+  version: "1.0"
+  test_sequence: 5
+  run_ui: true
+
+test_plan:
+  current_focus:
+    - "Categories CRUD"
+    - "Admin Categories screen"
+    - "Dynamic categories in Admin Shows"
+    - "Dynamic category chips on Shows tab"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: "Implemented dynamic category management. Backend endpoints tested via curl and all pass (create, dedupe, slug cascade rename, delete guard). Please validate the frontend flow end-to-end: login as admin (+250798875272, OTP code returned in /api/auth/otp/start response's testCode field), open Admin > Categories, add a new category (e.g. 'Music'), then open Admin > VOD & Podcasts to confirm the new chip appears, then open the public Shows tab to confirm it appears there too. Do not test payments/auth/SMS — only categories."

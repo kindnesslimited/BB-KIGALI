@@ -10,13 +10,7 @@ import { colors, spacing, type, radius } from "@/src/theme";
 import { api } from "@/src/api";
 
 type Show = { id: string; title: string; category: string; description: string; thumbnail: string; duration: string; premium: boolean };
-
-const CATS = [
-  { key: "all", label: "All" },
-  { key: "vod", label: "VOD" },
-  { key: "podcast", label: "Podcasts" },
-  { key: "interview", label: "Interviews" },
-];
+type Category = { id: string; name: string; slug: string; order: number; isActive: boolean };
 
 const { width } = Dimensions.get("window");
 const COL_GAP = spacing.md;
@@ -27,16 +21,29 @@ export default function Shows() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const [items, setItems] = useState<Show[]>([]);
+  const [cats, setCats] = useState<Category[]>([]);
   const [cat, setCat] = useState<string>("all");
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
       setLoading(true);
-      try { setItems(await api<Show[]>("/shows")); } catch {}
+      try {
+        const [showsRes, catsRes] = await Promise.all([
+          api<Show[]>("/shows"),
+          api<Category[]>("/categories"),
+        ]);
+        setItems(showsRes);
+        setCats(catsRes);
+      } catch {}
       setLoading(false);
     })();
   }, []);
+
+  const chips = useMemo(
+    () => [{ key: "all", label: "All" }, ...cats.map(c => ({ key: c.slug, label: c.name }))],
+    [cats]
+  );
 
   const filtered = useMemo(() => cat === "all" ? items : items.filter(i => i.category === cat), [items, cat]);
 
@@ -52,7 +59,7 @@ export default function Shows() {
           contentContainerStyle={styles.chipRow}
           style={styles.chipScroll}
         >
-          {CATS.map((c) => {
+          {chips.map((c) => {
             const active = cat === c.key;
             return (
               <Pressable

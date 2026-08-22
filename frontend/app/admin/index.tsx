@@ -8,6 +8,8 @@ import { useAuth } from "@/src/context/auth";
 const CARDS: { key: string; label: string; sub: string; icon: any; route: any }[] = [
   { key: "settings", label: "Live URLs & Branding", sub: "Radio stream, live YouTube URL, station name",
     icon: "settings-outline", route: "/admin/settings" },
+  { key: "categories", label: "Categories", sub: "Add unlimited show categories (News, Sports, Music…)",
+    icon: "pricetags-outline", route: "/admin/categories" },
   { key: "programs", label: "Programs", sub: "BBSPORTSTALK, B&B SPORTS BAR, IMPUMEKOYIWACU",
     icon: "list-outline", route: "/admin/programs" },
   { key: "shows", label: "VOD & Podcasts", sub: "Add YouTube videos to the library",

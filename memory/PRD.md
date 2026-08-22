@@ -12,7 +12,8 @@ and subscribe to premium tiers.
 4. **News feed** — cards with expandable body
 5. **Profile & Subscription Management** — tier badge, payment history, sign out
 6. **Subscription Paywall** — Basic (1,000 RWF/mo, 10,000 RWF/yr) & Premium (3,000 RWF/mo, 30,000 RWF/yr)
-7. **Multi-payment Checkout** — Stripe, PayPal, MTN MoMo, Airtel Money (**ALL MOCKED**)
+7. **Multi-payment Checkout** — PayPal (LIVE, EUR) + MTN MoMo via BeSoft (LIVE, RWF); Stripe/Airtel currently mocked
+8. **Admin Panel** — Programs, VOD/Podcast library, Live URLs & Branding, and **Categories (unlimited, admin-managed)** — added Aug 2026
 
 ## Stack
 - **Frontend**: Expo SDK 54, expo-router, expo-audio (live radio), react-native-webview (VOD), expo-blur (glass mini-player), react-native-reanimated (wave animation), Barlow Condensed via @fontsource CDN.

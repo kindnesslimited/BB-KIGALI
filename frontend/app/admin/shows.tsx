@@ -8,20 +8,30 @@ import { colors, spacing, type, radius } from "@/src/theme";
 import { api } from "@/src/api";
 
 type Show = { id: string; title: string; category: string; description?: string; thumbnail?: string; videoUrl: string; duration?: string; premium?: boolean };
-
-const CATS = ["vod", "podcast", "interview"];
+type Category = { id: string; name: string; slug: string; order: number; isActive: boolean };
 
 export default function AdminShows() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const [items, setItems] = useState<Show[]>([]);
+  const [cats, setCats] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState<Partial<Show>>({ title: "", category: "vod", videoUrl: "", description: "" });
 
   const load = async () => {
-    try { setItems(await api<Show[]>("/shows")); }
-    catch { /* noop */ } finally { setLoading(false); }
+    try {
+      const [showsRes, catsRes] = await Promise.all([
+        api<Show[]>("/shows"),
+        api<Category[]>("/categories"),
+      ]);
+      setItems(showsRes);
+      setCats(catsRes);
+      // If current form category is not in the list, snap to first active category
+      if (catsRes.length && !catsRes.some(c => c.slug === form.category)) {
+        setForm(prev => ({ ...prev, category: catsRes[0].slug }));
+      }
+    } catch { /* noop */ } finally { setLoading(false); }
   };
   useEffect(() => { void load(); }, []);
 
@@ -64,11 +74,14 @@ export default function AdminShows() {
             <TextInput value={form.videoUrl || ""} onChangeText={(v) => setForm({ ...form, videoUrl: v })} placeholder="YouTube URL (watch or embed)" placeholderTextColor={colors.onSurfaceSecondary} style={[styles.input, { marginTop: spacing.sm }]} autoCapitalize="none" testID="new-show-url" />
             <TextInput value={form.description || ""} onChangeText={(v) => setForm({ ...form, description: v })} placeholder="Description" placeholderTextColor={colors.onSurfaceSecondary} style={[styles.input, { marginTop: spacing.sm, height: 80 }]} multiline testID="new-show-desc" />
             <View style={styles.catRow}>
-              {CATS.map((c) => (
-                <Pressable key={c} onPress={() => setForm({ ...form, category: c })} style={[styles.catChip, form.category === c && styles.catChipActive]}>
-                  <Text style={[styles.catChipText, form.category === c && { color: colors.onBrandPrimary }]}>{c.toUpperCase()}</Text>
+              {cats.map((c) => (
+                <Pressable key={c.slug} onPress={() => setForm({ ...form, category: c.slug })} style={[styles.catChip, form.category === c.slug && styles.catChipActive]} testID={`new-show-cat-${c.slug}`}>
+                  <Text style={[styles.catChipText, form.category === c.slug && { color: colors.onBrandPrimary }]}>{c.name.toUpperCase()}</Text>
                 </Pressable>
               ))}
+              {cats.length === 0 && (
+                <Text style={type.bodyMuted}>No categories yet — add some in the Categories screen first.</Text>
+              )}
             </View>
             <Pressable onPress={create} style={styles.saveBtn} testID="new-show-save">
               <Text style={styles.saveText}>PUBLISH</Text>
@@ -78,18 +91,21 @@ export default function AdminShows() {
 
         {loading && <ActivityIndicator color={colors.brandPrimary} />}
         <View style={{ gap: spacing.md, marginTop: spacing.md }}>
-          {items.map((s) => (
-            <View key={s.id} style={styles.showRow}>
-              {s.thumbnail ? <Image source={{ uri: s.thumbnail }} style={styles.thumb} contentFit="cover" /> : <View style={[styles.thumb, styles.thumbFallback]}><Ionicons name="videocam" size={20} color={colors.onSurfaceSecondary} /></View>}
-              <View style={{ flex: 1 }}>
-                <Text numberOfLines={2} style={styles.showTitle}>{s.title}</Text>
-                <Text style={styles.showMeta}>{s.category.toUpperCase()} · {s.duration || "—"}</Text>
+          {items.map((s) => {
+            const catName = cats.find(c => c.slug === s.category)?.name || s.category;
+            return (
+              <View key={s.id} style={styles.showRow}>
+                {s.thumbnail ? <Image source={{ uri: s.thumbnail }} style={styles.thumb} contentFit="cover" /> : <View style={[styles.thumb, styles.thumbFallback]}><Ionicons name="videocam" size={20} color={colors.onSurfaceSecondary} /></View>}
+                <View style={{ flex: 1 }}>
+                  <Text numberOfLines={2} style={styles.showTitle}>{s.title}</Text>
+                  <Text style={styles.showMeta}>{catName.toUpperCase()} · {s.duration || "—"}</Text>
+                </View>
+                <Pressable onPress={() => del(s)} hitSlop={8} testID={`del-show-${s.id}`}>
+                  <Ionicons name="trash-outline" size={22} color={colors.error} />
+                </Pressable>
               </View>
-              <Pressable onPress={() => del(s)} hitSlop={8} testID={`del-show-${s.id}`}>
-                <Ionicons name="trash-outline" size={22} color={colors.error} />
-              </Pressable>
-            </View>
-          ))}
+            );
+          })}
         </View>
       </ScrollView>
     </KeyboardAvoidingView>
