@@ -9,7 +9,8 @@ import { api } from "@/src/api";
 
 type Payment = { id: string; planLabel: string; amount: number; currency: string; method: string; status: string; createdAt: string };
 
-const PRIVACY_URL = "https://bbkigali.com/privacy";
+const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || "";
+const PRIVACY_URL = `${BACKEND_URL}/api/privacy`;
 
 const TIER_META: Record<string, { label: string; color: string }> = {
   free: { label: "Free", color: colors.onSurfaceSecondary },

@@ -102,7 +102,64 @@
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
 
-user_problem_statement: "Iteration 20 (June 2026): (1) Add auto-retry on MoMo failure so users can retry on the same screen. (2) Switch MoMo back to the atomic /public/payments/debit-credit API — debit customer, credit 250798875274 (100% credit, 0% fee). (3) YouTube content sync from the official channel @bbkigalifm using YouTube Data API v3; both an admin 'Sync Now' button and background auto-sync every 6 hours. (4) iOS App Store prep — Sign in with Apple button on the phone entry screen (iOS only), in-app Delete Account button under Profile settings (double confirmation), and a hosted Privacy Policy link."
+user_problem_statement: "Iter 21 (June 2026): (1) Switch MoMo BACK to POST /public/payments/transfer with debit-only payload (BeSoft auto-settles net to merchant). Missing X-API-Key/X-API-Secret headers previously caused 401 — those are already sent from _besoft_headers(). Test payer 250794230137. (2) Serve the Privacy Policy from the backend at /api/privacy so the in-app link resolves immediately without requiring the customer's bbkigali.com domain. Also make the Privacy link tappable on the sign-in screen so users acknowledge before continuing."
+
+backend:
+  - task: "MoMo /public/payments/transfer (debit-only)"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "Iter 21: 16/16 tests pass. HTTP 201 Created from BeSoft on both subscription and VOD flows. X-API-Key + X-API-Secret headers present. besoftAttempt='transfer' persisted. Safety guard still blocks merchant number in all 4 normalization variants."
+
+  - task: "Privacy Policy served from backend"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "GET /api/privacy returns 200 text/html with the full policy body. Reachable at https://radio-vod-platform.preview.emergentagent.com/api/privacy."
+
+frontend:
+  - task: "Privacy Policy accessible in-app"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/(tabs)/profile.tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Profile → Settings → Privacy Policy row and the 'By continuing you accept … Privacy Policy' link on the phone entry screen both open ${EXPO_PUBLIC_BACKEND_URL}/api/privacy via Linking. No third-party hosting required to work in the app."
+
+metadata:
+  created_by: "main_agent"
+  version: "1.3"
+  test_sequence: 21
+  run_ui: true
+
+test_plan:
+  current_focus: ["Privacy Policy accessible in-app"]
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: "Iter 21 shipped: MoMo back on /public/payments/transfer (debit-only payload, BeSoft 201). Privacy served at /api/privacy from FastAPI so the in-app link works with no external hosting. Phone entry screen now has a tap-through Privacy Policy link in the acknowledgement footer for App Store review."
+
+# ---------- Previous iteration ----------
+previous_iter20:
 
 backend:
   - task: "MoMo /debit-credit for subscription + VOD"

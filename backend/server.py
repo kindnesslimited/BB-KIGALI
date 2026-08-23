@@ -920,8 +920,9 @@ async def momo_initiate(body: MoMoInitiateIn, user = Depends(get_current_user)):
         norm = raw_status if raw_status in ("pending", "processing", "success", "failed") else "pending"
         return norm, besoft_id, debit.get("failure_reason") or d.get("failure_reason")
 
-    # ---- /public/payments/debit-credit — debit customer, credit merchant collection MSISDN in one atomic call ----
-    # Per user requirement: charge_percent = 0 → credit amount equals debit amount (no fees deducted).
+    # ---- /public/payments/transfer — debit-only payload; BeSoft auto-settles net amount to merchant's
+    # configured payout_msisdn using charge_percent + disbursement method derived from payment_method.
+    # Per BeSoft: mtn_momo_collection → mtn_momo_disbursement automatic settlement.
     payload = {
         "idempotency_key": reference,
         "debit": {
@@ -930,19 +931,9 @@ async def momo_initiate(body: MoMoInitiateIn, user = Depends(get_current_user)):
             "payment_method": "mtn_momo_collection",
             "payer_identifier": payer,
             "description": f"BB FM Kigali — {plan['label']}",
-            "idempotency_key": reference + "-d",
             "country": "RW",
             "metadata": {"userId": user["id"], "plan": body.plan},
         },
-        "credits": [{
-            "amount": debit_amount,
-            "currency": plan["currency"],
-            "payment_method": "mtn_momo_disbursement",
-            "payee_identifier": BESOFT_PAYOUT_MSISDN,
-            "description": f"Payout — {plan['label']}",
-            "idempotency_key": reference + "-c1",
-            "country": "RW",
-        }],
     }
 
     now = datetime.now(timezone.utc)
@@ -962,13 +953,13 @@ async def momo_initiate(body: MoMoInitiateIn, user = Depends(get_current_user)):
     await db.payments.insert_one(payment_doc.copy())
 
     try:
-        status_code, resp_text, resp_data = await _try_besoft("/public/payments/debit-credit", payload)
+        status_code, resp_text, resp_data = await _try_besoft("/public/payments/transfer", payload)
     except httpx.RequestError as e:
         await db.payments.update_one({"reference": reference}, {"$set": {"status": "failed", "error": f"network: {e}"}})
         raise HTTPException(502, f"Unable to reach payment provider: {e}")
 
     debit_norm, besoft_tx_id, failure_reason = _extract_debit(resp_data)
-    attempt_note = "debit_credit"
+    attempt_note = "transfer"
 
     # ---- Persist and respond ----
     if status_code >= 300:
@@ -1516,7 +1507,7 @@ async def vod_purchase_momo(show_id: str, body: VodMoMoIn, user = Depends(get_cu
     _guard_payer_not_merchant(payer)
     reference = f"vod-{show_id[:8]}-{uuid.uuid4().hex[:10]}"
     amount = float(VOD_PRICE_RWF)
-    # /public/payments/debit-credit — debit customer, credit BESOFT_PAYOUT_MSISDN (0% fee → credit = debit)
+    # /public/payments/transfer — debit-only payload; BeSoft auto-settles net amount to merchant.
     payload = {
         "idempotency_key": reference,
         "debit": {
@@ -1525,19 +1516,9 @@ async def vod_purchase_momo(show_id: str, body: VodMoMoIn, user = Depends(get_cu
             "payment_method": "mtn_momo_collection",
             "payer_identifier": payer,
             "description": f"BB FM VOD: {show['title']}",
-            "idempotency_key": reference + "-d",
             "country": "RW",
             "metadata": {"userId": user["id"], "showId": show_id, "kind": "vod_unlock"},
         },
-        "credits": [{
-            "amount": amount,
-            "currency": "RWF",
-            "payment_method": "mtn_momo_disbursement",
-            "payee_identifier": BESOFT_PAYOUT_MSISDN,
-            "description": f"VOD payout — {show['title']}",
-            "idempotency_key": reference + "-c1",
-            "country": "RW",
-        }],
     }
     await db.vod_purchases.insert_one({
         "id": reference, "orderId": reference, "reference": reference,
@@ -1548,7 +1529,7 @@ async def vod_purchase_momo(show_id: str, body: VodMoMoIn, user = Depends(get_cu
     })
     try:
         async with httpx.AsyncClient(timeout=30.0, verify=BESOFT_VERIFY_SSL) as c:
-            r = await c.post(f"{BESOFT_BASE_URL}/public/payments/debit-credit", headers=_besoft_headers(), json=payload)
+            r = await c.post(f"{BESOFT_BASE_URL}/public/payments/transfer", headers=_besoft_headers(), json=payload)
     except httpx.RequestError as e:
         await db.vod_purchases.update_one({"reference": reference}, {"$set": {"status": "failed", "error": str(e)}})
         raise HTTPException(502, f"Unable to reach payment provider: {e}")
@@ -1566,7 +1547,7 @@ async def vod_purchase_momo(show_id: str, body: VodMoMoIn, user = Depends(get_cu
             "status": "failed",
             "error": r.text[:400],
             "failureReason": provider_msg,
-            "besoftAttempt": "debit_credit",
+            "besoftAttempt": "transfer",
         }})
         return {"reference": reference, "status": "failed", "amount": amount, "currency": "RWF",
                 "message": f"MoMo provider rejected the request: {str(provider_msg)[:120]}",
@@ -1577,7 +1558,7 @@ async def vod_purchase_momo(show_id: str, body: VodMoMoIn, user = Depends(get_cu
     besoft_status = (debit.get("status") or data.get("status") or "pending").lower()
     failure_reason = debit.get("failure_reason") or data.get("failure_reason")
     normalized = besoft_status if besoft_status in ("pending", "processing", "success", "failed") else "pending"
-    update_fields = {"besoftTxId": besoft_tx_id, "besoftPayload": data, "status": normalized, "besoftAttempt": "debit_credit"}
+    update_fields = {"besoftTxId": besoft_tx_id, "besoftPayload": data, "status": normalized, "besoftAttempt": "transfer"}
     if failure_reason:
         update_fields["failureReason"] = failure_reason
     await db.vod_purchases.update_one({"reference": reference}, {"$set": update_fields})
@@ -2738,6 +2719,19 @@ async def app_health():
     except Exception:
         db_ok = False
     return {"ok": db_ok, "service": "bb-fm-kigali", "db": "ok" if db_ok else "unreachable"}
+
+
+# ---- Privacy Policy — served straight from the backend so the in-app link always resolves.
+LANDING_DIR = Path("/app/landing")
+
+
+@app.get("/api/privacy", response_class=HTMLResponse)
+async def api_privacy_policy():
+    """The k8s ingress routes /api/* → this backend on port 8001, so this is the public URL for the app."""
+    path = LANDING_DIR / "privacy.html"
+    if not path.exists():
+        raise HTTPException(404, "Privacy policy not published yet")
+    return HTMLResponse(path.read_text(encoding="utf-8"))
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,

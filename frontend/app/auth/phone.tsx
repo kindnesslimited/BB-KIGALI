@@ -1,11 +1,14 @@
 import { useState } from "react";
-import { View, Text, StyleSheet, Pressable, TextInput, KeyboardAvoidingView, Platform, ActivityIndicator } from "react-native";
+import { View, Text, StyleSheet, Pressable, TextInput, KeyboardAvoidingView, Platform, ActivityIndicator, Linking } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, type, radius } from "@/src/theme";
 import { useAuth } from "@/src/context/auth";
+
+const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || "";
+const PRIVACY_URL = `${BACKEND_URL}/api/privacy`;
 
 export default function PhoneEntry() {
   const insets = useSafeAreaInsets();
@@ -107,7 +110,10 @@ export default function PhoneEntry() {
             </Pressable>
           )}
 
-          <Text style={styles.legal}>By continuing you accept our Terms & Privacy.</Text>
+          <Text style={styles.legal}>
+            By continuing you accept our Terms &{" "}
+            <Text style={styles.legalLink} onPress={() => Linking.openURL(PRIVACY_URL)} testID="phone-privacy-link">Privacy Policy</Text>.
+          </Text>
         </View>
       </View>
     </KeyboardAvoidingView>
@@ -135,4 +141,5 @@ const styles = StyleSheet.create({
   appleBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, height: 52, borderRadius: radius.md, backgroundColor: "#000", marginTop: spacing.sm },
   appleText: { color: "#fff", fontSize: 15, fontFamily: "System", fontWeight: "600" },
   legal: { ...type.caption, textAlign: "center", marginTop: spacing.md },
+  legalLink: { color: colors.brandPrimary, textDecorationLine: "underline" },
 });

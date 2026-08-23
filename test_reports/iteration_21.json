@@ -1,0 +1,30 @@
+{
+  "summary": "Iter 21 backend-only regression PASS 16/16. MoMo successfully switched BACK to POST /public/payments/transfer with X-API-Key + X-API-Secret headers. Confirmed via backend.err.log: three fresh POSTs to https://payment.besoft.info/api/v1/public/payments/transfer → HTTP 201 Created (NO 401, NO /debit-credit). (1) /api/health = 200 ok:true. (2) GET /api/privacy (no auth) = 200 text/html containing 'Privacy Policy', 'BB FM Kigali', 'Delete Account'. (3) GET /api/privacy WITH auth header = 200 text/html — auth-agnostic route works. (4) POST /api/billing/momo/initiate {plan:'basic_monthly', phone:'250794230137'} = 200; reference persisted with besoftAttempt='transfer' in db.payments (verified via /api/billing/history). (5) Merchant safety guard: all 4 merchant number variants ('250798875274', '+250 798 875 274', '0798875274', '250 798 875 274') return HTTP 400 with expected 'collection account / your own' message on BOTH /billing/momo/initiate AND /billing/vod/{id}/momo. (6) POST /api/billing/vod/{show_id}/momo {phone:'250794230137'} = 200; when not alreadyUnlocked, response contains reference + no auth error. (7) Regression: /api/shows returns >=50 items (69 seen). (8) POST /api/admin/youtube/sync with admin bearer returns {ok:true, upserted:>=1}. No 401 regression, no /debit-credit calls, besoftAttempt='transfer' correctly set.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": [], "react_native_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iter21_momo_transfer_and_privacy.py",
+    "/app/test_reports/pytest/pytest_iter21.xml"
+  ],
+  "action_items": [
+    "No action required for the tested scope. BeSoft may still respond with domain-level errors like 'Merchant not provisioned for MoMo Collections' — that is a merchant-side provisioning issue on BeSoft's end, not a regression on our side. Our tests confirmed BeSoft accepted the request format (HTTP 201 Created from /public/payments/transfer)."
+  ],
+  "critical_code_review_comments": [
+    "server.py:839 _besoft_headers() correctly sends X-API-Key + X-API-Secret + Content-Type — no 401 regression.",
+    "server.py:872 _guard_payer_not_merchant() normalizes payer before comparing to BESOFT_PAYOUT_MSISDN — all 4 phone-format variants blocked.",
+    "server.py:956 subscription MoMo uses POST /public/payments/transfer with nested {idempotency_key, debit:{...}} payload — matches spec.",
+    "server.py:1532 VOD MoMo uses same /public/payments/transfer endpoint & payload shape — consistent.",
+    "server.py:997 and 1561 besoftAttempt='transfer' persisted to db.payments AND db.vod_purchases on the 2xx path AND the 3xx failure path — good.",
+    "server.py:2728 /api/privacy served via HTMLResponse from /app/landing/privacy.html — no auth dep, no CORS trouble.",
+    "Minor: test_momo_initiate_transfer had a `return data['reference']` line that pytest warned about (should assert). Non-blocking; harmless warning."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter21_momo_transfer_and_privacy.py (new)"
+  ],
+  "success_rate": {"backend": "100% (16/16)", "frontend": "not tested"},
+  "seed_data_creation": "None. Tests use existing admin (+250794230137) and real payer (250794230137).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iter 21 verified the MoMo /public/payments/transfer switch is live and working. Backend log evidence: 3× 'POST https://payment.besoft.info/api/v1/public/payments/transfer HTTP/1.1 201 Created' after service reload. No /debit-credit calls made after switch. besoftAttempt='transfer' persisted correctly in db.payments (verified via /api/billing/history endpoint). Merchant safety guard covers 4 phone format variants for both subscription and VOD flows. Privacy Policy served correctly. Auth flow: POST /api/auth/otp/start {phone:'+250794230137'} → returns {testCode: '<6digit>'}; POST /api/auth/otp/verify {phone, code} → returns {accessToken}. YouTube sync admin endpoint returns upserted>=1. Test file: /app/backend/tests/test_iter21_momo_transfer_and_privacy.py — reusable for regression.",
+  "rca_of_issue": "N/A — no issues found. All 16 tests pass. BeSoft returns HTTP 201 Created on /public/payments/transfer requests, confirming both endpoint switch and auth headers (X-API-Key + X-API-Secret) work correctly."
+}
