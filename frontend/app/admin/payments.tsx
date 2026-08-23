@@ -12,7 +12,10 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { colors, spacing, type, radius } from "@/src/theme";
-import { api } from "@/src/api";
+import { api, getToken } from "@/src/api";
+import { Alert, Platform } from "react-native";
+
+const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || "";
 
 type Summary = {
   windowDays: number;
@@ -65,6 +68,38 @@ export default function AdminPayments() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [statusFilter, setStatusFilter] = useState<string>("all");
+
+  const downloadCsv = async () => {
+    try {
+      const params = new URLSearchParams();
+      if (statusFilter !== "all") params.set("status", statusFilter);
+      params.set("days", String(days));
+      const token = await getToken();
+      const url = `${BACKEND_URL}/api/admin/payments/export.csv?${params.toString()}`;
+      if (Platform.OS === "web") {
+        const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const blob = await r.blob();
+        const objUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = objUrl;
+        a.download = `bb-fm-payments-${new Date().toISOString().slice(0,10)}.csv`;
+        document.body.appendChild(a); a.click();
+        setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(objUrl); }, 500);
+      } else {
+        const FileSystem = require("expo-file-system");
+        const Sharing = require("expo-sharing");
+        const target = `${FileSystem.cacheDirectory}bb-fm-payments-${Date.now()}.csv`;
+        const dl = await FileSystem.downloadAsync(url, target, { headers: { Authorization: `Bearer ${token}` } });
+        if (dl.status !== 200) throw new Error(`HTTP ${dl.status}`);
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(dl.uri, { UTI: "public.comma-separated-values-text", mimeType: "text/csv" });
+        }
+      }
+    } catch (e: any) {
+      Alert.alert("Export failed", e?.message || "Please try again.");
+    }
+  };
 
   const load = async () => {
     try {
@@ -119,9 +154,15 @@ export default function AdminPayments() {
           <Ionicons name="chevron-back" size={22} color={colors.onSurface} />
         </Pressable>
         <Text style={styles.title}>PAYMENTS</Text>
-        <Pressable onPress={() => { setLoading(true); void load(); }} hitSlop={8} testID="payments-refresh">
-          <Ionicons name="refresh" size={22} color={colors.brandPrimary} />
-        </Pressable>
+        <View style={{ flexDirection: "row", gap: spacing.md }}>
+          <Pressable onPress={downloadCsv} hitSlop={8} testID="payments-csv" style={styles.csvBtn}>
+            <Ionicons name="download-outline" size={16} color="#000" />
+            <Text style={styles.csvBtnText}>CSV</Text>
+          </Pressable>
+          <Pressable onPress={() => { setLoading(true); void load(); }} hitSlop={8} testID="payments-refresh">
+            <Ionicons name="refresh" size={22} color={colors.brandPrimary} />
+          </Pressable>
+        </View>
       </View>
 
       <ScrollView
@@ -299,6 +340,8 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
   },
   title: { ...type.h1, flex: 1, textAlign: "center", letterSpacing: 1.5 },
+  csvBtn: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.brandPrimary, paddingHorizontal: 10, paddingVertical: 6, borderRadius: radius.pill },
+  csvBtnText: { color: "#000", fontFamily: "BarlowCondensed-Bold", letterSpacing: 1.5, fontSize: 11, fontWeight: "900" },
   windowSegment: {
     flexDirection: "row",
     backgroundColor: colors.surfaceSecondary,

@@ -983,7 +983,7 @@ async def momo_initiate(body: MoMoInitiateIn, user = Depends(get_current_user)):
         raise HTTPException(400, "Invalid payer phone number")
     _guard_payer_not_merchant(payer)
 
-    reference = f"bbfm-{uuid.uuid4().hex[:16]}"
+    reference = f"sub-{body.plan[:8]}-{uuid.uuid4().hex[:10]}"
     debit_amount = float(plan["amount"])
     # Merchant charge_percent is 0 on this account (confirmed via /transfer response). Adjust if BeSoft changes it.
     credit_amount = debit_amount
@@ -1018,9 +1018,9 @@ async def momo_initiate(body: MoMoInitiateIn, user = Depends(get_current_user)):
             "currency": plan["currency"],
             "payment_method": "mtn_momo_collection",
             "payer_identifier": payer,
-            "description": f"BB FM Kigali - {plan['label']}",
+            "description": f"BB FM SUB: {plan['label']}",
             "country": "RW",
-            "metadata": {"userId": user["id"], "plan": body.plan},
+            "metadata": {"userId": user["id"], "plan": body.plan, "kind": "subscription"},
         },
     }
 
@@ -1913,6 +1913,45 @@ async def admin_audit_log(limit: int = 200, action: Optional[str] = None, actor_
         q["actorId"] = actor_id
     docs = await db.audit_log.find(q, {"_id": 0}).sort("createdAt", -1).to_list(min(limit, 1000))
     return docs
+
+
+# ==================== REVENUE CSV EXPORT ====================
+@api.get("/admin/payments/export.csv")
+async def admin_payments_csv(status: Optional[str] = None, days: Optional[int] = None, _ = Depends(require_admin)):
+    """Download a CSV of every payment. Optional ?status=success|pending|failed and ?days=N."""
+    import csv, io as _io
+    q: dict = {}
+    if status:
+        q["status"] = status
+    if days:
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        q["createdAt"] = {"$gte": since}
+    docs = await db.payments.find(q, {"_id": 0}).sort("createdAt", -1).to_list(10_000)
+
+    buf = _io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["reference", "createdAt", "userId", "phone", "method", "plan", "planLabel",
+                "amount", "currency", "status", "failureReason", "stripeSessionId", "besoftTxId"])
+    for p in docs:
+        w.writerow([
+            p.get("reference") or p.get("id"),
+            p.get("createdAt"),
+            p.get("userId"),
+            p.get("phone"),
+            p.get("method"),
+            p.get("plan"),
+            p.get("planLabel"),
+            p.get("amount"),
+            p.get("currency"),
+            p.get("status"),
+            (p.get("failureReason") or "")[:120],
+            p.get("stripeSessionId"),
+            p.get("besoftTxId"),
+        ])
+    csv_bytes = buf.getvalue().encode("utf-8")
+    fname = f"bb-fm-payments-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}.csv"
+    return Response(content=csv_bytes, media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
 # ==================== PAYMENT RECEIPT PDF ====================
