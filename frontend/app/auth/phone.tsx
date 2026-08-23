@@ -10,11 +10,13 @@ import { useAuth } from "@/src/context/auth";
 export default function PhoneEntry() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { requestOtp, loginWithGoogle } = useAuth();
+  const { requestOtp, loginWithGoogle, loginWithApple } = useAuth();
   const [phone, setPhone] = useState("+250");
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
+  const [appleLoading, setAppleLoading] = useState(false);
+  const showApple = Platform.OS === "ios";
 
   const submit = async () => {
     setErr(null);
@@ -35,6 +37,16 @@ export default function PhoneEntry() {
     try { await loginWithGoogle(); }
     catch (e: any) { setErr(e.message || "Google sign-in failed"); }
     finally { setGoogleLoading(false); }
+  };
+
+  const apple = async () => {
+    setErr(null); setAppleLoading(true);
+    try { await loginWithApple(); }
+    catch (e: any) {
+      const msg = e?.code === "ERR_REQUEST_CANCELED" ? "Sign-in cancelled." : (e?.message || "Sign in with Apple failed");
+      if (e?.code !== "ERR_REQUEST_CANCELED") setErr(msg);
+    }
+    finally { setAppleLoading(false); }
   };
 
   return (
@@ -84,6 +96,17 @@ export default function PhoneEntry() {
             )}
           </Pressable>
 
+          {showApple && (
+            <Pressable onPress={apple} disabled={appleLoading} style={[styles.appleBtn, appleLoading && { opacity: 0.6 }]} testID="apple-signin">
+              {appleLoading ? <ActivityIndicator color="#fff" /> : (
+                <>
+                  <Ionicons name="logo-apple" size={20} color="#fff" />
+                  <Text style={styles.appleText}>Continue with Apple</Text>
+                </>
+              )}
+            </Pressable>
+          )}
+
           <Text style={styles.legal}>By continuing you accept our Terms & Privacy.</Text>
         </View>
       </View>
@@ -109,5 +132,7 @@ const styles = StyleSheet.create({
   orText: { ...type.label, color: colors.onSurfaceSecondary, letterSpacing: 2 },
   googleBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, height: 52, borderRadius: radius.md, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border },
   googleText: { color: colors.onSurface, fontSize: 15, fontFamily: "System", fontWeight: "500" },
+  appleBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, height: 52, borderRadius: radius.md, backgroundColor: "#000", marginTop: spacing.sm },
+  appleText: { color: "#fff", fontSize: 15, fontFamily: "System", fontWeight: "600" },
   legal: { ...type.caption, textAlign: "center", marginTop: spacing.md },
 });

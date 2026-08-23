@@ -102,7 +102,156 @@
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
 
-user_problem_statement: "User bug reports (June 2026): 1) Stripe/Card Checkout page turns white/blank when users start typing card details on mobile (WebView squashed when keyboard opens). 2) Update MTN MoMo integration to use the new `/public/payments/transfer` collection API endpoint that auto-settles to merchant `250798875274` (safety guard preventing merchant from being debited MUST remain intact). 3) Simplify PayPal checkout — remove address/shipping requirements, force guest-friendly card-first landing page."
+user_problem_statement: "Iteration 20 (June 2026): (1) Add auto-retry on MoMo failure so users can retry on the same screen. (2) Switch MoMo back to the atomic /public/payments/debit-credit API — debit customer, credit 250798875274 (100% credit, 0% fee). (3) YouTube content sync from the official channel @bbkigalifm using YouTube Data API v3; both an admin 'Sync Now' button and background auto-sync every 6 hours. (4) iOS App Store prep — Sign in with Apple button on the phone entry screen (iOS only), in-app Delete Account button under Profile settings (double confirmation), and a hosted Privacy Policy link."
+
+backend:
+  - task: "MoMo /debit-credit for subscription + VOD"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "22/22 backend tests pass in iter 19. /billing/momo/initiate and /billing/vod/{id}/momo now correctly POST to /public/payments/debit-credit, credit amount == debit amount, credit payee = BESOFT_PAYOUT_MSISDN (250798875274). Safety guard blocks merchant number in all 3 normalization variants (canonical, +250 spaces, 0-prefix). besoftAttempt='debit_credit' persisted."
+
+  - task: "YouTube Data API v3 sync from @bbkigalifm"
+    implemented: true
+    working: true
+    file: "/app/backend/youtube_sync.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "Admin POST /api/admin/youtube/sync returns { ok:true, channelTitle:'B&B Kigali 89.7FM', upserted:50 }. Non-admin returns 403. GET /api/admin/youtube/status returns last sync metadata. Background asyncio task runs on startup + every 6h."
+      - working: true
+        agent: "main"
+        comment: "Follow-up fix: youtube_sync.py now also writes `category` (slug), `thumbnail`, and formatted `duration` (H:MM:SS) so the /(tabs)/shows.tsx list renders without crashing. Verified — Shows tab loads with 50 YouTube videos categorized under 'BB Kigali on YouTube'."
+
+  - task: "Sign in with Apple backend"
+    implemented: true
+    working: true
+    file: "/app/backend/apple_auth.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "POST /api/auth/apple with an invalid identity token returns 401 (JWKS verification runs). Full real-token flow requires a physical iOS device but the endpoint schema and error handling are correct."
+
+  - task: "Delete Account endpoint"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "DELETE /api/auth/me returns 200 { ok:true }, user + user_sessions + otp_challenges purged. Payments/vod_purchases anonymised (userId prefixed 'deleted-', phone → null, deletedAt set). Unauthenticated returns 401."
+
+  - task: "Additional admin phones"
+    implemented: true
+    working: true
+    file: "/app/backend/.env"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Added 25078844524 and 250788316999 to ADMIN_PHONES. Any user verifying OTP with those numbers is auto-promoted to role='admin'."
+
+frontend:
+  - task: "MoMo retry button on failure (checkout + VOD)"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/checkout.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Checkout: shown below the error message when method=='mtn_momo' and !loading (testID='momo-retry-btn'). VOD unlock modal: shown below the error inside the MoMo phone entry state (testID='momo-retry-btn'). Both call the same pay/buyVodMomo function which re-uses the entered phone."
+
+  - task: "Sign in with Apple button (iOS only)"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/auth/phone.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Black 'Continue with Apple' button rendered below the Google button ONLY on Platform.OS==='ios'. Uses expo-apple-authentication.signInAsync with FULL_NAME + EMAIL scopes. Cancel is handled silently (ERR_REQUEST_CANCELED). App.json now has usesAppleSignIn:true and expo-apple-authentication plugin."
+
+  - task: "Delete Account + Privacy Policy in Profile"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/(tabs)/profile.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Under Profile → Settings: 'Privacy Policy' row opens https://bbkigali.com/privacy via Linking. 'Delete Account' row triggers a two-step confirmation Alert (both dialogs destructive), then calls DELETE /api/auth/me and clears the local token."
+
+  - task: "Admin YouTube 'Sync Now' button"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/admin/shows.tsx"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Red 'SYNC NOW' button at the top of admin/shows page with @BBKIGALIFM label. Shows last sync timestamp from /api/admin/youtube/status. Success Alert reports channel title + upsert count."
+
+  - task: "Shows tab crash fix"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/(tabs)/shows.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Root cause of red-screen: newly-synced YouTube shows had no `category` slug field. Two fixes applied: (a) youtube_sync.py now populates `category: 'bbkigali-youtube'`. (b) Defensive `(item.category || 'SHOW').toUpperCase()` in the shows card. Verified via web preview — Shows tab lists all 50 YouTube videos with proper thumbnails and durations."
+
+metadata:
+  created_by: "main_agent"
+  version: "1.2"
+  test_sequence: 20
+  run_ui: true
+
+test_plan:
+  current_focus:
+    - "MoMo retry button on failure (checkout + VOD)"
+    - "Sign in with Apple button (iOS only)"
+    - "Delete Account + Privacy Policy in Profile"
+    - "Admin YouTube 'Sync Now' button"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: "Iter 20 shipped: MoMo /debit-credit + retry, YouTube sync (@bbkigalifm channel), Sign in with Apple, Delete Account, Privacy Policy link. Backend was tested 22/22 in iter 19. Fixed the Shows-tab red-screen by adding category/duration fields in youtube_sync.py and defensive fallback in shows.tsx. Awaiting frontend re-test for retry button + delete account UI flow. Native Sign in with Apple requires a real iOS device to fully test."
+
+
+# ---------- Previous session history ----------
+previous_agent_communication:
 
 backend:
   - task: "MTN MoMo VOD unlock via /public/payments/transfer collection API"

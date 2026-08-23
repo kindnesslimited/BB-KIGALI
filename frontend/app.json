@@ -10,7 +10,11 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.emergent.radiovodplatform.reybr3"
+      "bundleIdentifier": "com.emergent.radiovodplatform.reybr3",
+      "usesAppleSignIn": true,
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -40,7 +44,8 @@
       "expo-audio",
       "expo-video",
       "expo-asset",
-      "expo-web-browser"
+      "expo-web-browser",
+      "expo-apple-authentication"
     ],
     "experiments": {
       "typedRoutes": true

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, Alert } from "react-native";
+import { View, Text, StyleSheet, ScrollView, Pressable, Alert, Linking } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -8,6 +8,8 @@ import { useAuth } from "@/src/context/auth";
 import { api } from "@/src/api";
 
 type Payment = { id: string; planLabel: string; amount: number; currency: string; method: string; status: string; createdAt: string };
+
+const PRIVACY_URL = "https://bbkigali.com/privacy";
 
 const TIER_META: Record<string, { label: string; color: string }> = {
   free: { label: "Free", color: colors.onSurfaceSecondary },
@@ -18,7 +20,7 @@ const TIER_META: Record<string, { label: string; color: string }> = {
 export default function Profile() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { user, logout, refresh } = useAuth();
+  const { user, logout, refresh, deleteAccount } = useAuth();
   const [payments, setPayments] = useState<Payment[]>([]);
 
   useEffect(() => {
@@ -64,6 +66,47 @@ export default function Profile() {
       { text: "Cancel", style: "cancel" },
       { text: "Sign out", style: "destructive", onPress: async () => { await logout(); router.replace("/onboarding"); } },
     ]);
+  };
+
+  const openPrivacy = async () => {
+    try { await Linking.openURL(PRIVACY_URL); } catch { Alert.alert("Privacy Policy", "Please visit https://bbkigali.com/privacy"); }
+  };
+
+  const doDelete = () => {
+    // Two-step confirmation to match Apple's 5.1.1(v) guideline.
+    Alert.alert(
+      "Delete Account",
+      "This permanently removes your account, profile, session, and subscription. Your payment history is anonymized for accounting. This action cannot be undone.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete Account",
+          style: "destructive",
+          onPress: () => {
+            Alert.alert(
+              "Are you absolutely sure?",
+              "This is your last chance to cancel. Tap 'Yes, delete' to permanently remove your account.",
+              [
+                { text: "Cancel", style: "cancel" },
+                {
+                  text: "Yes, delete",
+                  style: "destructive",
+                  onPress: async () => {
+                    try {
+                      await deleteAccount();
+                      Alert.alert("Account deleted", "Your account has been removed.");
+                      router.replace("/(tabs)");
+                    } catch (e: any) {
+                      Alert.alert("Delete failed", e?.message || "Please try again.");
+                    }
+                  },
+                },
+              ]
+            );
+          },
+        },
+      ]
+    );
   };
 
   return (
@@ -137,9 +180,20 @@ export default function Profile() {
             <Ionicons name="chevron-forward" size={18} color={colors.onSurfaceSecondary} />
           </Pressable>
           <View style={styles.sep} />
+          <Pressable style={styles.settingRow} onPress={openPrivacy} testID="setting-privacy">
+            <Ionicons name="shield-checkmark-outline" size={20} color={colors.onSurface} />
+            <Text style={styles.settingText}>Privacy Policy</Text>
+            <Ionicons name="open-outline" size={18} color={colors.onSurfaceSecondary} />
+          </Pressable>
+          <View style={styles.sep} />
           <Pressable style={styles.settingRow} onPress={doLogout} testID="logout-btn">
             <Ionicons name="log-out-outline" size={20} color={colors.error} />
             <Text style={[styles.settingText, { color: colors.error }]}>Sign out</Text>
+          </Pressable>
+          <View style={styles.sep} />
+          <Pressable style={styles.settingRow} onPress={doDelete} testID="delete-account-btn">
+            <Ionicons name="trash-outline" size={20} color={colors.error} />
+            <Text style={[styles.settingText, { color: colors.error, fontFamily: "BarlowCondensed-Bold" }]}>Delete Account</Text>
           </Pressable>
         </View>
       </View>

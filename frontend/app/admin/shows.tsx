@@ -55,6 +55,29 @@ export default function AdminShows() {
     ]);
   };
 
+  const [syncing, setSyncing] = useState(false);
+  const [ytStatus, setYtStatus] = useState<any>(null);
+  const loadYtStatus = async () => {
+    try { const s = await api<any>("/admin/youtube/status", { auth: true }); setYtStatus(s); } catch {}
+  };
+  useEffect(() => { void loadYtStatus(); }, []);
+  const syncYouTube = async () => {
+    setSyncing(true);
+    try {
+      const r = await api<any>("/admin/youtube/sync", { method: "POST", auth: true, body: {} });
+      if (r?.ok) {
+        Alert.alert("YouTube sync complete", `${r.channelTitle || r.handle}\n\nImported ${r.upserted} videos${r.skipped ? `\nSkipped ${r.skipped}` : ""}.`);
+      } else {
+        Alert.alert("Sync failed", r?.errors || "Unknown error");
+      }
+      await Promise.all([load(), loadYtStatus()]);
+    } catch (e: any) {
+      Alert.alert("Sync failed", e?.message || "Could not reach YouTube.");
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   return (
     <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1, backgroundColor: colors.surface }}>
       <View style={[styles.top, { paddingTop: insets.top + spacing.md }]}>
@@ -67,6 +90,23 @@ export default function AdminShows() {
         </Pressable>
       </View>
       <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: 160 }} testID="admin-shows">
+        <View style={styles.syncCard}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm }}>
+            <View style={styles.syncIcon}><Ionicons name="logo-youtube" size={22} color="#FF0000" /></View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.syncTitle}>@BBKIGALIFM YOUTUBE SYNC</Text>
+              <Text style={styles.syncSub}>
+                {ytStatus?.lastSyncAt
+                  ? `Last synced ${new Date(ytStatus.lastSyncAt).toLocaleString()}${ytStatus?.lastResult ? ` · ${ytStatus.lastResult.upserted} videos` : ""}`
+                  : "Pulls the latest 50 videos from the official channel"}
+              </Text>
+            </View>
+          </View>
+          <Pressable onPress={syncYouTube} disabled={syncing} style={[styles.syncBtn, syncing && { opacity: 0.6 }]} testID="yt-sync-btn">
+            {syncing ? <ActivityIndicator color="#fff" /> : <><Ionicons name="cloud-download-outline" size={18} color="#fff" /><Text style={styles.syncBtnText}>SYNC NOW</Text></>}
+          </Pressable>
+        </View>
+
         {creating && (
           <View style={styles.card} testID="new-show-form">
             <Text style={styles.sectionLabel}>NEW SHOW</Text>
@@ -92,13 +132,13 @@ export default function AdminShows() {
         {loading && <ActivityIndicator color={colors.brandPrimary} />}
         <View style={{ gap: spacing.md, marginTop: spacing.md }}>
           {items.map((s) => {
-            const catName = cats.find(c => c.slug === s.category)?.name || s.category;
+            const catName = cats.find(c => c.slug === s.category)?.name || s.category || "Uncategorized";
             return (
               <View key={s.id} style={styles.showRow}>
                 {s.thumbnail ? <Image source={{ uri: s.thumbnail }} style={styles.thumb} contentFit="cover" /> : <View style={[styles.thumb, styles.thumbFallback]}><Ionicons name="videocam" size={20} color={colors.onSurfaceSecondary} /></View>}
                 <View style={{ flex: 1 }}>
                   <Text numberOfLines={2} style={styles.showTitle}>{s.title}</Text>
-                  <Text style={styles.showMeta}>{catName.toUpperCase()} · {s.duration || "—"}</Text>
+                  <Text style={styles.showMeta}>{(catName || "").toUpperCase()} · {s.duration || "—"}</Text>
                 </View>
                 <Pressable onPress={() => del(s)} hitSlop={8} testID={`del-show-${s.id}`}>
                   <Ionicons name="trash-outline" size={22} color={colors.error} />
@@ -130,4 +170,10 @@ const styles = StyleSheet.create({
   thumbFallback: { alignItems: "center", justifyContent: "center" },
   showTitle: { ...type.h2, fontSize: 14, lineHeight: 18 },
   showMeta: { ...type.caption, marginTop: 3 },
+  syncCard: { backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.md, borderWidth: 1, borderColor: colors.border, marginBottom: spacing.md, gap: spacing.md },
+  syncIcon: { width: 40, height: 40, borderRadius: radius.sm, backgroundColor: "#111", alignItems: "center", justifyContent: "center" },
+  syncTitle: { ...type.label, letterSpacing: 1.5, color: colors.onSurface, fontSize: 12 },
+  syncSub: { ...type.caption, marginTop: 3 },
+  syncBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: "#FF0000", height: 44, borderRadius: radius.pill },
+  syncBtnText: { color: "#fff", fontFamily: "BarlowCondensed-Bold", letterSpacing: 1.5, fontSize: 13 },
 });

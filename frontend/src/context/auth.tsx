@@ -23,8 +23,10 @@ type Ctx = {
   requestOtp: (phone: string) => Promise<{ testCode?: string }>;
   verifyOtp: (phone: string, code: string) => Promise<void>;
   loginWithGoogle: () => Promise<void>;
+  loginWithApple: () => Promise<void>;
   refresh: () => Promise<void>;
   updateProfile: (displayName: string) => Promise<void>;
+  deleteAccount: () => Promise<void>;
   logout: () => Promise<void>;
 };
 
@@ -133,6 +135,43 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (sid) await completeGoogle(sid, setUser);
   };
 
+  const loginWithApple = async () => {
+    if (Platform.OS !== "ios") {
+      throw new Error("Sign in with Apple is only available on iOS.");
+    }
+    // Lazy import so Android/web bundles don't crash on the missing native module.
+    const AppleAuth = require("expo-apple-authentication");
+    const available = await AppleAuth.isAvailableAsync();
+    if (!available) {
+      throw new Error("Sign in with Apple isn't available on this device.");
+    }
+    const credential = await AppleAuth.signInAsync({
+      requestedScopes: [
+        AppleAuth.AppleAuthenticationScope.FULL_NAME,
+        AppleAuth.AppleAuthenticationScope.EMAIL,
+      ],
+    });
+    const fullName = credential.fullName?.givenName
+      ? `${credential.fullName.givenName}${credential.fullName.familyName ? " " + credential.fullName.familyName : ""}`
+      : undefined;
+    const r = await api<{ accessToken: string; user: User }>("/auth/apple", {
+      method: "POST",
+      body: {
+        identityToken: credential.identityToken,
+        fullName,
+        email: credential.email || undefined,
+      },
+    });
+    await saveToken(r.accessToken);
+    setUser(r.user);
+  };
+
+  const deleteAccount = async () => {
+    await api("/auth/me", { method: "DELETE", auth: true });
+    await clearToken();
+    setUser(null);
+  };
+
   const updateProfile = async (displayName: string) => {
     const u = await api<User>("/auth/me", { method: "PATCH", auth: true, body: { displayName } });
     setUser(u);
@@ -144,7 +183,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <AuthCtx.Provider value={{ user, loading, requestOtp, verifyOtp, loginWithGoogle, refresh, updateProfile, logout }}>
+    <AuthCtx.Provider value={{ user, loading, requestOtp, verifyOtp, loginWithGoogle, loginWithApple, refresh, updateProfile, deleteAccount, logout }}>
       {children}
     </AuthCtx.Provider>
   );

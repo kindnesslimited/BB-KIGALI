@@ -395,6 +395,12 @@ export default function Checkout() {
         )}
 
         {err && <Text style={styles.err} testID="checkout-error">{err}</Text>}
+        {err && method === "mtn_momo" && !loading && (
+          <Pressable onPress={pay} style={styles.retryBanner} testID="momo-retry-btn">
+            <Ionicons name="refresh" size={20} color={colors.onBrandPrimary} />
+            <Text style={styles.retryText}>RETRY MOMO PAYMENT</Text>
+          </Pressable>
+        )}
         {suggestStripe && !isIOS && (
           <Pressable
             onPress={() => { setMethod("stripe"); setErr(null); setSuggestStripe(false); }}
@@ -443,6 +449,8 @@ const styles = StyleSheet.create({
   radioActive: { borderColor: colors.brandPrimary },
   radioDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: colors.brandPrimary },
   momoInput: { backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.md, color: colors.onSurface, fontSize: 16, borderWidth: 1, borderColor: colors.border },
+  retryBanner: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, backgroundColor: colors.brandPrimary, height: 48, borderRadius: radius.md, marginTop: spacing.md },
+  retryText: { ...type.h2, color: colors.onBrandPrimary, letterSpacing: 1.5, fontSize: 14 },
   demoBox: { flexDirection: "row", alignItems: "center", gap: spacing.sm, marginTop: spacing.lg, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.md, borderWidth: 1, borderColor: colors.warning },
   demoText: { ...type.caption, flex: 1, color: colors.onSurfaceTertiary },
   err: { color: colors.error, marginTop: spacing.md, textAlign: "center" },

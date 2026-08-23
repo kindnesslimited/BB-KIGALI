@@ -1,0 +1,50 @@
+{
+  "summary": "Iter 20 frontend-only retest after iter 19 fixes. RESULTS: (1) Shows tab RED SCREEN — FIXED. Backend youtube_sync now writes category:'bbkigali-youtube' + human-readable duration ('21:18', '2:44:58') + thumbnail. 58 total cards render, chip 'BB Kigali on YouTube' visible, tapping the chip filters to 50 YT cards, NO 'undefined toUpperCase' crash on the user Shows tab. (2) VOD unlock preview — FIXED. Tapping a YT card as guest navigates to /video/{id}, locked box appears with PAY (CARD), PAY WITH PAYPAL, RWF (MOMO) buttons. (3) Profile signed-in has all 5 setting rows (setting-notifications, setting-about, setting-privacy w/ open-outline icon, logout-btn, delete-account-btn in red). (4) Privacy Policy row tap does NOT crash — Linking.openURL is called and page remains on profile-screen. (5) Auth screen /auth/phone: Continue with Google visible, Apple button correctly hidden on web (iOS-only guard — expected). (6) Checkout retry button testID='momo-retry-btn' is present in /app/frontend/app/checkout.tsx line 399. Guest checkout flow blocked by needing login; test simulated visually via code inspection (matches spec). NEW CRITICAL BUG discovered: /admin/shows page RED SCREEN CRASH with TypeError 'Cannot read properties of undefined (reading toUpperCase)' at app/admin/shows.tsx:141:58 because ONE existing show doc in db.shows has category=null (legacy YT-sync doc from before the fix, id=24aeb80e-...). Line 141 does `catName.toUpperCase()` where catName = cats.find(...)?.name || s.category — both null → undefined.toUpperCase() crashes. This blocks the admin from even seeing the YT SYNC section. NEW BUG (secondary): Alert.alert with multi-button config does not visibly render on React Native Web preview — Delete Account tap does NOT open the first 'permanently removes' dialog in the web preview (no browser dialog captured, no in-DOM modal text found). This is a react-native-web polyfill limitation (Alert.alert only shows title, not buttons on web). On native iOS/Android it will work; on web it silently does nothing OR may invoke last button. This must be verified on a native/simulator build.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Admin Shows page (app/admin/shows.tsx)",
+        "issue": "RED SCREEN CRASH: TypeError 'Cannot read properties of undefined (reading toUpperCase)' at line 141 col 58. `catName.toUpperCase()` fails when both cats.find(c => c.slug === s.category)?.name AND s.category are undefined/null. There is currently 1 legacy show doc in db.shows with category=null (id 24aeb80e-709a-4284-9562-068f20d63f5d, title '#TRANSFERNEWS: MARMOUSH NA SAVINHO BARAS...'), likely from a YT sync that ran before the iter 19 fix. Because this page crashes, the '@BBKIGALIFM YOUTUBE SYNC' card + testID='yt-sync-btn' cannot be reached in the web preview. Fix (one line): `{(catName || \"—\").toUpperCase()}` on line 141. Recommended AS WELL: backfill the null category (mongo one-shot: db.shows.updateMany({category:null},{$set:{category:'bbkigali-youtube'}})).",
+        "testID": "n/a",
+        "priority": "CRITICAL"
+      },
+      {
+        "component": "Delete Account confirmation (app/(tabs)/profile.tsx doDelete)",
+        "issue": "React Native Web does not render multi-button Alert.alert dialogs. Tapping delete-account-btn in the web preview does not visibly open the 'permanently removes' Alert (no native browser dialog fires, no in-DOM modal text found). This is a known react-native-web limitation. Recommend using expo's Alert polyfill or a custom in-app confirm modal that works on all platforms (React Native's `Alert` on web only shows title/message via window.alert — no buttons). Currently unreliable and could silently invoke the destructive button on some builds. Native iOS/Android untested but should work.",
+        "testID": "delete-account-btn",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {
+        "component": "Alert.alert (react-native-web)",
+        "issue": "Alert.alert with multiple buttons only shows message/title on web — buttons don't render, so destructive two-step flows silently no-op or misfire. Reference: /app/frontend/app/(tabs)/profile.tsx:77-108 (doDelete). Recommend a cross-platform modal (react-native-paper Dialog, custom Modal, or use expo's Alert alternative)."
+      }
+    ]
+  },
+  "test_report_links": ["/app/test_reports/iteration_20.json"],
+  "action_items": [
+    "CRITICAL — Fix /admin/shows crash. In /app/frontend/app/admin/shows.tsx line 141, change `{catName.toUpperCase()}` → `{(catName || 'UNCATEGORIZED').toUpperCase()}`. Additionally run a one-shot mongo update to backfill the null category: `db.shows.updateMany({category:null},{$set:{category:'bbkigali-youtube'}})` OR bake this into a startup migration in server.py.",
+    "HIGH — Replace React Native Alert.alert in the Delete Account two-step confirm (profile.tsx doDelete) with a cross-platform modal component so the confirmation actually appears on web. Consider a custom <Modal> or react-native-paper Dialog. Currently unreachable on web preview → Apple 5.1.1(v) compliance NOT testable in web build.",
+    "Ship a backfill/idempotency guard in youtube_sync.py so it never writes a show doc with category=null (it now writes 'bbkigali-youtube' but old rows persist)."
+  ],
+  "critical_code_review_comments": [
+    "shows.tsx:110 defensive fallback `(item.category || 'SHOW').toUpperCase()` — good.",
+    "admin/shows.tsx:141 MISSING same defensive fallback → crashes admin page. This is the same pattern iter 19 flagged for shows.tsx but was not applied to admin/shows.tsx.",
+    "checkout.tsx:397-403 retry button (testID='momo-retry-btn') correctly conditionally rendered when err && method==='mtn_momo' && !loading — matches spec.",
+    "video/[id].tsx:305-310 also has a retry button (testID='momo-retry-btn') when err && showMomo && !buying — good.",
+    "profile.tsx settings list has 5 rows in the correct order (Notifications, About, Privacy, Sign out, Delete Account) with Delete Account red — good.",
+    "auth/phone.tsx correctly gates Apple button behind Platform.OS === 'ios' — expected to be absent on web.",
+    "Alert.alert usage in profile.tsx doDelete + Logout + admin/shows delete confirm is unreliable on web (react-native-web limitation)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (not retested)", "frontend": "80% — Shows tab crash fixed (main iter 19 blocker), all guest browse + auth screens + retry button + settings rows OK; NEW admin page crash + web-only Alert issue remain"},
+  "seed_data_creation": "None. Existing legacy show doc with category=null (id 24aeb80e-...) needs one-shot backfill.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iter 19 Shows-tab red screen is FULLY FIXED (verified 58 cards render, chip filter to 50 YT works, no toUpperCase crash). Two new issues to address before another full run: (1) admin/shows.tsx:141 needs `(catName || 'UNCATEGORIZED').toUpperCase()` fallback, AND a mongo backfill for the 1 legacy show with category=null. (2) Alert.alert on web silently drops buttons — Delete Account 2-step confirmation cannot be tested in the web preview. Recommend main agent replaces with a cross-platform Modal or tests on native/Expo Go. Admin login: +250794230137 / testCode 123456 (both returned by /auth/otp/start for admin phones, verify returns accessToken JSON). Token is stored in localStorage under key 'bbfm.token' as JSON.stringify(token).",
+  "rca_of_issue": "Root cause admin/shows crash: /app/frontend/app/admin/shows.tsx:141 renders `{catName.toUpperCase()}` where catName = cats.find(c=>c.slug===s.category)?.name || s.category. When BOTH sides are undefined/null (which happens for the 1 legacy YT-synced show with category=null in db.shows, created before the iter 19 backend fix), you call undefined.toUpperCase() → TypeError. Same bug family as iter 19's shows.tsx crash but on a different screen. To reproduce: (1) login as admin +250794230137/123456 via /auth/otp/verify, (2) store the accessToken in localStorage under key 'bbfm.token' as a JSON-stringified string, (3) navigate to /admin/shows — red screen appears. Mitigation: add `|| 'UNCATEGORIZED'` fallback (line 141) AND run `db.shows.updateMany({category:null},{$set:{category:'bbkigali-youtube'}})` in Mongo to clean up legacy rows. Recommend both for defense-in-depth."
+}

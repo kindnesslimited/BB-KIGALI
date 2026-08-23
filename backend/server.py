@@ -1,6 +1,7 @@
 """BB FM Kigali - Radio + VOD backend."""
 import os
 import uuid
+import asyncio
 import logging
 import base64
 from datetime import datetime, timezone, timedelta
@@ -18,6 +19,9 @@ from pydantic import BaseModel, Field
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
+
+from youtube_sync import sync_channel as _yt_sync_channel, periodic_sync_loop as _yt_periodic_loop  # noqa: E402
+from apple_auth import verify_apple_identity_token  # noqa: E402
 
 MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
@@ -609,6 +613,94 @@ async def update_me(body: ProfileUpdateIn, user = Depends(get_current_user)):
     return user_public(fresh)
 
 
+# ---------- Sign in with Apple ----------
+class AppleSignInIn(BaseModel):
+    identityToken: str
+    fullName: Optional[str] = None
+    email: Optional[str] = None
+
+
+@api.post("/auth/apple", response_model=AuthOut)
+async def auth_apple(body: AppleSignInIn):
+    """Sign in with Apple. Verifies the identity token against Apple's JWKS.
+
+    Apple returns fullName + email ONLY on first sign-in — persist them then and NEVER overwrite later.
+    """
+    try:
+        claims = await verify_apple_identity_token(body.identityToken)
+    except ValueError as e:
+        raise HTTPException(401, str(e))
+
+    apple_sub = claims.get("sub")
+    if not apple_sub:
+        raise HTTPException(401, "Apple token missing subject")
+    token_email = claims.get("email") or body.email
+    email_verified = claims.get("email_verified")
+    is_private = claims.get("is_private_email") is True
+
+    user = await db.users.find_one({"appleSub": apple_sub}, {"_id": 0})
+    if not user and token_email:
+        # Fall back to email lookup for accounts that first signed in via Google / phone with same email
+        user = await db.users.find_one({"email": (token_email or "").lower()}, {"_id": 0})
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if not user:
+        user = {
+            "id": str(uuid.uuid4()),
+            "phone": None,
+            "email": (token_email or "").lower() or None,
+            "displayName": (body.fullName or (token_email.split("@")[0] if token_email else None)),
+            "picture": None,
+            "tier": "free",
+            "role": "user",
+            "appleSub": apple_sub,
+            "appleEmailPrivate": is_private,
+            "subscriptionExpiresAt": None,
+            "createdAt": now_iso,
+        }
+        await db.users.insert_one(user.copy())
+    else:
+        updates = {"appleSub": apple_sub}
+        if body.fullName and not user.get("displayName"):
+            updates["displayName"] = body.fullName
+        if token_email and not user.get("email"):
+            updates["email"] = token_email.lower()
+        if is_private and not user.get("appleEmailPrivate"):
+            updates["appleEmailPrivate"] = True
+        await db.users.update_one({"id": user["id"]}, {"$set": updates})
+        user.update(updates)
+
+    return {"accessToken": sign_jwt(user["id"]), "user": user_public(user)}
+
+
+# ---------- Account deletion (App Store 5.1.1(v) requirement) ----------
+@api.delete("/auth/me")
+async def delete_my_account(user = Depends(get_current_user)):
+    """Permanently delete the requesting user account.
+
+    Wipes user profile, active sessions, OTP challenges, and marks their payment history
+    as anonymized (kept for legal/accounting record, not for reconstruction).
+    """
+    uid = user["id"]
+    phone = user.get("phone")
+    email = user.get("email")
+
+    # 1. Delete auth artefacts
+    await db.user_sessions.delete_many({"user_id": uid})
+    if phone:
+        await db.otp_challenges.delete_many({"phone": phone})
+
+    # 2. Anonymize payments (keep for accounting, remove personal identifiers)
+    await db.payments.update_many({"userId": uid}, {"$set": {"userId": f"deleted-{uid[:8]}", "phone": None, "deletedAt": datetime.now(timezone.utc).isoformat()}})
+    await db.vod_purchases.update_many({"userId": uid}, {"$set": {"userId": f"deleted-{uid[:8]}", "phone": None, "deletedAt": datetime.now(timezone.utc).isoformat()}})
+
+    # 3. Delete the user record itself
+    await db.users.delete_one({"id": uid})
+
+    logger.info("[delete-account] user=%s phone=%s email=%s wiped", uid, phone, email)
+    return {"ok": True, "message": "Account and personal data deleted."}
+
+
 # ---------- Radio ----------
 @api.get("/radio/now-playing")
 async def now_playing():
@@ -828,8 +920,8 @@ async def momo_initiate(body: MoMoInitiateIn, user = Depends(get_current_user)):
         norm = raw_status if raw_status in ("pending", "processing", "success", "failed") else "pending"
         return norm, besoft_id, debit.get("failure_reason") or d.get("failure_reason")
 
-    # ---- Attempt 1: /public/payments/transfer (collection API — auto-settles to merchant's configured payout MSISDN) ----
-    # Schema per BeSoft openapi.yaml: TransferRequest = { idempotency_key, debit: TransferDebitRequest }
+    # ---- /public/payments/debit-credit — debit customer, credit merchant collection MSISDN in one atomic call ----
+    # Per user requirement: charge_percent = 0 → credit amount equals debit amount (no fees deducted).
     payload = {
         "idempotency_key": reference,
         "debit": {
@@ -838,9 +930,19 @@ async def momo_initiate(body: MoMoInitiateIn, user = Depends(get_current_user)):
             "payment_method": "mtn_momo_collection",
             "payer_identifier": payer,
             "description": f"BB FM Kigali — {plan['label']}",
+            "idempotency_key": reference + "-d",
             "country": "RW",
             "metadata": {"userId": user["id"], "plan": body.plan},
         },
+        "credits": [{
+            "amount": debit_amount,
+            "currency": plan["currency"],
+            "payment_method": "mtn_momo_disbursement",
+            "payee_identifier": BESOFT_PAYOUT_MSISDN,
+            "description": f"Payout — {plan['label']}",
+            "idempotency_key": reference + "-c1",
+            "country": "RW",
+        }],
     }
 
     now = datetime.now(timezone.utc)
@@ -860,48 +962,13 @@ async def momo_initiate(body: MoMoInitiateIn, user = Depends(get_current_user)):
     await db.payments.insert_one(payment_doc.copy())
 
     try:
-        status_code, resp_text, resp_data = await _try_besoft("/public/payments/transfer", payload)
+        status_code, resp_text, resp_data = await _try_besoft("/public/payments/debit-credit", payload)
     except httpx.RequestError as e:
         await db.payments.update_one({"reference": reference}, {"$set": {"status": "failed", "error": f"network: {e}"}})
         raise HTTPException(502, f"Unable to reach payment provider: {e}")
 
     debit_norm, besoft_tx_id, failure_reason = _extract_debit(resp_data)
-    attempt_note = "transfer_collection"
-
-    # ---- Fallback: ONLY if the outer /transfer request fails at the HTTP/schema layer
-    # (e.g. BeSoft is down or rejects the request shape). Do NOT retry on inner MTN debit failures
-    # (insufficient balance, wrong number, timeout) — those are legitimate customer-side issues and
-    # a second request would just re-charge the same phone.
-    should_fallback = (
-        status_code >= 300
-        and (failure_reason is None or "HTTP_400" in (failure_reason or "") or "provider error" in (failure_reason or "").lower())
-    )
-    if should_fallback:
-        logger.info("[momo] /transfer failed, trying /debit-credit legacy fallback (reason=%s)", (failure_reason or resp_text[:120]))
-        legacy_payload = {
-            "idempotency_key": reference + "-fb",
-            "debit": {
-                "amount": debit_amount, "currency": plan["currency"], "payment_method": "mtn_momo_collection",
-                "payer_identifier": payer, "description": f"BB FM Kigali — {plan['label']}",
-                "idempotency_key": reference + "-d", "country": "RW",
-                "metadata": {"userId": user["id"], "plan": body.plan, "fallback": True},
-            },
-            "credits": [{
-                "amount": credit_amount, "currency": plan["currency"], "payment_method": "mtn_momo_disbursement",
-                "payee_identifier": BESOFT_PAYOUT_MSISDN, "description": f"Payout — {plan['label']}",
-                "idempotency_key": reference + "-c1", "country": "RW",
-            }],
-        }
-        try:
-            status_code2, resp_text2, resp_data2 = await _try_besoft("/public/payments/debit-credit", legacy_payload)
-        except httpx.RequestError:
-            status_code2, resp_text2, resp_data2 = 599, "network_error", {}
-        if status_code2 < 300:
-            debit_norm2, besoft_tx_id2, failure_reason2 = _extract_debit(resp_data2)
-            if debit_norm2 != "failed":
-                status_code, resp_text, resp_data = status_code2, resp_text2, resp_data2
-                debit_norm, besoft_tx_id, failure_reason = debit_norm2, besoft_tx_id2, failure_reason2
-                attempt_note = "debit_credit_legacy_fallback"
+    attempt_note = "debit_credit"
 
     # ---- Persist and respond ----
     if status_code >= 300:
@@ -1449,9 +1516,7 @@ async def vod_purchase_momo(show_id: str, body: VodMoMoIn, user = Depends(get_cu
     _guard_payer_not_merchant(payer)
     reference = f"vod-{show_id[:8]}-{uuid.uuid4().hex[:10]}"
     amount = float(VOD_PRICE_RWF)
-    # Use the collection /transfer API which auto-settles to the merchant's configured payout MSISDN
-    # (BESOFT_PAYOUT_MSISDN). This is the same flow used for subscription payments.
-    # Schema per BeSoft openapi.yaml: TransferRequest = { idempotency_key, debit: TransferDebitRequest }
+    # /public/payments/debit-credit — debit customer, credit BESOFT_PAYOUT_MSISDN (0% fee → credit = debit)
     payload = {
         "idempotency_key": reference,
         "debit": {
@@ -1460,9 +1525,19 @@ async def vod_purchase_momo(show_id: str, body: VodMoMoIn, user = Depends(get_cu
             "payment_method": "mtn_momo_collection",
             "payer_identifier": payer,
             "description": f"BB FM VOD: {show['title']}",
+            "idempotency_key": reference + "-d",
             "country": "RW",
             "metadata": {"userId": user["id"], "showId": show_id, "kind": "vod_unlock"},
         },
+        "credits": [{
+            "amount": amount,
+            "currency": "RWF",
+            "payment_method": "mtn_momo_disbursement",
+            "payee_identifier": BESOFT_PAYOUT_MSISDN,
+            "description": f"VOD payout — {show['title']}",
+            "idempotency_key": reference + "-c1",
+            "country": "RW",
+        }],
     }
     await db.vod_purchases.insert_one({
         "id": reference, "orderId": reference, "reference": reference,
@@ -1473,7 +1548,7 @@ async def vod_purchase_momo(show_id: str, body: VodMoMoIn, user = Depends(get_cu
     })
     try:
         async with httpx.AsyncClient(timeout=30.0, verify=BESOFT_VERIFY_SSL) as c:
-            r = await c.post(f"{BESOFT_BASE_URL}/public/payments/transfer", headers=_besoft_headers(), json=payload)
+            r = await c.post(f"{BESOFT_BASE_URL}/public/payments/debit-credit", headers=_besoft_headers(), json=payload)
     except httpx.RequestError as e:
         await db.vod_purchases.update_one({"reference": reference}, {"$set": {"status": "failed", "error": str(e)}})
         raise HTTPException(502, f"Unable to reach payment provider: {e}")
@@ -1491,7 +1566,7 @@ async def vod_purchase_momo(show_id: str, body: VodMoMoIn, user = Depends(get_cu
             "status": "failed",
             "error": r.text[:400],
             "failureReason": provider_msg,
-            "besoftAttempt": "transfer_collection",
+            "besoftAttempt": "debit_credit",
         }})
         return {"reference": reference, "status": "failed", "amount": amount, "currency": "RWF",
                 "message": f"MoMo provider rejected the request: {str(provider_msg)[:120]}",
@@ -1502,7 +1577,7 @@ async def vod_purchase_momo(show_id: str, body: VodMoMoIn, user = Depends(get_cu
     besoft_status = (debit.get("status") or data.get("status") or "pending").lower()
     failure_reason = debit.get("failure_reason") or data.get("failure_reason")
     normalized = besoft_status if besoft_status in ("pending", "processing", "success", "failed") else "pending"
-    update_fields = {"besoftTxId": besoft_tx_id, "besoftPayload": data, "status": normalized, "besoftAttempt": "transfer_collection"}
+    update_fields = {"besoftTxId": besoft_tx_id, "besoftPayload": data, "status": normalized, "besoftAttempt": "debit_credit"}
     if failure_reason:
         update_fields["failureReason"] = failure_reason
     await db.vod_purchases.update_one({"reference": reference}, {"$set": update_fields})
@@ -1684,6 +1759,24 @@ async def admin_create_show(body: ShowIn, _ = Depends(require_admin)):
 async def admin_delete_show(show_id: str, _ = Depends(require_admin)):
     await db.shows.delete_one({"id": show_id})
     return {"ok": True}
+
+
+# ---------- Admin YouTube channel sync ----------
+class YouTubeSyncIn(BaseModel):
+    handle: Optional[str] = None  # override — default is YOUTUBE_HANDLE env
+
+
+@api.post("/admin/youtube/sync")
+async def admin_youtube_sync(body: YouTubeSyncIn | None = None, _ = Depends(require_admin)):
+    handle = body.handle if body else None
+    result = await _yt_sync_channel(db, handle=handle)
+    return result
+
+
+@api.get("/admin/youtube/status")
+async def admin_youtube_status(_ = Depends(require_admin)):
+    doc = await db.integration_state.find_one({"key": "youtube_sync"}, {"_id": 0})
+    return doc or {"key": "youtube_sync", "lastSyncAt": None}
 
 
 # ---------- Admin Users management ----------
@@ -2618,10 +2711,17 @@ async def seed():
 async def on_startup():
     await seed()
     logger.info("BB FM Kigali seed complete")
+    # Kick off background YouTube sync (idempotent — no-op if YOUTUBE_API_KEY unset).
+    if os.environ.get("YOUTUBE_API_KEY"):
+        app.state._yt_task = asyncio.create_task(_yt_periodic_loop(db))
+        logger.info("YouTube periodic sync started")
 
 
 @app.on_event("shutdown")
 async def on_shutdown():
+    task = getattr(app.state, "_yt_task", None)
+    if task:
+        task.cancel()
     client.close()
 
 

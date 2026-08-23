@@ -107,7 +107,7 @@ export default function Shows() {
               </View>
               <View style={styles.cardBottom}>
                 <Text numberOfLines={2} style={styles.cardTitle}>{item.title}</Text>
-                <Text style={styles.cardCat}>{item.category.toUpperCase()}</Text>
+                <Text style={styles.cardCat}>{(item.category || "SHOW").toUpperCase()}</Text>
               </View>
             </View>
           </Pressable>

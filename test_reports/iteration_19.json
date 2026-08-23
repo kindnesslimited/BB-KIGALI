@@ -1,0 +1,61 @@
+{
+  "summary": "Iter 19 backend + frontend regression for 4-feature ship (MoMo /debit-credit, YouTube sync, Apple Sign-In, Delete Account). BACKEND: 22/22 pytest PASS (100%) — MoMo subscription + VOD both route to POST /public/payments/debit-credit (confirmed in backend.err.log HTTP 201 Created) and persist besoftAttempt='debit_credit'. Merchant safety guard blocks 250798875274 in all 3 normalization variants (250798875274, '+250 798 875 274', 0798875274) on BOTH subscription and VOD paths (400). YouTube admin sync returns ok=true, channelTitle='B&B Kigali 89.7FM', upserted=50; db.shows has 50 source='youtube' docs with youtubeId; db.integration_state.key='youtube_sync' has lastSyncAt. YouTube sync without auth → 401 and non-admin → 403. GET /admin/youtube/status ok. Apple /auth/apple with invalid token → 401 (via apple_auth.verify_apple_identity_token JWKS check). Delete Account throwaway phone +250789000099 flow: create → verify → DELETE /auth/me → 200 {ok:true}; user removed, sessions purged, otp_challenges purged; token no longer authorizes (401). DELETE without token → 401. PayPal subscription + VOD regressions PASS (approveUrl to https://www.paypal.com). Health/shows list/guest-locked-VOD all green. FRONTEND: home loads, BB Kigali branding present, 4 tabs render (Home/Shows/News/Profile), guest browsing works (no login gate), no red-screen on Home. Profile screen has Delete Account (testID=delete-account-btn) + Privacy Policy row + double-confirm Alert. Phone auth screen contains 'Continue with Apple' button (iOS-only guarded in code). Checkout has retry button (testID=momo-retry-btn). CRITICAL REGRESSION: Shows tab crashes with a red screen — 'Cannot read properties of undefined (reading toUpperCase)' at app/(tabs)/shows.tsx:110 because the new YouTube-synced show docs store 'categoryId' but NO 'category' field, while the UI does item.category.toUpperCase() unconditionally. This breaks the Shows tab for every user after a YouTube sync. Video/[id] VOD unlock modal has no explicit 'Retry MoMo' button (spec asked for one — user must re-tap the same confirm button).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Shows tab (app/(tabs)/shows.tsx)",
+        "issue": "RED SCREEN: 'Cannot read properties of undefined (reading toUpperCase)' at line 110. `item.category.toUpperCase()` throws because YouTube-synced show docs (source='youtube', 50 of them) have field `categoryId` but no `category` string. Every user opening the Shows tab after the sync hits this. Fix: either FE guard `(item.category ?? '').toUpperCase()` OR backend youtube_sync.py should also write `category: 'bbkigali-youtube'` on each show doc so both fields coexist (spec explicitly said 'create category bbkigali-youtube'). Reference: /app/frontend/app/(tabs)/shows.tsx:110 and /app/backend/youtube_sync.py:183 (only categoryId is set on show docs).",
+        "testID": "n/a",
+        "priority": "CRITICAL"
+      },
+      {
+        "component": "Shows tab duration label",
+        "issue": "YouTube-synced shows show raw ISO-8601 duration (e.g. 'PT2H44M58S') instead of human format ('2:44:58'). Reference: /app/frontend/app/(tabs)/shows.tsx:106 renders item.duration verbatim.",
+        "testID": "n/a",
+        "priority": "MEDIUM"
+      },
+      {
+        "component": "VOD unlock modal (app/video/[id].tsx)",
+        "issue": "Spec asked for an explicit in-app 'Retry MoMo Payment' button on the VOD unlock modal after failure. Current UI (line 271-292) only exposes the initial 'Pay' Pressable — the user has to re-tap the same confirm button; there is no dedicated retry affordance (the checkout.tsx screen DOES have one at line 399 with testID='momo-retry-btn').",
+        "testID": "vod-momo-retry-btn (missing)",
+        "priority": "MEDIUM"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter19_multifeature.py",
+    "/app/test_reports/pytest/pytest_iter19.xml"
+  ],
+  "action_items": [
+    "CRITICAL — Fix Shows-tab crash. Preferred: in /app/backend/youtube_sync.py add `category: 'bbkigali-youtube'` (string) alongside `categoryId` when upserting each show doc, matching the legacy show schema. Alternatively (or additionally) in /app/frontend/app/(tabs)/shows.tsx line 110 use `(item.category ?? '').toUpperCase()` as a defensive guard.",
+    "Format YouTube ISO-8601 duration to HH:MM:SS in the sync (or in the UI). Currently rendering 'PT2H44M58S' verbatim on cards.",
+    "Add a dedicated 'Retry MoMo Payment' button in /app/frontend/app/video/[id].tsx failure branch (mirror the checkout.tsx testID='momo-retry-btn' pattern) — spec explicitly required this on BOTH checkout and VOD unlock modal."
+  ],
+  "critical_code_review_comments": [
+    "server.py:964-965 and 1550-1551: both MoMo flows now call POST /public/payments/debit-credit (correct). Legacy /transfer fallback code has been fully removed. Backend logs at 13:26:17 UTC confirm HTTP 201 Created.",
+    "server.py:872-885 _guard_payer_not_merchant compares normalized MSISDN against normalize_msisdn(BESOFT_PAYOUT_MSISDN) — safety check verified against 3 phone-format variants for both subscription and VOD endpoints.",
+    "server.py:623-673 /auth/apple correctly returns 401 via HTTPException from apple_auth.verify_apple_identity_token, no crash on malformed JWT.",
+    "server.py:677-701 /auth/me DELETE cascades correctly: user_sessions, otp_challenges (by phone), payments+vod_purchases anonymized with userId → deleted-<prefix>, phone → null, deletedAt set. Verified end-to-end via test_delete_account_throwaway_full_flow.",
+    "server.py:1769-1779 /admin/youtube/sync and /status are gated by Depends(require_admin) → 401 unauth, 403 non-admin. Verified.",
+    "youtube_sync.py stores categoryId only (line 183) — misses the human-readable `category` string that the legacy shows carry (e.g. 'vod', 'podcast'). This is the root cause of the Shows tab crash. Spec said 'create category bbkigali-youtube' — that string should also live on each show doc as `category` for the UI (currently only lives on the categories collection under _ensure_category)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter19_multifeature.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (22/22)",
+    "frontend": "50% — Home/Profile/Auth screens OK; Shows tab crashes red screen (blocking)"
+  },
+  "seed_data_creation": "Test payments (bbfm-* refs) + vod_purchases (vod-* refs) created as side effects; throwaway user +250789000099 was deleted by the delete-account test; throwaway user +250700000123 created for non-admin YouTube auth check (still exists, non-admin). db.shows now has 50 source='youtube' docs from the real BB Kigali 89.7FM channel. db.integration_state has key='youtube_sync' with lastSyncAt populated.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "All 4 backend features work end-to-end. The blocking frontend issue is a single-line schema mismatch: YouTube-synced shows lack the `category` string field that /app/frontend/app/(tabs)/shows.tsx:110 assumes. Fix in youtube_sync.py (preferred) or add a null-guard in shows.tsx. To reproduce: open http://localhost:3000/, tap the 'Shows' tab in the bottom nav — the red screen appears immediately from the FlatList renderItem. Auth: use admin phone +250794230137 with testCode 123456 (fast path). Run: `cd /app/backend && EXPO_PUBLIC_BACKEND_URL=https://radio-vod-platform.preview.emergentagent.com MONGO_URL=mongodb://localhost:27017 DB_NAME=test_database pytest tests/test_iter19_multifeature.py -v -o addopts='' --tb=short`.",
+  "rca_of_issue": "Root cause of Shows-tab red screen: /app/backend/youtube_sync.py at line ~183 upserts each show with only `categoryId: <uuid>` (linking to the categories collection). Legacy show docs (Kigali Nights Live, Morning Show Recap, etc.) have a plain-string `category: 'vod'|'podcast'|'interview'` field. The frontend list card at /app/frontend/app/(tabs)/shows.tsx:110 renders `{item.category.toUpperCase()}` unconditionally, so any of the 50 newly-synced YouTube shows in the FlatList triggers a TypeError. Reproduction: (1) call POST /api/admin/youtube/sync as admin (or wait for the 6-hour periodic sync), (2) open the Expo web preview, (3) tap the Shows tab. Mitigation options (main agent): (a) add `category: 'bbkigali-youtube'` to the upsert dict in youtube_sync.py so both fields exist; (b) defensive null-guard on the UI side: `(item.category ?? '').toUpperCase()`. Recommend applying BOTH for defense in depth."
+}

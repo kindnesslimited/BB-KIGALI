@@ -286,7 +286,7 @@ export default function VideoPlayerScreen() {
                   />
                   <Pressable onPress={buyVodMomo} disabled={buying} style={[styles.buyBtn, buying && { opacity: 0.6 }]} testID="vod-momo-confirm">
                     {buying ? <ActivityIndicator color={colors.onBrandPrimary} /> : (
-                      <Text style={styles.buyBtnText}>SEND MOMO REQUEST</Text>
+                      <Text style={styles.buyBtnText}>{err ? "RETRY MOMO REQUEST" : "SEND MOMO REQUEST"}</Text>
                     )}
                   </Pressable>
                   {momoStatus && buying && (
@@ -302,6 +302,12 @@ export default function VideoPlayerScreen() {
                 <Text style={styles.premInline}>OR GO PREMIUM →</Text>
               </Pressable>
               {err && <Text style={styles.err}>{err}</Text>}
+              {err && showMomo && !buying && (
+                <Pressable onPress={buyVodMomo} style={styles.retryBanner} testID="momo-retry-btn">
+                  <Ionicons name="refresh" size={18} color={colors.onBrandPrimary} />
+                  <Text style={styles.retryText}>RETRY MOMO PAYMENT</Text>
+                </Pressable>
+              )}
               {suggestStripe && !isIOS && (
                 <Pressable
                   onPress={() => { setShowMomo(false); setErr(null); setSuggestStripe(false); void buyVodStripe(); }}
@@ -393,6 +399,8 @@ const styles = StyleSheet.create({
   momoInput: { backgroundColor: colors.surface, borderRadius: radius.md, padding: 12, color: colors.onSurface, fontSize: 14, borderWidth: 1, borderColor: colors.border, textAlign: "center" },
   momoStatus: { ...type.caption, color: colors.brandPrimary, textAlign: "center" },
   momoBack: { color: colors.onSurfaceSecondary, fontSize: 11 },
+  retryBanner: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: colors.brandPrimary, height: 44, borderRadius: radius.md, marginTop: spacing.sm },
+  retryText: { color: colors.onBrandPrimary, fontFamily: "BarlowCondensed-Bold", letterSpacing: 1.5, fontSize: 13 },
   premInline: { color: colors.brandPrimary, fontFamily: "BarlowCondensed-Bold", fontSize: 12, letterSpacing: 1.5 },
   err: { color: colors.error, textAlign: "center", marginTop: 6, fontSize: 12 },
   premBtn: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: spacing.md, paddingVertical: 12, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.brandPrimary },
