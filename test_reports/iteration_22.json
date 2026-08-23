@@ -1,0 +1,56 @@
+{
+  "summary": "Iter 22 BOTH backend + frontend regression PASS. Backend: 19/19 pytest cases green in test_iter22_security_and_uploads.py including the CRITICAL security fix. (1) Non-admin POST /billing/subscribe → HTTP 403 with 'Payment must be completed via Stripe, PayPal or MTN MoMo.'; verified tier NOT upgraded, payments collection NOT written for regular user (before/after snapshot equal). (2) Admin POST /billing/subscribe still returns {ok:true, tier:'basic', expiresAt:...} and inserts a payments doc with note='admin_comp'. (3) /billing/stripe/create-checkout returns real https://checkout.stripe.com/... URL + pk_live publishableKey; db.payments has method='stripe' status='pending'. (4) session-status of unpaid own session returns paid=false, paymentStatus='unpaid', status='open'. (5) session-status of foreign fake session returns 404. (6) Admin allowlist stubs for mudelly12@gmail.com and bayidvd@gmail.com exist with role='admin' (⚠ provider field is null, not 'admin-allowlist' as spec'd — see minor issue). (7) Throwaway phone +25078900xxxx signup is NOT admin. (8) Object storage: unauth POST → 401/403; regular user → 403; text/plain → 400 'Only jpg/png/webp/gif'; happy path uploads a 634-byte JPG → 200 with url containing /api/uploads/bb-fm-kigali/uploads/{user_id}/{uuid}.jpg, GET on that URL returns 200 with image/* content-type and byte-for-byte identical bytes. (9) PayPal /create-subscription approveUrl present; /vod/{id}/create approveUrl or alreadyUnlocked. (10) MoMo /initiate 250794230137 → 200 with reference; merchant guard for 250798875274 → 400. (11) /shows returns 69 items (>=50). (12) /admin/youtube/sync ok=true upserted>=1. (13) /health ok=true. (14) /privacy returns text/html with 'Privacy Policy' and 'Delete Account'. Frontend: /checkout?plan=basic_monthly PAY button confirmed rgb(255,107,0) orange bg + rgb(0,0,0) black text weight 900 ('PAY 1.00 EUR'). /auth/phone CONTINUE WITH PHONE button also orange+black; Continue with Google is dark surfaceSecondary bg with white text (design deviation from spec — see minor). /admin/shows page loads without red screen; tapping 'shows-add-toggle' plus icon reveals NEW SHOW form containing COVER / THUMBNAIL section with PICK FROM DEVICE and PASTE URL tabs + CHOOSE IMAGE orange/black CTA. Home tab loads with programs, live pill, tabs (Home/Shows/News/Profile) — no crash.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "seed() admin allowlist stubs",
+        "issue": "db.users stubs for mudelly12@gmail.com and bayidvd@gmail.com have role='admin' (correct) but provider is null instead of 'admin-allowlist'. The seed() at server.py:2604 inserts provider='admin-allowlist' correctly on FIRST creation, but these docs were created before that logic existed and role was later patched by the `update_many` at server.py:2595 — which does not set provider. Recommend adding provider to the $set of the promotion update, OR a one-shot db.users.updateMany({email:{$in:['mudelly12@gmail.com','bayidvd@gmail.com']}, provider:null}, {$set:{provider:'admin-allowlist'}}). Non-blocking; role is what gates admin access."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "auth/phone.tsx Continue with Google button",
+        "issue": "Spec asked for 'Continue With Phone / Google buttons on /auth/phone' to have ORANGE bg + BLACK text. Continue With Phone matches (orange #FF6B00, text color onBrandPrimary=#000). BUT the Google button (styles.googleBtn line 139) is on colors.surfaceSecondary=#1C1C21 with color=colors.onSurface=#FFFFFF (white). If the intent was matching orange styling on Google too, this needs update. If the intent was ONLY the phone button (which is orange+black), this is fine — clarify with product.",
+        "testID": "google-btn",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter22_security_and_uploads.py",
+    "/app/test_reports/pytest/pytest_iter22.xml"
+  ],
+  "action_items": [
+    "OPTIONAL (minor): Backfill provider='admin-allowlist' on the two ADMIN_EMAILS user stubs (mudelly12@gmail.com, bayidvd@gmail.com) — currently provider is null. Either patch seed() to include provider on the promotion path, or run: db.users.updateMany({email:{$in:list(ADMIN_EMAILS)}, provider:{$in:[null,'']}}, {$set:{provider:'admin-allowlist'}}). Role='admin' is already correct, so admin access works.",
+    "OPTIONAL (low): Confirm design intent for /auth/phone Google button — currently dark bg + white text. If the spec meant it should match the orange+black phone CTA, update styles.googleBtn to backgroundColor:colors.brandPrimary and googleText.color:'#000'."
+  ],
+  "critical_code_review_comments": [
+    "server.py:799 correctly gates /billing/subscribe behind current.get('role')=='admin' with the exact 403 message spec'd. Verified via test.",
+    "server.py:2364 stripe_session_status computes paid = (payment_status=='paid'). No fallback to session.status. Test confirmed paid:false on an open session.",
+    "server.py:2376 marks payment status=failed when status=complete but not paid — good defense in depth.",
+    "server.py:1798 admin/uploads/image returns HTTP 400 with clear 'Only jpg/png/webp/gif' error via object_storage.py:81 ValueError. Confirmed.",
+    "server.py:2593-2616 admin allowlist seed logic correctly separates 'promote existing' (update_many) and 'create stub' (insert_one w/ provider='admin-allowlist'). The former does not set provider; recommend also setting provider on the promotion path for auditability.",
+    "checkout.tsx:427 pay-btn is testID'd and uses colors.brandPrimary + text color '#000' fontWeight '900' — matches spec.",
+    "checkout.tsx:74 pollStripe strict guard: only success when r.paid===true OR r.paymentStatus==='paid'; falls through to immediate error on status='complete' && !paid. Prevents the previously loose false-positive.",
+    "object_storage.py:81 ext whitelist is jpg/jpeg/png/webp/gif; guess_ext falls back to content_type extension. Rejects 8MB+ payloads.",
+    "admin/shows.tsx:118 uses CoverImagePicker component with two tabs (PICK FROM DEVICE / PASTE URL) and CHOOSE IMAGE orange CTA — verified rendering in /admin/shows after tapping shows-add-toggle."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter22_security_and_uploads.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (19/19)",
+    "frontend": "95% — all critical flows verified: home loads, checkout orange+black CTA, admin/shows opens new-show form with PICK FROM DEVICE/PASTE URL tabs, no red screen. Minor design deviation on Google button styling on /auth/phone."
+  },
+  "seed_data_creation": "None. Tests use existing admin (+250794230137), regular test phone (+250788123456) with SMS-generated OTP pulled from db.otp_challenges, and a throwaway phone +25078900xxxx (auto-generated per run).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iter 22 backend + frontend fully green. Key file: /app/backend/tests/test_iter22_security_and_uploads.py — reusable. Auth pattern for REGULAR (non-admin) phones now correctly polls db.otp_challenges.find_one({phone}) after POST /auth/otp/start (regular phones do NOT get testCode in response when SMS actually sends via whatsapp). Admin phones (+250794230137) always return testCode='123456' in the /auth/otp/start response. Object storage happy-path works — the 634-byte JPG hex sequence in the test file is a valid 1x1 red pixel JPEG and is accepted by Emergent Object Storage. Frontend token key in localStorage is 'bbfm.token' as JSON.stringify(token). Auth-gated pages (/checkout, /admin/*) redirect to /auth/phone when unauthenticated — set the token in localStorage before navigating to test.",
+  "rca_of_issue": "N/A — no issues to root-cause. The one minor open item (admin stub provider=null) has RCA: seed()'s update_many that promotes existing docs to role='admin' does not also set provider='admin-allowlist'. It only runs the promote branch (not the insert branch) if the doc already exists. Mitigation is a one-line addition to the $set of update_many at server.py:2597."
+}

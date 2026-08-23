@@ -22,6 +22,10 @@ load_dotenv(ROOT_DIR / ".env")
 
 from youtube_sync import sync_channel as _yt_sync_channel, periodic_sync_loop as _yt_periodic_loop  # noqa: E402
 from apple_auth import verify_apple_identity_token  # noqa: E402
+from object_storage import upload_image_bytes, read_object  # noqa: E402
+from fastapi import UploadFile, File
+from fastapi.responses import Response
+from fastapi.concurrency import run_in_threadpool
 
 MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
@@ -69,6 +73,8 @@ BESOFT_PAYOUT_MSISDN = os.environ.get("BESOFT_PAYOUT_MSISDN", "")
 BESOFT_VERIFY_SSL = os.environ.get("BESOFT_VERIFY_SSL", "false").lower() == "true"
 # Admin phones — first-time OTP verify from these numbers auto-promotes to admin role
 ADMIN_PHONES = {p.strip() for p in os.environ.get("ADMIN_PHONES", "").split(",") if p.strip()}
+# Admin emails — first-time Google / Apple sign-in from these emails auto-promotes to admin role
+ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}
 VOD_PRICE_EUR = os.environ.get("VOD_PRICE_EUR", "1.00")
 VOD_PRICE_RWF = os.environ.get("VOD_PRICE_RWF", "1000")
 
@@ -567,7 +573,7 @@ async def google_session(body: GoogleSessionIn):
     # Upsert user by email (share with any existing phone-signup user whose email later matches)
     user = await db.users.find_one({"email": email}, {"_id": 0})
     if not user:
-        is_admin = email.lower() in {a.lower() for a in ADMIN_PHONES}
+        is_admin = email in ADMIN_EMAILS
         user = {
             "id": str(uuid.uuid4()),
             "phone": None,
@@ -586,6 +592,9 @@ async def google_session(body: GoogleSessionIn):
             updates["displayName"] = name
         if picture and not user.get("picture"):
             updates["picture"] = picture
+        # Re-promote to admin if email is in ADMIN_EMAILS but role isn't admin yet
+        if email in ADMIN_EMAILS and user.get("role") != "admin":
+            updates["role"] = "admin"
         if updates:
             await db.users.update_one({"id": user["id"]}, {"$set": updates})
             user.update(updates)
@@ -645,6 +654,7 @@ async def auth_apple(body: AppleSignInIn):
 
     now_iso = datetime.now(timezone.utc).isoformat()
     if not user:
+        is_admin_email = (token_email or "").lower() in ADMIN_EMAILS
         user = {
             "id": str(uuid.uuid4()),
             "phone": None,
@@ -652,7 +662,7 @@ async def auth_apple(body: AppleSignInIn):
             "displayName": (body.fullName or (token_email.split("@")[0] if token_email else None)),
             "picture": None,
             "tier": "free",
-            "role": "user",
+            "role": "admin" if is_admin_email else "user",
             "appleSub": apple_sub,
             "appleEmailPrivate": is_private,
             "subscriptionExpiresAt": None,
@@ -667,6 +677,8 @@ async def auth_apple(body: AppleSignInIn):
             updates["email"] = token_email.lower()
         if is_private and not user.get("appleEmailPrivate"):
             updates["appleEmailPrivate"] = True
+        if (user.get("email") or "").lower() in ADMIN_EMAILS and user.get("role") != "admin":
+            updates["role"] = "admin"
         await db.users.update_one({"id": user["id"]}, {"$set": updates})
         user.update(updates)
 
@@ -779,17 +791,22 @@ async def list_plans():
 
 
 @api.post("/billing/subscribe")
-async def subscribe(body: SubscribeIn, user = Depends(get_current_user)):
+async def subscribe(body: SubscribeIn, current = Depends(get_current_user)):
+    """DEPRECATED — this endpoint used to unconditionally grant a subscription without
+    verifying any payment. It is now admin-only and only useful for manually granting
+    complimentary/comp accounts. Regular users MUST use /billing/stripe/create-checkout,
+    /billing/paypal/create-subscription or /billing/momo/initiate."""
+    if current.get("role") != "admin":
+        raise HTTPException(403, "Payment must be completed via Stripe, PayPal or MTN MoMo.")
     plan = PLAN_CATALOG.get(body.plan)
     if not plan:
         raise HTTPException(400, "Invalid plan")
-    # MOCK: instantly mark as paid (in production, redirect to Stripe/PayPal or poll MoMo)
     payment_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
     expires = now + timedelta(days=plan["days"])
     payment = {
         "id": payment_id,
-        "userId": user["id"],
+        "userId": current["id"],
         "plan": body.plan,
         "planLabel": plan["label"],
         "amount": plan["amount"],
@@ -797,11 +814,12 @@ async def subscribe(body: SubscribeIn, user = Depends(get_current_user)):
         "method": body.method,
         "phone": body.phone,
         "status": "success",
+        "note": "admin_comp",
         "createdAt": now.isoformat(),
     }
     await db.payments.insert_one(payment.copy())
     await db.users.update_one(
-        {"id": user["id"]},
+        {"id": current["id"]},
         {"$set": {
             "tier": plan["tier"],
             "subscriptionExpiresAt": expires.isoformat(),
@@ -1760,6 +1778,51 @@ async def admin_youtube_status(_ = Depends(require_admin)):
     return doc or {"key": "youtube_sync", "lastSyncAt": None}
 
 
+# ---------- Admin cover image upload (Emergent Object Storage) ----------
+@api.post("/admin/uploads/image")
+async def admin_upload_image(file: UploadFile = File(...), current = Depends(require_admin)):
+    """Upload a cover image for a show / program / news item. Returns { url, storagePath }.
+
+    The returned `url` is a fully-qualified backend URL — save it directly into shows.coverUrl.
+    """
+    contents = await file.read()
+    try:
+        result = await run_in_threadpool(
+            upload_image_bytes,
+            current["id"],
+            contents,
+            file.filename,
+            file.content_type,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.exception("[upload] failed")
+        raise HTTPException(502, f"Upload failed: {e}")
+    # Persist a record so we can attribute uploads later
+    await db.uploads.insert_one({
+        "id": str(uuid.uuid4()),
+        "userId": current["id"],
+        "storagePath": result["storagePath"],
+        "contentType": result["contentType"],
+        "size": result["size"],
+        "filename": file.filename,
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+    })
+    public_url = f"{PUBLIC_BASE_URL}/api/uploads/{result['storagePath']}"
+    return {"url": public_url, "storagePath": result["storagePath"], "contentType": result["contentType"]}
+
+
+@api.get("/uploads/{full_path:path}")
+async def read_upload(full_path: str):
+    """Public read endpoint. Anyone can view an uploaded cover image (they're not private)."""
+    try:
+        data, content_type = await run_in_threadpool(read_object, full_path)
+    except Exception:
+        raise HTTPException(404, "Image not found")
+    return Response(content=data, media_type=content_type, headers={"Cache-Control": "public, max-age=86400"})
+
+
 # ---------- Admin Users management ----------
 class AdminUserRoleIn(BaseModel):
     role: Literal["user", "admin"]
@@ -2296,17 +2359,31 @@ async def stripe_session_status(session_id: str, user = Depends(get_current_user
     except stripe.error.StripeError as e:  # type: ignore
         raise HTTPException(502, f"Stripe error: {str(e)[:200]}")
 
-    if session.payment_status == "paid" and p.get("status") != "success":
-        # Webhook may not have arrived yet — fulfil directly. Function is idempotent.
+    payment_status = session.payment_status  # 'paid' | 'unpaid' | 'no_payment_required'
+    session_status = session.status  # 'open' | 'complete' | 'expired'
+    paid = payment_status == "paid"
+
+    # Grant ONLY on confirmed payment. 'no_payment_required' is ONLY valid if the plan is 0-value
+    # (we don't have any), so treat it as unpaid to be safe.
+    if paid and p.get("status") != "success":
         try:
             await _stripe_grant_from_session(session)
         except Exception as e:  # pragma: no cover
             logger.error("Stripe direct grant error: %s", str(e))
 
+    # If session is complete but payment_status is unpaid, this is a FAILED payment.
+    # Mark our record so we do not silently retry-grant later.
+    if session_status == "complete" and not paid:
+        await db.payments.update_one(
+            {"stripeSessionId": session_id},
+            {"$set": {"status": "failed", "failureReason": f"payment_status={payment_status}"}},
+        )
+
     return {
         "sessionId": session.id,
-        "status": session.status,                 # complete | open | expired
-        "paymentStatus": session.payment_status,  # paid | unpaid | no_payment_required
+        "status": session_status,
+        "paymentStatus": payment_status,
+        "paid": paid,
         "purchaseType": (session.metadata or {}).get("purchase_type"),
         "plan": (session.metadata or {}).get("plan"),
         "showId": (session.metadata or {}).get("show_id"),
@@ -2511,6 +2588,38 @@ async def health():
 
 # ---------- Seed data ----------
 async def seed():
+    # ----- Admin allowlist backfill: promote emails/phones to admin if user exists,
+    #        create stub accounts for admin emails so they show up in Admin → Users -----
+    if ADMIN_EMAILS:
+        # Promote existing users
+        promoted = await db.users.update_many(
+            {"email": {"$in": list(ADMIN_EMAILS)}, "role": {"$ne": "admin"}},
+            {"$set": {"role": "admin", "updatedAt": datetime.now(timezone.utc).isoformat()}},
+        )
+        if promoted.modified_count:
+            logger.info("Promoted %s existing user(s) to admin via ADMIN_EMAILS", promoted.modified_count)
+        # Ensure any pre-existing stubs also carry the provider tag for auditability
+        await db.users.update_many(
+            {"email": {"$in": list(ADMIN_EMAILS)}, "provider": {"$in": [None, ""]}},
+            {"$set": {"provider": "admin-allowlist"}},
+        )
+        # Create stubs for emails that never signed in yet
+        for email in ADMIN_EMAILS:
+            if not await db.users.find_one({"email": email}):
+                await db.users.insert_one({
+                    "id": str(uuid.uuid4()),
+                    "phone": None,
+                    "email": email,
+                    "displayName": email.split("@")[0],
+                    "picture": None,
+                    "tier": "free",
+                    "role": "admin",
+                    "subscriptionExpiresAt": None,
+                    "provider": "admin-allowlist",
+                    "createdAt": datetime.now(timezone.utc).isoformat(),
+                })
+                logger.info("Created admin stub for %s (first Google/Apple sign-in will attach)", email)
+
     # ----- Categories (dynamic, admin-managed) -----
     default_cats = [
         {"name": "VOD", "slug": "vod", "order": 1},

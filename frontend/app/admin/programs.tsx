@@ -5,6 +5,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { colors, spacing, type, radius } from "@/src/theme";
 import { api } from "@/src/api";
+import { CoverImagePicker } from "@/src/components/CoverImagePicker";
 
 type Program = {
   id: string;
@@ -109,8 +110,13 @@ function EditProgram({ initial, onCancel, onSave }: { initial: Program; onCancel
         <TextInput value={p.name} onChangeText={set("name")} placeholder="BBSPORTSTALK" placeholderTextColor={colors.onSurfaceSecondary} style={styles.input} testID="prog-name" />
         <Text style={[styles.fieldLabel, { marginTop: spacing.lg }]}>Description</Text>
         <TextInput value={p.description || ""} onChangeText={set("description")} placeholder="Weekly sports talk…" placeholderTextColor={colors.onSurfaceSecondary} style={[styles.input, { height: 90 }]} multiline testID="prog-desc" />
-        <Text style={[styles.fieldLabel, { marginTop: spacing.lg }]}>Cover image URL</Text>
-        <TextInput value={p.coverImage || ""} onChangeText={set("coverImage")} placeholder="https://…" placeholderTextColor={colors.onSurfaceSecondary} style={styles.input} autoCapitalize="none" testID="prog-cover" />
+        <Text style={[styles.fieldLabel, { marginTop: spacing.lg }]}>Cover image</Text>
+        <CoverImagePicker
+          value={p.coverImage}
+          onChange={(url) => set("coverImage")(url)}
+          label=""
+          testID="prog-cover-picker"
+        />
         <Text style={[styles.fieldLabel, { marginTop: spacing.lg }]}>YouTube video ID (optional)</Text>
         <TextInput value={p.youtubeVideoId || ""} onChangeText={set("youtubeVideoId")} placeholder="Jsi8atSWGbg" placeholderTextColor={colors.onSurfaceSecondary} style={styles.input} autoCapitalize="none" testID="prog-vid" />
         <Text style={[styles.fieldLabel, { marginTop: spacing.lg }]}>Embed URL (playlist or search)</Text>

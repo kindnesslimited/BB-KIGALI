@@ -8,7 +8,7 @@ export const colors = {
   onSurfaceTertiary: "#C2C2C7",
   brand: "#FF6B00",
   brandPrimary: "#FF6B00",
-  onBrandPrimary: "#0B0400",
+  onBrandPrimary: "#000000",
   brandSecondary: "#CC5500",
   brandTertiary: "#40220A",
   onBrandTertiary: "#FFB885",

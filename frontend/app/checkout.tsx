@@ -66,14 +66,20 @@ export default function Checkout() {
     const started = Date.now();
     while (Date.now() - started < 300_000) {
       try {
-        const r = await api<{ paymentStatus: string; status: string }>(
+        const r = await api<{ paid?: boolean; paymentStatus: string; status: string }>(
           `/billing/stripe/session-status/${sessionId}`,
           { auth: true }
         );
-        if (r.paymentStatus === "paid" || r.status === "complete") {
+        // STRICT: only count as success when Stripe confirmed payment_status='paid'.
+        if (r.paid === true || r.paymentStatus === "paid") {
           await refresh();
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
           setSuccess(true);
+          return;
+        }
+        // Session ended but payment failed / was cancelled by Stripe → surface immediately.
+        if (r.status === "complete" && r.paymentStatus !== "paid") {
+          setErr("Card payment did not go through. Please try again or use another method.");
           return;
         }
         if (r.status === "expired") {
@@ -397,7 +403,7 @@ export default function Checkout() {
         {err && <Text style={styles.err} testID="checkout-error">{err}</Text>}
         {err && method === "mtn_momo" && !loading && (
           <Pressable onPress={pay} style={styles.retryBanner} testID="momo-retry-btn">
-            <Ionicons name="refresh" size={20} color={colors.onBrandPrimary} />
+            <Ionicons name="refresh" size={20} color="#000" />
             <Text style={styles.retryText}>RETRY MOMO PAYMENT</Text>
           </Pressable>
         )}
@@ -419,9 +425,9 @@ export default function Checkout() {
 
       <View style={[styles.footer, { paddingBottom: insets.bottom + spacing.md }]}>
         <Pressable onPress={pay} disabled={loading} style={[styles.payBtn, loading && { opacity: 0.6 }]} testID="pay-btn">
-          {loading ? <ActivityIndicator color={colors.onBrandPrimary} /> : (
+          {loading ? <ActivityIndicator color="#000" /> : (
             <>
-              <Ionicons name="lock-closed" size={16} color={colors.onBrandPrimary} />
+              <Ionicons name="lock-closed" size={18} color="#000" />
               <Text style={styles.payText}>PAY {displayAmount} {displayCurrency}</Text>
             </>
           )}
@@ -450,7 +456,7 @@ const styles = StyleSheet.create({
   radioDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: colors.brandPrimary },
   momoInput: { backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.md, color: colors.onSurface, fontSize: 16, borderWidth: 1, borderColor: colors.border },
   retryBanner: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, backgroundColor: colors.brandPrimary, height: 48, borderRadius: radius.md, marginTop: spacing.md },
-  retryText: { ...type.h2, color: colors.onBrandPrimary, letterSpacing: 1.5, fontSize: 14 },
+  retryText: { color: "#000", fontFamily: "BarlowCondensed-Bold", letterSpacing: 1.8, fontSize: 15, fontWeight: "900" },
   demoBox: { flexDirection: "row", alignItems: "center", gap: spacing.sm, marginTop: spacing.lg, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.md, borderWidth: 1, borderColor: colors.warning },
   demoText: { ...type.caption, flex: 1, color: colors.onSurfaceTertiary },
   err: { color: colors.error, marginTop: spacing.md, textAlign: "center" },
@@ -469,7 +475,7 @@ const styles = StyleSheet.create({
   fallbackSub: { ...type.caption, marginTop: 2, color: colors.onBrandTertiary },
   footer: { position: "absolute", left: 0, right: 0, bottom: 0, backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.border, padding: spacing.lg },
   payBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, backgroundColor: colors.brandPrimary, height: 56, borderRadius: radius.md },
-  payText: { ...type.h2, color: colors.onBrandPrimary, letterSpacing: 1.5, fontSize: 15 },
+  payText: { ...type.h2, color: "#000", fontFamily: "BarlowCondensed-Bold", letterSpacing: 1.8, fontSize: 17, fontWeight: "900" },
   successWrap: { flex: 1, backgroundColor: colors.surface, alignItems: "center", justifyContent: "center", padding: spacing.xl, gap: spacing.md },
   successIcon: { width: 100, height: 100, borderRadius: 50, backgroundColor: colors.brandPrimary, alignItems: "center", justifyContent: "center", marginBottom: spacing.lg },
   successTitle: { ...type.displayXL, letterSpacing: 2 },

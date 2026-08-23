@@ -6,6 +6,7 @@ import { useRouter } from "expo-router";
 import { Image } from "expo-image";
 import { colors, spacing, type, radius } from "@/src/theme";
 import { api } from "@/src/api";
+import { CoverImagePicker } from "@/src/components/CoverImagePicker";
 
 type Show = { id: string; title: string; category: string; description?: string; thumbnail?: string; videoUrl: string; duration?: string; premium?: boolean };
 type Category = { id: string; name: string; slug: string; order: number; isActive: boolean };
@@ -113,6 +114,14 @@ export default function AdminShows() {
             <TextInput value={form.title || ""} onChangeText={(v) => setForm({ ...form, title: v })} placeholder="Title" placeholderTextColor={colors.onSurfaceSecondary} style={styles.input} testID="new-show-title" />
             <TextInput value={form.videoUrl || ""} onChangeText={(v) => setForm({ ...form, videoUrl: v })} placeholder="YouTube URL (watch or embed)" placeholderTextColor={colors.onSurfaceSecondary} style={[styles.input, { marginTop: spacing.sm }]} autoCapitalize="none" testID="new-show-url" />
             <TextInput value={form.description || ""} onChangeText={(v) => setForm({ ...form, description: v })} placeholder="Description" placeholderTextColor={colors.onSurfaceSecondary} style={[styles.input, { marginTop: spacing.sm, height: 80 }]} multiline testID="new-show-desc" />
+            <View style={{ marginTop: spacing.md }}>
+              <CoverImagePicker
+                value={form.thumbnail}
+                onChange={(url) => setForm({ ...form, thumbnail: url })}
+                label="Cover / thumbnail"
+                testID="new-show-cover"
+              />
+            </View>
             <View style={styles.catRow}>
               {cats.map((c) => (
                 <Pressable key={c.slug} onPress={() => setForm({ ...form, category: c.slug })} style={[styles.catChip, form.category === c.slug && styles.catChipActive]} testID={`new-show-cat-${c.slug}`}>

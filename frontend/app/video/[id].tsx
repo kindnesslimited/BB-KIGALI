@@ -95,13 +95,18 @@ export default function VideoPlayerScreen() {
     const started = Date.now();
     while (Date.now() - started < 300_000) {
       try {
-        const r = await api<{ paymentStatus: string; status: string }>(
+        const r = await api<{ paid?: boolean; paymentStatus: string; status: string }>(
           `/billing/stripe/session-status/${sessionId}`,
           { auth: true }
         );
-        if (r.paymentStatus === "paid" || r.status === "complete") {
+        // STRICT: only unlock the VOD when Stripe confirms payment_status='paid'
+        if (r.paid === true || r.paymentStatus === "paid") {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
           await loadShow();
+          return;
+        }
+        if (r.status === "complete" && r.paymentStatus !== "paid") {
+          setErr("Card payment did not go through. Please try again.");
           return;
         }
         if (r.status === "expired") { setErr("Stripe session expired."); return; }
@@ -256,10 +261,10 @@ export default function VideoPlayerScreen() {
                 <View style={styles.lockedActionsCol}>
                   {!isIOS && (
                     <Pressable onPress={buyVodStripe} disabled={buying} style={[styles.buyBtnFull, buying && { opacity: 0.6 }]} testID="buy-vod-stripe-btn">
-                      {buying ? <ActivityIndicator color={colors.onBrandPrimary} /> : (
+                      {buying ? <ActivityIndicator color="#000" /> : (
                         <>
-                          <Ionicons name="card" size={14} color={colors.onBrandPrimary} />
-                          <Text style={styles.buyBtnText}>PAY {price}€ (CARD)</Text>
+                          <Ionicons name="card" size={16} color="#000" />
+                          <Text style={styles.buyBtnText}>PAY {price}€ WITH CARD</Text>
                         </>
                       )}
                     </Pressable>
@@ -285,7 +290,7 @@ export default function VideoPlayerScreen() {
                     testID="vod-momo-phone"
                   />
                   <Pressable onPress={buyVodMomo} disabled={buying} style={[styles.buyBtn, buying && { opacity: 0.6 }]} testID="vod-momo-confirm">
-                    {buying ? <ActivityIndicator color={colors.onBrandPrimary} /> : (
+                    {buying ? <ActivityIndicator color="#000" /> : (
                       <Text style={styles.buyBtnText}>{err ? "RETRY MOMO REQUEST" : "SEND MOMO REQUEST"}</Text>
                     )}
                   </Pressable>
@@ -304,7 +309,7 @@ export default function VideoPlayerScreen() {
               {err && <Text style={styles.err}>{err}</Text>}
               {err && showMomo && !buying && (
                 <Pressable onPress={buyVodMomo} style={styles.retryBanner} testID="momo-retry-btn">
-                  <Ionicons name="refresh" size={18} color={colors.onBrandPrimary} />
+                  <Ionicons name="refresh" size={18} color="#000" />
                   <Text style={styles.retryText}>RETRY MOMO PAYMENT</Text>
                 </Pressable>
               )}
@@ -391,7 +396,7 @@ const styles = StyleSheet.create({
   buyBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, backgroundColor: colors.brandPrimary, paddingHorizontal: spacing.md, paddingVertical: 12, borderRadius: radius.pill, flex: 1 },
   buyBtnFull: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, backgroundColor: colors.brandPrimary, paddingVertical: 14, borderRadius: radius.pill, alignSelf: "stretch" },
   buyBtnOutlineFull: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 12, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.brandPrimary, alignSelf: "stretch" },
-  buyBtnText: { ...type.h2, color: colors.onBrandPrimary, letterSpacing: 1, fontSize: 12 },
+  buyBtnText: { color: "#000", fontFamily: "BarlowCondensed-Bold", letterSpacing: 1.5, fontSize: 14, fontWeight: "900" },
   fallbackBanner: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, marginTop: spacing.md, paddingVertical: 10, paddingHorizontal: spacing.md, borderRadius: radius.pill, backgroundColor: colors.brandTertiary, borderWidth: 1, borderColor: colors.brandPrimary },
   fallbackText: { color: colors.brandPrimary, fontFamily: "BarlowCondensed-Bold", fontSize: 12, letterSpacing: 0.5 },
   momoBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4, paddingHorizontal: spacing.md, paddingVertical: 12, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.brandPrimary, flex: 1 },
@@ -400,7 +405,7 @@ const styles = StyleSheet.create({
   momoStatus: { ...type.caption, color: colors.brandPrimary, textAlign: "center" },
   momoBack: { color: colors.onSurfaceSecondary, fontSize: 11 },
   retryBanner: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: colors.brandPrimary, height: 44, borderRadius: radius.md, marginTop: spacing.sm },
-  retryText: { color: colors.onBrandPrimary, fontFamily: "BarlowCondensed-Bold", letterSpacing: 1.5, fontSize: 13 },
+  retryText: { color: "#000", fontFamily: "BarlowCondensed-Bold", letterSpacing: 1.8, fontSize: 14, fontWeight: "900" },
   premInline: { color: colors.brandPrimary, fontFamily: "BarlowCondensed-Bold", fontSize: 12, letterSpacing: 1.5 },
   err: { color: colors.error, textAlign: "center", marginTop: 6, fontSize: 12 },
   premBtn: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: spacing.md, paddingVertical: 12, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.brandPrimary },
