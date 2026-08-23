@@ -18,6 +18,7 @@
         "backgroundColor": "#000000"
       },
       "edgeToEdgeEnabled": true,
+      "softwareKeyboardLayoutMode": "pan",
       "package": "com.emergent.radiovodplatform.reybr3"
     },
     "web": {

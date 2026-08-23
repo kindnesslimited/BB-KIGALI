@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Platform, Modal, TextInput } from "react-native";
+import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Platform, Modal, TextInput, KeyboardAvoidingView } from "react-native";
 import { WebView, type WebViewNavigation } from "react-native-webview";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -184,9 +184,9 @@ export default function VideoPlayerScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.surface }} testID="video-screen">
-      <Modal visible={!!payUrl} animationType="slide" onRequestClose={() => setPayUrl(null)}>
-        <View style={{ flex: 1, backgroundColor: "#fff" }}>
-          <View style={[styles.topBar, { paddingTop: insets.top + spacing.sm, backgroundColor: "#003087" }]}>
+      <Modal visible={!!payUrl} animationType="slide" onRequestClose={() => setPayUrl(null)} presentationStyle="fullScreen">
+        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1, backgroundColor: "#fff" }}>
+          <View style={[styles.topBar, { paddingTop: insets.top + spacing.sm, backgroundColor: payProvider === "stripe" ? "#635bff" : "#003087" }]}>
             <Pressable onPress={() => setPayUrl(null)} hitSlop={12} testID="vod-pay-close">
               <Ionicons name="close" size={26} color="#fff" />
             </Pressable>
@@ -197,26 +197,35 @@ export default function VideoPlayerScreen() {
             Platform.OS === "web" ? (
               <iframe src={payUrl} style={{ flex: 1, width: "100%", height: "100%", border: 0 }} />
             ) : (
-              <WebView
-                source={{ uri: payUrl }}
-                onNavigationStateChange={onPayNav}
-                onShouldStartLoadWithRequest={(req) => {
-                  const u = req.url || "";
-                  if (u.includes("/paypal/success") || u.includes("/paypal/cancel") ||
-                      u.includes("/billing/stripe/return") || u.includes("/billing/stripe/cancel")) {
-                    onPayNav(req as any);
-                    return false;
-                  }
-                  return true;
-                }}
-                startInLoadingState
-                javaScriptEnabled
-                domStorageEnabled
-                thirdPartyCookiesEnabled
-              />
+              <View style={{ flex: 1, backgroundColor: "#fff" }}>
+                <WebView
+                  source={{ uri: payUrl }}
+                  style={{ flex: 1, backgroundColor: "#fff" }}
+                  containerStyle={{ flex: 1 }}
+                  onNavigationStateChange={onPayNav}
+                  onShouldStartLoadWithRequest={(req) => {
+                    const u = req.url || "";
+                    if (u.includes("/paypal/success") || u.includes("/paypal/cancel") ||
+                        u.includes("/billing/stripe/return") || u.includes("/billing/stripe/cancel")) {
+                      onPayNav(req as any);
+                      return false;
+                    }
+                    return true;
+                  }}
+                  startInLoadingState
+                  javaScriptEnabled
+                  domStorageEnabled
+                  thirdPartyCookiesEnabled
+                  keyboardDisplayRequiresUserAction={false}
+                  hideKeyboardAccessoryView={false}
+                  automaticallyAdjustContentInsets={false}
+                  contentInsetAdjustmentBehavior="never"
+                  androidLayerType="hardware"
+                />
+              </View>
             )
           )}
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       <View style={[styles.topBar, { paddingTop: insets.top + spacing.sm }]}>

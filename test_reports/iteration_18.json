@@ -1,0 +1,44 @@
+{
+  "summary": "Backend-only retest after MoMo /public/payments/transfer payload restructure. ALL 16 pytest tests PASS (16/16 = 100%). CORE FIX VERIFIED: BeSoft no longer returns 'Invalid request body — Key: TransferRequest.Debit.Amount required'. Backend logs at 11:57:15+ show POST /public/payments/transfer returning HTTP 201 Created (previously HTTP 400 with the flat payload). The payload is now correctly nested as { idempotency_key, debit: { amount, currency, payment_method, payer_identifier, description, country, metadata } } per BeSoft openapi.yaml TransferRequest schema. Verified in server.py:833-844 (subscription) and server.py:1454-1465 (VOD). Payment docs now correctly persist besoftAttempt='transfer_collection' on both success and failure branches (previous iteration bug fixed at server.py:1493 in the VOD failure branch). Safety guard (merchant number 250798875274) still blocks all 3 normalization variants in both subscription and VOD paths (HTTP 400 'collection account'). PayPal regressions all pass: /billing/paypal/create-subscription returns subscriptionId + paypal.com approveUrl; /billing/vod/{id}/create returns orderId + paypal.com approveUrl. Health = 200, guest /api/shows returns list, /api/shows/{id} without auth returns locked=true. MINOR RESIDUAL BEHAVIOR: The /debit-credit legacy fallback in server.py:873-903 is STILL being invoked after /transfer, but ONLY because the inner debit_norm comes back as 'failed' with 'provider error [HTTP_400]' (MTN-side error on the test payer, not a BeSoft validation error). Because the fallback call also returns failed, besoftAttempt correctly stays as 'transfer_collection' (server.py:900 check). The /transfer HTTP layer itself is healthy (201). This is per the review spec's ACCEPTABLE criteria ('failed with an MTN-side reason' is fine — we only need to prove the payload is accepted at BeSoft's validation layer, which it is).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/billing/momo/initiate",
+        "issue": "Legacy /debit-credit fallback (server.py:873-903) still fires whenever the inner debit.status == 'failed' with any HTTP_400 marker inside the failure_reason string — even when the outer /transfer HTTP response is now healthy 201 Created. Suggest tightening the guard so fallback only triggers on outer HTTP >= 300 (not on MTN-side per-transaction failures like insufficient balance). besoftAttempt is preserved as 'transfer_collection' because the fallback also fails, but this wastes an extra HTTP call and keeps the deprecated endpoint alive. Review-request note explicitly said fallback 'should NOT be triggered anymore on a healthy /transfer response'."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_momo_transfer_and_paypal_iter17.py",
+    "/app/test_reports/pytest/pytest_iter18.xml"
+  ],
+  "action_items": [
+    "OPTIONAL — Tighten the fallback trigger in /billing/momo/initiate (server.py:873-877): change `should_fallback = (status_code >= 300 or debit_norm == 'failed')` to just `should_fallback = status_code >= 300`, so MTN-side per-transaction failures (insufficient balance, not registered, HTTP_400 inside a 201 envelope) do not trigger an extra legacy /debit-credit hit. Right now /debit-credit is called on every failed test payer transaction even though /transfer returned 201.",
+    "OPTIONAL — Remove the /debit-credit legacy fallback entirely (server.py:878-903) once the above is verified in production. The core payload migration is done and validated at BeSoft's schema layer."
+  ],
+  "critical_code_review_comments": [
+    "server.py:833-844 subscription /transfer payload now correctly nested with { idempotency_key, debit: {...} } per BeSoft openapi.yaml. Verified 201 Created in backend logs.",
+    "server.py:1454-1465 VOD /transfer payload matches the same nested schema. Also verified 201 in logs.",
+    "server.py:1493 besoftAttempt='transfer_collection' is now correctly set on the VOD failure branch as well (previous iteration bug fixed).",
+    "server.py:938 subscription doc besoftAttempt is set to attempt_note ('transfer_collection' unless a successful debit-credit fallback overrides at line 903).",
+    "_guard_payer_not_merchant runs BEFORE any BeSoft call in both flows and blocks 250798875274 in all 3 normalization variants — verified by 4 parametrized tests.",
+    "The fallback trigger condition (server.py:873-877) is overly permissive — it fires on any debit_norm=='failed' + HTTP_400 substring, even when the outer /transfer HTTP is 201. This defeats the goal of removing the /debit-credit endpoint. See minor issue above."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "100% (16/16)",
+    "frontend": "not tested this iteration"
+  },
+  "seed_data_creation": "None — reused admin user +250794230137 via OTP dev fast-path (testCode=123456). Some payment/vod_purchases docs created as side effects of the tests (all prefixed with bbfm- or vod- + uuid).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Payload restructure for /public/payments/transfer is confirmed working — BeSoft now returns HTTP 201 Created for both subscription (server.py:833-844) and VOD (server.py:1454-1465) paths. Only remaining concern is the legacy /debit-credit fallback still firing when the inner MTN debit fails; the review-request wording says this fallback 'should NOT be triggered anymore on a healthy /transfer response'. If the main agent tightens the trigger (change should_fallback to only fire on outer HTTP >= 300), re-run tests/test_momo_transfer_and_paypal_iter17.py — all 16 tests should continue to pass because they don't assert on the fallback presence, only on the besoftAttempt marker (which is already 'transfer_collection'). Auth strategy unchanged: use admin phone +250794230137 with testCode=123456. Run: `cd /app/backend && EXPO_PUBLIC_BACKEND_URL=https://radio-vod-platform.preview.emergentagent.com pytest tests/test_momo_transfer_and_paypal_iter17.py -v -o addopts='' --tb=short`.",
+  "rca_of_issue": "The critical bug from iteration 17 (BeSoft HTTP 400 'Invalid request body — Key: TransferRequest.Debit.Amount required') is RESOLVED. Root cause was a flat payload shape that did not match BeSoft's openapi.yaml TransferRequest schema (nested {idempotency_key, debit:{...}}). Fix applied in server.py:833-844 (subscription) and server.py:1454-1465 (VOD). Backend logs confirm the /transfer endpoint now returns HTTP 201 Created (log lines at 11:57:15, 11:57:18, 11:57:22 UTC). Payment docs written after the fix persist besoftAttempt='transfer_collection' as expected (verified via db.payments and db.vod_purchases queries). The only remaining observation is a stale fallback branch that fires on MTN-side transaction failures even though the /transfer wrapper is now healthy — cosmetic/perf issue, not a correctness issue."
+}

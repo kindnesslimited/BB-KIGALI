@@ -213,8 +213,8 @@ export default function Checkout() {
 
   return (
     <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1, backgroundColor: colors.surface }}>
-      <Modal visible={!!stripeUrl} animationType="slide" onRequestClose={() => setStripeUrl(null)}>
-        <View style={{ flex: 1, backgroundColor: "#fff" }}>
+      <Modal visible={!!stripeUrl} animationType="slide" onRequestClose={() => setStripeUrl(null)} presentationStyle="fullScreen">
+        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1, backgroundColor: "#fff" }}>
           <View style={[styles.top, { paddingTop: insets.top + spacing.md, backgroundColor: "#635bff" }]}>
             <Pressable onPress={() => setStripeUrl(null)} hitSlop={12} testID="stripe-close">
               <Ionicons name="close" size={26} color="#fff" />
@@ -226,30 +226,39 @@ export default function Checkout() {
             Platform.OS === "web" ? (
               <iframe src={stripeUrl} style={{ flex: 1, width: "100%", height: "100%", border: 0 }} />
             ) : (
-              <WebView
-                source={{ uri: stripeUrl }}
-                onNavigationStateChange={onStripeNav}
-                onShouldStartLoadWithRequest={(req) => {
-                  const u = req.url || "";
-                  if (u.includes("/billing/stripe/return") || u.includes("/billing/stripe/cancel")) {
-                    onStripeNav(req as any);
-                    return false;
-                  }
-                  return true;
-                }}
-                startInLoadingState
-                javaScriptEnabled
-                domStorageEnabled
-                thirdPartyCookiesEnabled
-                testID="stripe-webview"
-              />
+              <View style={{ flex: 1, backgroundColor: "#fff" }}>
+                <WebView
+                  source={{ uri: stripeUrl }}
+                  style={{ flex: 1, backgroundColor: "#fff" }}
+                  containerStyle={{ flex: 1 }}
+                  onNavigationStateChange={onStripeNav}
+                  onShouldStartLoadWithRequest={(req) => {
+                    const u = req.url || "";
+                    if (u.includes("/billing/stripe/return") || u.includes("/billing/stripe/cancel")) {
+                      onStripeNav(req as any);
+                      return false;
+                    }
+                    return true;
+                  }}
+                  startInLoadingState
+                  javaScriptEnabled
+                  domStorageEnabled
+                  thirdPartyCookiesEnabled
+                  keyboardDisplayRequiresUserAction={false}
+                  hideKeyboardAccessoryView={false}
+                  automaticallyAdjustContentInsets={false}
+                  contentInsetAdjustmentBehavior="never"
+                  androidLayerType="hardware"
+                  testID="stripe-webview"
+                />
+              </View>
             )
           )}
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
-      <Modal visible={!!paypalUrl} animationType="slide" onRequestClose={() => setPaypalUrl(null)}>
-        <View style={{ flex: 1, backgroundColor: "#fff" }}>
+      <Modal visible={!!paypalUrl} animationType="slide" onRequestClose={() => setPaypalUrl(null)} presentationStyle="fullScreen">
+        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1, backgroundColor: "#fff" }}>
           <View style={[styles.top, { paddingTop: insets.top + spacing.md, backgroundColor: "#003087" }]}>
             <Pressable onPress={() => setPaypalUrl(null)} hitSlop={12} testID="paypal-close">
               <Ionicons name="close" size={26} color="#fff" />
@@ -261,28 +270,37 @@ export default function Checkout() {
             Platform.OS === "web" ? (
               <iframe src={paypalUrl} style={{ flex: 1, width: "100%", height: "100%", border: 0 }} />
             ) : (
-              <WebView
-                source={{ uri: paypalUrl }}
-                onNavigationStateChange={onPayPalNav}
-                onShouldStartLoadWithRequest={(req) => {
-                  const u = req.url || "";
-                  // Intercept our terminal URLs BEFORE the WebView tries to load them
-                  // (bbkigali.com may be unreachable / password-protected).
-                  if (u.includes("/paypal/success") || u.includes("/paypal/cancel")) {
-                    onPayPalNav(req as any);
-                    return false;
-                  }
-                  return true;
-                }}
-                startInLoadingState
-                javaScriptEnabled
-                domStorageEnabled
-                thirdPartyCookiesEnabled
-                testID="paypal-webview"
-              />
+              <View style={{ flex: 1, backgroundColor: "#fff" }}>
+                <WebView
+                  source={{ uri: paypalUrl }}
+                  style={{ flex: 1, backgroundColor: "#fff" }}
+                  containerStyle={{ flex: 1 }}
+                  onNavigationStateChange={onPayPalNav}
+                  onShouldStartLoadWithRequest={(req) => {
+                    const u = req.url || "";
+                    // Intercept our terminal URLs BEFORE the WebView tries to load them
+                    // (bbkigali.com may be unreachable / password-protected).
+                    if (u.includes("/paypal/success") || u.includes("/paypal/cancel")) {
+                      onPayPalNav(req as any);
+                      return false;
+                    }
+                    return true;
+                  }}
+                  startInLoadingState
+                  javaScriptEnabled
+                  domStorageEnabled
+                  thirdPartyCookiesEnabled
+                  keyboardDisplayRequiresUserAction={false}
+                  hideKeyboardAccessoryView={false}
+                  automaticallyAdjustContentInsets={false}
+                  contentInsetAdjustmentBehavior="never"
+                  androidLayerType="hardware"
+                  testID="paypal-webview"
+                />
+              </View>
             )
           )}
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       <View style={[styles.top, { paddingTop: insets.top + spacing.md }]}>

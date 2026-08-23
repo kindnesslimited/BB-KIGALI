@@ -1,0 +1,58 @@
+{
+  "summary": "Backend-only test run. 15/16 pytest pass. CRITICAL bug found in MoMo /public/payments/transfer migration: the endpoint IS being called (migration wired) but BeSoft rejects the payload with HTTP 400 'Invalid request body — Key: TransferRequest.Debit.Amount required'. For subscription flow, backend silently falls back to LEGACY /public/payments/debit-credit which succeeds (201 Created) — so subscription MoMo effectively still runs on the endpoint that was supposed to be removed. For VOD flow, there is NO fallback: user gets status='failed' + 'MoMo provider rejected the request'. Root cause: /transfer expects a nested {Debit:{Amount,PaymentMethod,...},Credit:{...}} payload but server.py sends a flat {amount, payment_method, payer_identifier} shape. Everything else works: (a) MoMo safety guard blocks merchant number 250798875274 in all three normalization variants (canonical, +250 798 875 274, 0798875274) for both subscription and VOD — HTTP 400 'collection account' returned. (b) OTP admin flow returns testCode=123456. (c) PayPal /billing/paypal/create-subscription returns subscriptionId + paypal.com approveUrl (NO_SHIPPING payload accepted). (d) PayPal VOD /billing/vod/{id}/create returns orderId + paypal.com approveUrl (landing_page=BILLING accepted). (e) Guest access to /api/shows works, and GET /api/shows/{id} without auth returns locked=true, loginRequired=true, videoUrl=null. (f) GET /api/health = 200. (g) MoMo status GET /api/billing/momo/{ref} returns reference/status/amount/currency. Auth fixture uses admin phone +250794230137 instead of +250788123456 because the SMS gateway (WhatsApp provider) is currently up — so testCode is only returned for admin phones or when SMS fails. Note on regular test phone: /api/auth/otp/start with +250788123456 returns {ok:true, smsSent:true, provider:'whatsapp'} — NO testCode — because WhatsApp actually delivered the SMS. This is expected per server.py logic (testCode only when is_admin_phone OR sms_sent=false). Review-request wording 'dev mode returns testCode' is slightly stale — dev mode only triggers on SMS failure.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/billing/vod/{show_id}/momo",
+        "issue": "VOD MoMo payments FAIL end-to-end because /public/payments/transfer is called with a flat {amount, payment_method, payer_identifier} payload but BeSoft's API requires a nested {Debit:{Amount, PaymentMethod, ...}, Credit:{...}} structure. Backend logs show 'HTTP 400 Bad Request — Key: TransferRequest.Debit.Amount Error: Field validation for Amount failed on the required tag; Key: TransferRequest.Debit.PaymentMethod'. VOD flow has no legacy fallback so user sees status='failed'. See /app/backend/server.py:1451-1471.",
+        "priority": "CRITICAL"
+      },
+      {
+        "endpoint": "POST /api/billing/momo/initiate",
+        "issue": "Subscription MoMo /public/payments/transfer call is ALSO returning HTTP 400 with the same 'Invalid request body — Debit.Amount required' error. The code then falls back to LEGACY /public/payments/debit-credit which returns 201 Created. Net effect: user sees status=pending/processing (works), BUT the promised migration to /transfer is not actually being used — every real subscription still runs through the legacy endpoint. Fix the /transfer payload shape to remove the legacy dependency. See /app/backend/server.py:833-893.",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "POST /api/billing/vod/{show_id}/momo",
+        "issue": "besoftAttempt='transfer_collection' is only set on the success branch (server.py:1495). On HTTP 400 failure (server.py:1485), the field is never written, so the audit trail cannot distinguish 'transfer was attempted and failed' from 'transfer was never called'. Add the field to the failure-branch update payload."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_momo_transfer_and_paypal_iter17.py",
+    "/app/test_reports/pytest/pytest_iter17.xml"
+  ],
+  "action_items": [
+    "FIX PAYLOAD SHAPE for /public/payments/transfer in both /billing/momo/initiate (server.py:833) and /billing/vod/{show_id}/momo (server.py:1451). BeSoft expects a nested TransferRequest structure: `{ idempotency_key, Debit: { Amount, Currency, PaymentMethod:'mtn_momo_collection', PayerIdentifier, Description, Country, Metadata }, Credit: { Amount, Currency, PaymentMethod:'mtn_momo_disbursement', PayeeIdentifier: BESOFT_PAYOUT_MSISDN, Description, Country }, CallbackUrl }`. Currently sending a flat payload → HTTP 400. Consult BeSoft docs / try mirroring the /debit-credit legacy payload shape which succeeds with 201.",
+    "REMOVE LEGACY FALLBACK from /billing/momo/initiate (server.py:877-893) once /transfer is working — the fallback silently masks the migration failure.",
+    "ADD besoftAttempt='transfer_collection' TO FAILURE BRANCH in /billing/vod/{show_id}/momo (server.py:1485 update payload) so migration is auditable in DB.",
+    "OPTIONAL: consider updating the review-request docstring — 'dev mode returns testCode' is misleading. testCode is only returned when SMS delivery fails OR for admin phones. WhatsApp provider is currently succeeding, so regular test phone +250788123456 does NOT return testCode. Admin phone +250794230137 or +250798875272 always does."
+  ],
+  "critical_code_review_comments": [
+    "server.py _guard_payer_not_merchant is correct and runs BEFORE the BeSoft call in both flows. All 3 normalization variants of 250798875274 are blocked. Good.",
+    "server.py:1438-1442 short-circuits with 'alreadyUnlocked' BEFORE the merchant guard. Not a security issue (a user cannot escalate anything by re-buying a show they own), but if you want the guard to fire in every case, move _guard_payer_not_merchant above the ownership check.",
+    "server.py:1495 vs 1485: besoftAttempt is only set on success. Failure path leaves it None. Minor consistency fix (already listed above).",
+    "server.py:1186 (create_subscription) and :1354-1355 (VOD create) both use application_context: shipping_preference=NO_SHIPPING with landing_page=BILLING. PayPal accepts both — verified by 2xx + paypal.com approveUrl.",
+    "server.py fallback at lines 869-903 still calls /debit-credit. Not deprecated at BeSoft yet (returns 201) but flagged as 'legacy' by the docstring — remove once /transfer payload is fixed."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_momo_transfer_and_paypal_iter17.py (new — 16 regression tests for iter 17)"
+  ],
+  "success_rate": {
+    "backend": "93.75% (15/16)",
+    "frontend": "not tested this iteration"
+  },
+  "seed_data_creation": "None — used existing admin user +250794230137 (basic tier, auto-promoted) via OTP dev fast-path (testCode=123456).",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The /transfer endpoint IS being called (confirmed via backend logs — 'POST https://payment.besoft.info/api/v1/public/payments/transfer HTTP/1.1 400 Bad Request'), so the routing/URL part of the migration is complete. What is broken is the PAYLOAD SHAPE. BeSoft's Go server expects a struct with nested Debit / Credit fields (see error: 'Key: TransferRequest.Debit.Amount required'). Once the main agent fixes the payload shape, re-run /app/backend/tests/test_momo_transfer_and_paypal_iter17.py — the currently failing test (test_vod_momo_uses_transfer) should pass. Auth strategy: use admin phone +250794230137 with testCode=123456 (works even when WhatsApp/SMS provider is up). Do NOT try to use +250788123456 — WhatsApp provider is currently succeeding so no testCode is returned. To run tests: `cd /app/backend && EXPO_PUBLIC_BACKEND_URL=https://radio-vod-platform.preview.emergentagent.com pytest tests/test_momo_transfer_and_paypal_iter17.py -v -o addopts='' --tb=short`. Use `-o addopts=''` to bypass the default `-n 2 --dist loadscope` xdist config which can break state-sharing fixtures.",
+  "rca_of_issue": "RCA — MoMo /public/payments/transfer migration incomplete: (1) URL migration DONE: server.py:861 and server.py:1471 both POST to /public/payments/transfer. (2) PAYLOAD MIGRATION NOT DONE: current payload is flat `{idempotency_key, amount, currency, payment_method, payer_identifier, description, country, metadata, callback_url}`. BeSoft's /transfer schema (per HTTP 400 response) expects `TransferRequest{ Debit{Amount, Currency, PaymentMethod, PayerIdentifier, ...}, Credit{Amount, Currency, PaymentMethod, PayeeIdentifier, ...} }`. (3) Subscription flow masks the bug via /debit-credit fallback (server.py:877-903) which uses the OLD legacy schema — this endpoint returns 201 so the user's payment goes through, but on the wrong endpoint. (4) VOD flow has no fallback → returns 200 to the client with status='failed' and 'MoMo provider rejected the request'. Reproduction: authenticate as +250794230137 (basic tier), POST /api/billing/vod/{unowned_show_id}/momo with {phone:'250794230137'}. Response 200 body: {reference, status:'failed', amount:1000, currency:'RWF', message:'MoMo provider rejected the request: Invalid request body', failureReason:'Invalid request body'}. Server log shows 400 from /transfer, no fallback attempted. Mitigation: restructure the payload to nested Debit/Credit shape before POSTing to /transfer, OR temporarily fall back to /debit-credit in the VOD path too (bad long-term)."
+}

@@ -828,7 +828,8 @@ async def momo_initiate(body: MoMoInitiateIn, user = Depends(get_current_user)):
         norm = raw_status if raw_status in ("pending", "processing", "success", "failed") else "pending"
         return norm, besoft_id, debit.get("failure_reason") or d.get("failure_reason")
 
-    # ---- Attempt 1: debit-credit atomic ----
+    # ---- Attempt 1: /public/payments/transfer (collection API — auto-settles to merchant's configured payout MSISDN) ----
+    # Schema per BeSoft openapi.yaml: TransferRequest = { idempotency_key, debit: TransferDebitRequest }
     payload = {
         "idempotency_key": reference,
         "debit": {
@@ -837,19 +838,9 @@ async def momo_initiate(body: MoMoInitiateIn, user = Depends(get_current_user)):
             "payment_method": "mtn_momo_collection",
             "payer_identifier": payer,
             "description": f"BB FM Kigali — {plan['label']}",
-            "idempotency_key": reference + "-d",
             "country": "RW",
             "metadata": {"userId": user["id"], "plan": body.plan},
         },
-        "credits": [{
-            "amount": credit_amount,
-            "currency": plan["currency"],
-            "payment_method": "mtn_momo_disbursement",
-            "payee_identifier": BESOFT_PAYOUT_MSISDN,
-            "description": f"Payout to BB FM Kigali — {plan['label']}",
-            "idempotency_key": reference + "-c1",
-            "country": "RW",
-        }],
     }
 
     now = datetime.now(timezone.utc)
@@ -869,45 +860,48 @@ async def momo_initiate(body: MoMoInitiateIn, user = Depends(get_current_user)):
     await db.payments.insert_one(payment_doc.copy())
 
     try:
-        status_code, resp_text, resp_data = await _try_besoft("/public/payments/debit-credit", payload)
+        status_code, resp_text, resp_data = await _try_besoft("/public/payments/transfer", payload)
     except httpx.RequestError as e:
         await db.payments.update_one({"reference": reference}, {"$set": {"status": "failed", "error": f"network: {e}"}})
         raise HTTPException(502, f"Unable to reach payment provider: {e}")
 
     debit_norm, besoft_tx_id, failure_reason = _extract_debit(resp_data)
-    attempt_note = "debit_credit"
+    attempt_note = "transfer_collection"
 
-    # ---- Fallback: if the debit-credit atomic fails at provider level (HTTP 400 from MTN),
-    # retry with a pure /debit call (collection only). Many BeSoft accounts are provisioned for
-    # MoMo collections but NOT for atomic disbursement, so this often clears the failure.
+    # ---- Fallback: ONLY if the outer /transfer request fails at the HTTP/schema layer
+    # (e.g. BeSoft is down or rejects the request shape). Do NOT retry on inner MTN debit failures
+    # (insufficient balance, wrong number, timeout) — those are legitimate customer-side issues and
+    # a second request would just re-charge the same phone.
     should_fallback = (
-        status_code >= 300 or debit_norm == "failed"
-    ) and (
-        failure_reason is None or "HTTP_400" in (failure_reason or "") or "provider error" in (failure_reason or "").lower()
+        status_code >= 300
+        and (failure_reason is None or "HTTP_400" in (failure_reason or "") or "provider error" in (failure_reason or "").lower())
     )
     if should_fallback:
-        logger.info("[momo] debit-credit failed, trying pure /debit fallback (reason=%s)", (failure_reason or resp_text[:120]))
-        pure_debit_payload = {
+        logger.info("[momo] /transfer failed, trying /debit-credit legacy fallback (reason=%s)", (failure_reason or resp_text[:120]))
+        legacy_payload = {
             "idempotency_key": reference + "-fb",
-            "amount": debit_amount,
-            "currency": plan["currency"],
-            "payment_method": "mtn_momo_collection",
-            "payer_identifier": payer,
-            "description": f"BB FM Kigali — {plan['label']}",
-            "country": "RW",
-            "metadata": {"userId": user["id"], "plan": body.plan, "fallback": True},
+            "debit": {
+                "amount": debit_amount, "currency": plan["currency"], "payment_method": "mtn_momo_collection",
+                "payer_identifier": payer, "description": f"BB FM Kigali — {plan['label']}",
+                "idempotency_key": reference + "-d", "country": "RW",
+                "metadata": {"userId": user["id"], "plan": body.plan, "fallback": True},
+            },
+            "credits": [{
+                "amount": credit_amount, "currency": plan["currency"], "payment_method": "mtn_momo_disbursement",
+                "payee_identifier": BESOFT_PAYOUT_MSISDN, "description": f"Payout — {plan['label']}",
+                "idempotency_key": reference + "-c1", "country": "RW",
+            }],
         }
         try:
-            status_code2, resp_text2, resp_data2 = await _try_besoft("/public/payments/debit", pure_debit_payload)
+            status_code2, resp_text2, resp_data2 = await _try_besoft("/public/payments/debit-credit", legacy_payload)
         except httpx.RequestError:
             status_code2, resp_text2, resp_data2 = 599, "network_error", {}
         if status_code2 < 300:
-            # Fallback succeeded; use its status/data.
             debit_norm2, besoft_tx_id2, failure_reason2 = _extract_debit(resp_data2)
             if debit_norm2 != "failed":
                 status_code, resp_text, resp_data = status_code2, resp_text2, resp_data2
                 debit_norm, besoft_tx_id, failure_reason = debit_norm2, besoft_tx_id2, failure_reason2
-                attempt_note = "debit_only_fallback"
+                attempt_note = "debit_credit_legacy_fallback"
 
     # ---- Persist and respond ----
     if status_code >= 300:
@@ -1192,6 +1186,11 @@ async def paypal_create(body: PayPalCreateIn, user = Depends(get_current_user)):
         "application_context": {
             "brand_name": "BB FM Kigali",
             "user_action": "SUBSCRIBE_NOW",
+            "shipping_preference": "NO_SHIPPING",
+            "payment_method": {
+                "payer_selected": "PAYPAL",
+                "payee_preferred": "UNRESTRICTED",
+            },
             "return_url": PAYPAL_RETURN_URL,
             "cancel_url": PAYPAL_CANCEL_URL,
         },
@@ -1356,7 +1355,11 @@ async def vod_purchase_create(show_id: str, user = Depends(get_current_user)):
             "return_url": PAYPAL_RETURN_URL,
             "cancel_url": PAYPAL_CANCEL_URL,
             "shipping_preference": "NO_SHIPPING",
-            "landing_page": "NO_PREFERENCE",  # PayPal decides card-guest vs login based on merchant settings
+            "landing_page": "BILLING",  # show card/guest form first, minimises friction for users without PayPal
+            "payment_method": {
+                "payer_selected": "PAYPAL",
+                "payee_preferred": "UNRESTRICTED",
+            },
         },
     }
     async with httpx.AsyncClient(timeout=30.0) as c:
@@ -1446,20 +1449,20 @@ async def vod_purchase_momo(show_id: str, body: VodMoMoIn, user = Depends(get_cu
     _guard_payer_not_merchant(payer)
     reference = f"vod-{show_id[:8]}-{uuid.uuid4().hex[:10]}"
     amount = float(VOD_PRICE_RWF)
+    # Use the collection /transfer API which auto-settles to the merchant's configured payout MSISDN
+    # (BESOFT_PAYOUT_MSISDN). This is the same flow used for subscription payments.
+    # Schema per BeSoft openapi.yaml: TransferRequest = { idempotency_key, debit: TransferDebitRequest }
     payload = {
         "idempotency_key": reference,
         "debit": {
-            "amount": amount, "currency": "RWF", "payment_method": "mtn_momo_collection",
-            "payer_identifier": payer, "description": f"BB FM VOD: {show['title']}",
-            "idempotency_key": reference + "-d", "country": "RW",
+            "amount": amount,
+            "currency": "RWF",
+            "payment_method": "mtn_momo_collection",
+            "payer_identifier": payer,
+            "description": f"BB FM VOD: {show['title']}",
+            "country": "RW",
             "metadata": {"userId": user["id"], "showId": show_id, "kind": "vod_unlock"},
         },
-        "credits": [{
-            "amount": amount, "currency": "RWF", "payment_method": "mtn_momo_disbursement",
-            "payee_identifier": BESOFT_PAYOUT_MSISDN,
-            "description": f"VOD payout — {show['title']}",
-            "idempotency_key": reference + "-c1", "country": "RW",
-        }],
     }
     await db.vod_purchases.insert_one({
         "id": reference, "orderId": reference, "reference": reference,
@@ -1470,20 +1473,36 @@ async def vod_purchase_momo(show_id: str, body: VodMoMoIn, user = Depends(get_cu
     })
     try:
         async with httpx.AsyncClient(timeout=30.0, verify=BESOFT_VERIFY_SSL) as c:
-            r = await c.post(f"{BESOFT_BASE_URL}/public/payments/debit-credit", headers=_besoft_headers(), json=payload)
+            r = await c.post(f"{BESOFT_BASE_URL}/public/payments/transfer", headers=_besoft_headers(), json=payload)
     except httpx.RequestError as e:
         await db.vod_purchases.update_one({"reference": reference}, {"$set": {"status": "failed", "error": str(e)}})
         raise HTTPException(502, f"Unable to reach payment provider: {e}")
     if r.status_code >= 300:
-        await db.vod_purchases.update_one({"reference": reference}, {"$set": {"status": "failed", "error": r.text[:400]}})
-        raise HTTPException(502, f"MoMo provider rejected the request: {r.text[:200]}")
+        try:
+            err_body = r.json() if r.text else {}
+        except Exception:
+            err_body = {}
+        provider_msg = (
+            (err_body.get("message") if isinstance(err_body, dict) else None)
+            or (err_body.get("data", {}).get("message") if isinstance(err_body, dict) else None)
+            or r.text[:200]
+        )
+        await db.vod_purchases.update_one({"reference": reference}, {"$set": {
+            "status": "failed",
+            "error": r.text[:400],
+            "failureReason": provider_msg,
+            "besoftAttempt": "transfer_collection",
+        }})
+        return {"reference": reference, "status": "failed", "amount": amount, "currency": "RWF",
+                "message": f"MoMo provider rejected the request: {str(provider_msg)[:120]}",
+                "failureReason": provider_msg}
     data = r.json().get("data") or {}
     debit = (data.get("debit") or {}) if isinstance(data, dict) else {}
     besoft_tx_id = debit.get("id") or data.get("id")
-    besoft_status = (debit.get("status") or "pending").lower()
+    besoft_status = (debit.get("status") or data.get("status") or "pending").lower()
     failure_reason = debit.get("failure_reason") or data.get("failure_reason")
     normalized = besoft_status if besoft_status in ("pending", "processing", "success", "failed") else "pending"
-    update_fields = {"besoftTxId": besoft_tx_id, "besoftPayload": data, "status": normalized}
+    update_fields = {"besoftTxId": besoft_tx_id, "besoftPayload": data, "status": normalized, "besoftAttempt": "transfer_collection"}
     if failure_reason:
         update_fields["failureReason"] = failure_reason
     await db.vod_purchases.update_one({"reference": reference}, {"$set": update_fields})

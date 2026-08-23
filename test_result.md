@@ -102,47 +102,92 @@
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
 
-user_problem_statement: "CRITICAL BUSINESS REQUIREMENT: 'EVERYONE CAN SEE WHAT IS AVAILABLE, BUT ONLY ACTIVE SUBSCRIBERS CAN WATCH/LISTEN/ACCESS ACTUAL CONTENT.' Users must be able to enter the app and freely navigate all tabs (Home, Shows, News, Profile), see all programs, categories, videos, without logging in first. Only when they try to PLAY content (video, live radio) or access checkout, the system asks them to log in and subscribe. Also verify: MoMo payer/payee still correct, Stripe error tracking, PayPal simplification is deferred."
+user_problem_statement: "User bug reports (June 2026): 1) Stripe/Card Checkout page turns white/blank when users start typing card details on mobile (WebView squashed when keyboard opens). 2) Update MTN MoMo integration to use the new `/public/payments/transfer` collection API endpoint that auto-settles to merchant `250798875274` (safety guard preventing merchant from being debited MUST remain intact). 3) Simplify PayPal checkout — remove address/shipping requirements, force guest-friendly card-first landing page."
 
 backend:
-  - task: "Guest browsing / optional auth on /shows/{id}"
-    implemented: true
-    working: true
-    file: "/app/backend/server.py"
-    stuck_count: 0
-    priority: "high"
-    needs_retesting: true
-    status_history:
-      - working: true
-        agent: "main"
-        comment: "Added get_optional_user() helper — returns None instead of 401 when no bearer. Changed GET /api/shows/{id} to use get_optional_user. Guests get {locked:true, loginRequired:true, videoUrl:null, unlockPrice, unlockPriceRwf} so they can preview details. Authenticated users get premium/purchase logic as before. /shows list + /categories + /programs were already public. Curl-verified: all 4 endpoints return data for guests."
-
-frontend:
-  - task: "AuthGate refactor — public browsing, gated play"
+  - task: "MTN MoMo VOD unlock via /public/payments/transfer collection API"
     implemented: true
     working: "NA"
-    file: "/app/frontend/app/_layout.tsx"
+    file: "/app/backend/server.py"
     stuck_count: 0
     priority: "high"
     needs_retesting: true
     status_history:
       - working: "NA"
         agent: "main"
-        comment: "Rewrote AuthGate: only 'admin', 'checkout', 'player' segments require a logged-in user. All other segments (index, tabs, video preview, program details, paywall) are PUBLIC. Cold-start now routes guests to /(tabs) instead of /onboarding. Video/[id] handlers (buyVod, buyVodStripe, buyVodMomo) route guests to /auth/phone before opening any payment WebView."
+        comment: "Migrated /billing/vod/{show_id}/momo from legacy /public/payments/debit-credit to the new /public/payments/transfer collection API. Payload is now flat (idempotency_key, amount, currency, payment_method='mtn_momo_collection', payer_identifier, description, country, metadata, callback_url) and BeSoft auto-settles to BESOFT_PAYOUT_MSISDN (250798875274) which is configured on the merchant profile. Safety guard _guard_payer_not_merchant() still runs before every call. Failure responses now include failureReason. Subscription MoMo /billing/momo/initiate was already on /transfer."
+
+  - task: "PayPal subscription — no shipping, guest-friendly"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Updated /billing/paypal/create-subscription payload with application_context.shipping_preference=NO_SHIPPING and payment_method.payer_selected=PAYPAL / payee_preferred=UNRESTRICTED. Buyer no longer asked for shipping address on the PayPal Subscribe flow."
+
+  - task: "PayPal VOD one-time — guest-friendly card-first"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Changed VOD PayPal order landing_page from NO_PREFERENCE to BILLING so users without a PayPal account see the card/guest form first. Added payment_method.payer_selected=PAYPAL. NO_SHIPPING was already set."
+
+  - task: "MoMo safety guard — merchant number cannot be debited"
+    implemented: true
+    working: "NA"
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Regression check: BESOFT_PAYOUT_MSISDN is now 250798875274 (updated in .env). _guard_payer_not_merchant() must still return HTTP 400 if a customer enters 250798875274 as their payer number. Test both /billing/momo/initiate (subscription) and /billing/vod/{show_id}/momo (VOD). Test payer 250794230137 should succeed at the request-acceptance level (pending status)."
+
+frontend:
+  - task: "Stripe / PayPal WebView keyboard stability on mobile"
+    implemented: true
+    working: "NA"
+    file: "/app/frontend/app/checkout.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Root cause of the white-screen bug: the payment Modal opens a separate view hierarchy on iOS/Android and the WebView inside did not have explicit flex:1 style, so when the on-screen keyboard opened (Android adjustResize) the WebView height collapsed to 0 and rendered a blank/white page. Fix: (a) wrapped both Stripe and PayPal Modal contents in KeyboardAvoidingView (padding on iOS), (b) added explicit style={{flex:1}} and containerStyle={{flex:1}} to WebView, (c) set softwareKeyboardLayoutMode='pan' in app.json Android config, (d) added contentInsetAdjustmentBehavior='never' + automaticallyAdjustContentInsets=false + androidLayerType='hardware' for stable rendering. Same fix applied to video/[id].tsx modal (PayPal + Stripe VOD checkout). NOTE: Native soft-keyboard behavior can only be verified on a real device or emulator — Playwright web preview renders WebView as iframe and doesn't reproduce the bug. Requires user validation on iOS/Android device."
 
 metadata:
   created_by: "main_agent"
-  version: "1.0"
-  test_sequence: 14
+  version: "1.1"
+  test_sequence: 15
   run_ui: true
 
 test_plan:
   current_focus:
-    - "Guest browsing / optional auth on /shows/{id}"
-    - "AuthGate refactor — public browsing, gated play"
+    - "MTN MoMo VOD unlock via /public/payments/transfer collection API"
+    - "PayPal subscription — no shipping, guest-friendly"
+    - "PayPal VOD one-time — guest-friendly card-first"
+    - "MoMo safety guard — merchant number cannot be debited"
+    - "Stripe / PayPal WebView keyboard stability on mobile"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
 
 agent_communication:
   - agent: "main"
+    message: "Fixed 3 user-reported issues: (1) Stripe/PayPal card checkout white-screen when keyboard opens — added KeyboardAvoidingView + explicit WebView flex + Android pan layout + insets fixes. (2) VOD MoMo migrated to /public/payments/transfer collection API. (3) PayPal simplified — no shipping, guest-friendly landing. Please test: (a) VOD MoMo initiate with payer 250794230137 returns 2xx with pending status (safety guard rejects 250798875274 with HTTP 400). (b) Subscription MoMo same behaviour. (c) PayPal create-subscription returns approveUrl with no shipping asked. (d) PayPal VOD order returns approveUrl. (e) Frontend: open checkout, choose Card (Stripe) or PayPal, tap PAY, verify the WebView stays visible when the keyboard opens on both iOS and Android."
+
+# ---------- Previous session history (kept for context) ----------
+previous_agent_communication:
+  - agent: "main"
+
