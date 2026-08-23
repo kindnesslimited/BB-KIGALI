@@ -20,9 +20,17 @@ from pydantic import BaseModel, Field
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
-from youtube_sync import sync_channel as _yt_sync_channel, periodic_sync_loop as _yt_periodic_loop  # noqa: E402
+from youtube_sync import (
+    sync_channel as _yt_sync_channel,
+    sync_all_channels as _yt_sync_all,
+    periodic_sync_loop as _yt_periodic_loop,
+)  # noqa: E402
 from apple_auth import verify_apple_identity_token  # noqa: E402
 from object_storage import upload_image_bytes, read_object  # noqa: E402
+from subscription_reminders import (
+    reminder_loop as _sub_reminder_loop,
+    run_reminder_pass as _sub_reminder_pass,
+)  # noqa: E402
 from fastapi import UploadFile, File
 from fastapi.responses import Response
 from fastapi.concurrency import run_in_threadpool
@@ -782,6 +790,56 @@ async def get_news(news_id: str):
     if not item:
         raise HTTPException(404, "News not found")
     return item
+
+
+# ---------- Admin News CRUD ----------
+class NewsIn(BaseModel):
+    title: str
+    summary: Optional[str] = None
+    body: Optional[str] = None
+    coverUrl: Optional[str] = None
+    category: Optional[str] = None
+    url: Optional[str] = None
+    published: bool = True
+
+
+@api.post("/admin/news")
+async def admin_create_news(body: NewsIn, current = Depends(require_admin)):
+    now_iso = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": str(uuid.uuid4()),
+        "title": body.title,
+        "summary": body.summary,
+        "body": body.body,
+        "coverUrl": body.coverUrl,
+        "category": body.category or "news",
+        "url": body.url,
+        "published": body.published,
+        "publishedAt": now_iso,
+        "createdAt": now_iso,
+        "createdBy": current["id"],
+    }
+    await db.news.insert_one(doc.copy())
+    return doc
+
+
+@api.patch("/admin/news/{news_id}")
+async def admin_update_news(news_id: str, body: NewsIn, _ = Depends(require_admin)):
+    updates = {k: v for k, v in body.dict().items() if v is not None}
+    updates["updatedAt"] = datetime.now(timezone.utc).isoformat()
+    r = await db.news.update_one({"id": news_id}, {"$set": updates})
+    if r.matched_count == 0:
+        raise HTTPException(404, "News not found")
+    doc = await db.news.find_one({"id": news_id}, {"_id": 0})
+    return doc
+
+
+@api.delete("/admin/news/{news_id}")
+async def admin_delete_news(news_id: str, _ = Depends(require_admin)):
+    r = await db.news.delete_one({"id": news_id})
+    if r.deleted_count == 0:
+        raise HTTPException(404, "News not found")
+    return {"ok": True}
 
 
 # ---------- Subscriptions & Payments ----------
@@ -1768,14 +1826,33 @@ class YouTubeSyncIn(BaseModel):
 @api.post("/admin/youtube/sync")
 async def admin_youtube_sync(body: YouTubeSyncIn | None = None, _ = Depends(require_admin)):
     handle = body.handle if body else None
-    result = await _yt_sync_channel(db, handle=handle)
-    return result
+    if handle:
+        return await _yt_sync_channel(db, handle=handle)
+    # Default: sync ALL configured channels (@bbkigalifm + @BBSPORTSBAR etc.)
+    return await _yt_sync_all(db)
 
 
 @api.get("/admin/youtube/status")
 async def admin_youtube_status(_ = Depends(require_admin)):
-    doc = await db.integration_state.find_one({"key": "youtube_sync"}, {"_id": 0})
-    return doc or {"key": "youtube_sync", "lastSyncAt": None}
+    docs = await db.integration_state.find(
+        {"key": {"$regex": "^youtube_sync"}},
+        {"_id": 0},
+    ).to_list(50)
+    return {"channels": docs}
+
+
+@api.post("/admin/subscriptions/send-reminders")
+async def admin_run_reminders(_ = Depends(require_admin)):
+    """Manually trigger a subscription-expiry reminder pass now."""
+    stats = await _sub_reminder_pass(db, _send_sms)
+    return stats
+
+
+@api.get("/admin/subscriptions/reminders")
+async def admin_list_reminders(limit: int = 100, _ = Depends(require_admin)):
+    """List recent reminder attempts for audit."""
+    docs = await db.subscription_reminders.find({}, {"_id": 0}).sort("createdAt", -1).to_list(min(limit, 500))
+    return docs
 
 
 # ---------- Admin cover image upload (Emergent Object Storage) ----------
@@ -1932,6 +2009,89 @@ async def admin_invite_user(body: AdminInviteIn, _ = Depends(require_admin)):
     }
     await db.users.insert_one(doc.copy())
     return {**_clean_user(doc), "created": True}
+
+
+class BulkInviteRow(BaseModel):
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    displayName: Optional[str] = None
+    role: Literal["user", "admin"] = "user"
+
+
+class BulkInviteIn(BaseModel):
+    users: List[BulkInviteRow]
+
+
+@api.post("/admin/users/bulk-invite")
+async def admin_bulk_invite_users(body: BulkInviteIn, _ = Depends(require_admin)):
+    """Create/update many user stubs in one call. Skips rows without phone AND email."""
+    results = {"created": 0, "updated": 0, "skipped": 0, "errors": []}
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for row in body.users:
+        try:
+            phone = row.phone.strip() if row.phone else None
+            email = row.email.strip().lower() if row.email else None
+            if not phone and not email:
+                results["skipped"] += 1
+                continue
+            existing = None
+            if phone:
+                normalized = phone.lstrip("+")
+                existing = await db.users.find_one({
+                    "$or": [{"phone": phone}, {"phone": normalized}, {"phone": "+" + normalized}],
+                })
+            if not existing and email:
+                existing = await db.users.find_one({"email": email})
+            if existing:
+                await db.users.update_one({"id": existing["id"]}, {"$set": {
+                    "role": row.role,
+                    **({"displayName": row.displayName} if row.displayName else {}),
+                    "updatedAt": now_iso,
+                }})
+                results["updated"] += 1
+            else:
+                await db.users.insert_one({
+                    "id": str(uuid.uuid4()),
+                    "phone": phone,
+                    "email": email,
+                    "displayName": row.displayName,
+                    "role": row.role,
+                    "tier": "free",
+                    "subscriptionExpiresAt": None,
+                    "createdAt": now_iso,
+                    "provider": "admin-bulk-invite",
+                })
+                results["created"] += 1
+        except Exception as e:
+            results["errors"].append(f"{row.phone or row.email}: {str(e)[:80]}")
+    return results
+
+
+class UserUpdateIn(BaseModel):
+    displayName: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    role: Optional[Literal["user", "admin"]] = None
+    tier: Optional[Literal["free", "basic", "premium"]] = None
+    active: Optional[bool] = None
+
+
+@api.patch("/admin/users/{user_id}")
+async def admin_update_user(user_id: str, body: UserUpdateIn, current = Depends(require_admin)):
+    """Full user edit — name, contact, role, tier, active flag."""
+    target = await db.users.find_one({"id": user_id})
+    if not target:
+        raise HTTPException(404, "User not found")
+    if user_id == current["id"] and body.role and body.role != "admin":
+        raise HTTPException(400, "You cannot demote yourself.")
+    updates = {k: v for k, v in body.dict().items() if v is not None}
+    if "email" in updates and updates["email"]:
+        updates["email"] = updates["email"].strip().lower()
+    if updates:
+        updates["updatedAt"] = datetime.now(timezone.utc).isoformat()
+        await db.users.update_one({"id": user_id}, {"$set": updates})
+    u = await db.users.find_one({"id": user_id}, {"_id": 0})
+    return _clean_user(u)
 
 
 @api.delete("/admin/users/{user_id}")
@@ -2805,13 +2965,17 @@ async def on_startup():
     if os.environ.get("YOUTUBE_API_KEY"):
         app.state._yt_task = asyncio.create_task(_yt_periodic_loop(db))
         logger.info("YouTube periodic sync started")
+    # Background subscription-expiry reminders (every 12h).
+    app.state._sub_task = asyncio.create_task(_sub_reminder_loop(db, _send_sms))
+    logger.info("Subscription reminder loop started")
 
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    task = getattr(app.state, "_yt_task", None)
-    if task:
-        task.cancel()
+    for attr in ("_yt_task", "_sub_task"):
+        task = getattr(app.state, attr, None)
+        if task:
+            task.cancel()
     client.close()
 
 

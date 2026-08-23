@@ -41,6 +41,7 @@ export default function AdminUsers() {
   const [query, setQuery] = useState("");
   const [busyIds, setBusyIds] = useState<Record<string, boolean>>({});
   const [inviting, setInviting] = useState(false);
+  const [bulkOpen, setBulkOpen] = useState(false);
 
   const load = async (q?: string) => {
     try {
@@ -125,9 +126,14 @@ export default function AdminUsers() {
           <Ionicons name="chevron-back" size={22} color={colors.onSurface} />
         </Pressable>
         <Text style={styles.title}>USERS</Text>
-        <Pressable onPress={() => setInviting(true)} testID="users-invite" hitSlop={8}>
-          <Ionicons name="person-add" size={24} color={colors.brandPrimary} />
-        </Pressable>
+        <View style={{ flexDirection: "row", gap: spacing.md }}>
+          <Pressable onPress={() => setBulkOpen(true)} testID="users-bulk" hitSlop={8}>
+            <Ionicons name="albums" size={22} color={colors.onSurface} />
+          </Pressable>
+          <Pressable onPress={() => setInviting(true)} testID="users-invite" hitSlop={8}>
+            <Ionicons name="person-add" size={24} color={colors.brandPrimary} />
+          </Pressable>
+        </View>
       </View>
 
       <View style={styles.searchWrap}>
@@ -232,7 +238,96 @@ export default function AdminUsers() {
         onClose={() => setInviting(false)}
         onDone={() => { setInviting(false); void load(); }}
       />
+
+      <BulkInviteModal
+        visible={bulkOpen}
+        onClose={() => setBulkOpen(false)}
+        onDone={() => { setBulkOpen(false); void load(); }}
+      />
     </View>
+  );
+}
+
+function BulkInviteModal({ visible, onClose, onDone }: { visible: boolean; onClose: () => void; onDone: () => void }) {
+  const insets = useSafeAreaInsets();
+  const [text, setText] = useState("");
+  const [role, setRole] = useState<"user" | "admin">("user");
+  const [saving, setSaving] = useState(false);
+
+  const parseRows = (t: string) => {
+    // Accepts CSV / newline / mixed: "phone,email,name" per line. Blank cells OK.
+    const rows: any[] = [];
+    for (const raw of t.split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line) continue;
+      const parts = line.split(",").map(s => s.trim());
+      const phone = parts[0] || null;
+      const email = parts[1] || null;
+      const name = parts[2] || null;
+      if (!phone && !email) continue;
+      rows.push({ phone, email, displayName: name, role });
+    }
+    return rows;
+  };
+
+  const submit = async () => {
+    const users = parseRows(text);
+    if (users.length === 0) { Alert.alert("Nothing to import", "Add at least one phone or email per line."); return; }
+    setSaving(true);
+    try {
+      const r = await api<{ created: number; updated: number; skipped: number; errors: string[] }>(
+        "/admin/users/bulk-invite", { method: "POST", auth: true, body: { users } }
+      );
+      Alert.alert("Bulk invite complete", `Created ${r.created}, updated ${r.updated}, skipped ${r.skipped}.${r.errors?.length ? `\nErrors: ${r.errors.slice(0,3).join('; ')}` : ""}`);
+      setText("");
+      onDone();
+    } catch (e: any) {
+      Alert.alert("Bulk invite failed", e.message || "Please try again.");
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <Modal visible={visible} animationType="slide" onRequestClose={onClose} presentationStyle="fullScreen">
+      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1, backgroundColor: colors.surface }}>
+        <View style={[bulkStyles.top, { paddingTop: insets.top + spacing.md }]}>
+          <Pressable onPress={onClose} hitSlop={12}><Ionicons name="close" size={26} color={colors.onSurface} /></Pressable>
+          <Text style={bulkStyles.title}>BULK INVITE</Text>
+          <View style={{ width: 26 }} />
+        </View>
+        <ScrollView contentContainerStyle={{ padding: spacing.lg, gap: spacing.md }}>
+          <Text style={type.bodyMuted}>
+            Paste one row per user in the format below. Phone or email is required — name is optional.
+          </Text>
+          <View style={bulkStyles.hint}>
+            <Text style={bulkStyles.hintText}>phone,email,name</Text>
+            <Text style={bulkStyles.hintExample}>+250788123456,test@bbkigali.com,Test User</Text>
+            <Text style={bulkStyles.hintExample}>250794230137,,Alice</Text>
+            <Text style={bulkStyles.hintExample}>,bob@example.com,Bob</Text>
+          </View>
+          <Text style={bulkStyles.roleLabel}>ROLE FOR ALL ROWS</Text>
+          <View style={{ flexDirection: "row", gap: spacing.sm }}>
+            {(["user", "admin"] as const).map((r) => (
+              <Pressable key={r} onPress={() => setRole(r)} style={[bulkStyles.roleChip, role === r && bulkStyles.roleChipActive]}>
+                <Text style={[bulkStyles.roleChipText, role === r && { color: "#000" }]}>{r.toUpperCase()}</Text>
+              </Pressable>
+            ))}
+          </View>
+          <TextInput
+            value={text}
+            onChangeText={setText}
+            multiline
+            placeholder="+250788123456,alice@example.com,Alice&#10;250794230137,,Bob"
+            placeholderTextColor={colors.onSurfaceSecondary}
+            style={bulkStyles.textarea}
+            autoCapitalize="none"
+            testID="bulk-invite-textarea"
+          />
+          <Pressable onPress={submit} disabled={saving} style={[bulkStyles.saveBtn, saving && { opacity: 0.6 }]} testID="bulk-invite-save">
+            {saving ? <ActivityIndicator color="#000" /> : <Text style={bulkStyles.saveText}>IMPORT {parseRows(text).length} USER(S)</Text>}
+          </Pressable>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </Modal>
   );
 }
 
@@ -508,4 +603,19 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
   },
   submitText: { ...type.h2, color: colors.onBrandPrimary, letterSpacing: 1.5 },
+});
+
+const bulkStyles = StyleSheet.create({
+  top: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: spacing.lg, paddingBottom: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.border },
+  title: { fontFamily: "BarlowCondensed-Bold", letterSpacing: 1.8, fontSize: 18, color: colors.onSurface },
+  hint: { backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.md, borderWidth: 1, borderColor: colors.border },
+  hintText: { color: colors.brandPrimary, fontFamily: "BarlowCondensed-Bold", letterSpacing: 1.5, fontSize: 12 },
+  hintExample: { color: colors.onSurfaceSecondary, fontSize: 12, marginTop: 4, fontFamily: Platform.OS === "web" ? "monospace" : undefined },
+  roleLabel: { color: colors.onSurfaceSecondary, letterSpacing: 1.5, fontSize: 12, fontFamily: "BarlowCondensed-Bold" },
+  roleChip: { paddingHorizontal: spacing.lg, paddingVertical: 8, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceSecondary },
+  roleChipActive: { backgroundColor: colors.brandPrimary, borderColor: colors.brandPrimary },
+  roleChipText: { color: colors.onSurfaceSecondary, fontFamily: "BarlowCondensed-Bold", letterSpacing: 1.2, fontSize: 12 },
+  textarea: { minHeight: 220, textAlignVertical: "top", backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.md, color: colors.onSurface, borderWidth: 1, borderColor: colors.border },
+  saveBtn: { backgroundColor: colors.brandPrimary, height: 52, borderRadius: radius.md, alignItems: "center", justifyContent: "center", marginTop: spacing.md },
+  saveText: { color: "#000", fontFamily: "BarlowCondensed-Bold", letterSpacing: 1.8, fontSize: 15, fontWeight: "900" },
 });

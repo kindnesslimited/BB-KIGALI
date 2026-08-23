@@ -10,7 +10,7 @@ const CARDS: { key: string; label: string; sub: string; icon: any; route: any }[
     icon: "settings-outline", route: "/admin/settings" },
   { key: "payments", label: "Payments & Revenue", sub: "All Stripe, PayPal, MoMo transactions + revenue totals",
     icon: "cash-outline", route: "/admin/payments" },
-  { key: "users", label: "Users & Admins", sub: "Grant admin access, invite new admins by phone",
+  { key: "users", label: "Users & Admins", sub: "Invite single or bulk (CSV), promote, edit, activate/deactivate",
     icon: "people-outline", route: "/admin/users" },
   { key: "sms", label: "SMS Providers", sub: "Route Mobile + WhatsApp — auto-fallback + analytics",
     icon: "chatbubbles-outline", route: "/admin/sms" },
@@ -18,8 +18,10 @@ const CARDS: { key: string; label: string; sub: string; icon: any; route: any }[
     icon: "pricetags-outline", route: "/admin/categories" },
   { key: "programs", label: "Programs", sub: "BBSPORTSTALK, B&B SPORTS BAR, IMPUMEKOYIWACU",
     icon: "list-outline", route: "/admin/programs" },
-  { key: "shows", label: "VOD & Podcasts", sub: "Add YouTube videos to the library",
+  { key: "shows", label: "VOD & Podcasts", sub: "Sync from @bbkigalifm + @BBSPORTSBAR YouTube channels",
     icon: "videocam-outline", route: "/admin/shows" },
+  { key: "news", label: "News", sub: "Create, edit and delete news posts (with cover images)",
+    icon: "newspaper-outline", route: "/admin/news" },
 ];
 
 export default function AdminHome() {

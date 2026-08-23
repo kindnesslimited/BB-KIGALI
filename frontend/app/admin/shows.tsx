@@ -57,7 +57,7 @@ export default function AdminShows() {
   };
 
   const [syncing, setSyncing] = useState(false);
-  const [ytStatus, setYtStatus] = useState<any>(null);
+  const [ytStatus, setYtStatus] = useState<{ channels?: any[] } | null>(null);
   const loadYtStatus = async () => {
     try { const s = await api<any>("/admin/youtube/status", { auth: true }); setYtStatus(s); } catch {}
   };
@@ -67,9 +67,13 @@ export default function AdminShows() {
     try {
       const r = await api<any>("/admin/youtube/sync", { method: "POST", auth: true, body: {} });
       if (r?.ok) {
-        Alert.alert("YouTube sync complete", `${r.channelTitle || r.handle}\n\nImported ${r.upserted} videos${r.skipped ? `\nSkipped ${r.skipped}` : ""}.`);
+        const lines = (r.channels || []).map((c: any) =>
+          `• ${c.channelTitle || c.handle}: ${c.upserted} new/updated${c.skipped ? `, ${c.skipped} skipped` : ""}`
+        ).join("\n");
+        Alert.alert("YouTube sync complete", lines || `Imported ${r.upserted} videos.`);
       } else {
-        Alert.alert("Sync failed", r?.errors || "Unknown error");
+        const errs = (r.channels || []).filter((c: any) => !c.ok).map((c: any) => `${c.handle}: ${c.errors}`).join("\n");
+        Alert.alert("Sync partial or failed", errs || r?.errors || "Unknown error");
       }
       await Promise.all([load(), loadYtStatus()]);
     } catch (e: any) {
@@ -95,16 +99,19 @@ export default function AdminShows() {
           <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm }}>
             <View style={styles.syncIcon}><Ionicons name="logo-youtube" size={22} color="#FF0000" /></View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.syncTitle}>@BBKIGALIFM YOUTUBE SYNC</Text>
+              <Text style={styles.syncTitle}>YOUTUBE SYNC</Text>
               <Text style={styles.syncSub}>
-                {ytStatus?.lastSyncAt
-                  ? `Last synced ${new Date(ytStatus.lastSyncAt).toLocaleString()}${ytStatus?.lastResult ? ` · ${ytStatus.lastResult.upserted} videos` : ""}`
-                  : "Pulls the latest 50 videos from the official channel"}
+                Sources: @bbkigalifm + @BBSPORTSBAR — auto-refresh every 6 hours
               </Text>
+              {ytStatus?.channels?.slice(0, 4).map((c: any) => (
+                <Text key={c.key} style={styles.syncChannel} numberOfLines={1}>
+                  • {c.channelTitle || c.handle}: {c.lastSyncAt ? new Date(c.lastSyncAt).toLocaleString() : "never"}{c.lastResult ? ` · ${c.lastResult.upserted} videos` : ""}
+                </Text>
+              ))}
             </View>
           </View>
           <Pressable onPress={syncYouTube} disabled={syncing} style={[styles.syncBtn, syncing && { opacity: 0.6 }]} testID="yt-sync-btn">
-            {syncing ? <ActivityIndicator color="#fff" /> : <><Ionicons name="cloud-download-outline" size={18} color="#fff" /><Text style={styles.syncBtnText}>SYNC NOW</Text></>}
+            {syncing ? <ActivityIndicator color="#fff" /> : <><Ionicons name="cloud-download-outline" size={18} color="#fff" /><Text style={styles.syncBtnText}>SYNC ALL NOW</Text></>}
           </Pressable>
         </View>
 
@@ -183,6 +190,7 @@ const styles = StyleSheet.create({
   syncIcon: { width: 40, height: 40, borderRadius: radius.sm, backgroundColor: "#111", alignItems: "center", justifyContent: "center" },
   syncTitle: { ...type.label, letterSpacing: 1.5, color: colors.onSurface, fontSize: 12 },
   syncSub: { ...type.caption, marginTop: 3 },
+  syncChannel: { ...type.caption, marginTop: 4, fontSize: 11, color: colors.onSurfaceSecondary },
   syncBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: "#FF0000", height: 44, borderRadius: radius.pill },
   syncBtnText: { color: "#fff", fontFamily: "BarlowCondensed-Bold", letterSpacing: 1.5, fontSize: 13 },
 });

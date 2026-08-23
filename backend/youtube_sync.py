@@ -24,10 +24,32 @@ logger = logging.getLogger(__name__)
 YT_API = "https://www.googleapis.com/youtube/v3"
 YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "").strip()
 YOUTUBE_HANDLE = os.environ.get("YOUTUBE_HANDLE", "@bbkigalifm").strip()
+# Additional channels (comma-separated handles). e.g. "@BBSPORTSBAR,@AnotherChannel"
+YOUTUBE_EXTRA_HANDLES = [h.strip() for h in os.environ.get("YOUTUBE_EXTRA_HANDLES", "").split(",") if h.strip()]
 YOUTUBE_REFRESH_HOURS = int(os.environ.get("YOUTUBE_REFRESH_HOURS", "6"))
 YOUTUBE_CATEGORY_SLUG = os.environ.get("YOUTUBE_CATEGORY_SLUG", "bbkigali-youtube").strip()
 YOUTUBE_CATEGORY_NAME = os.environ.get("YOUTUBE_CATEGORY_NAME", "BB Kigali on YouTube").strip()
 YOUTUBE_MAX_ITEMS = int(os.environ.get("YOUTUBE_MAX_ITEMS", "50"))
+
+
+def _slugify_handle(handle: str) -> str:
+    h = handle.lstrip("@").lower()
+    return "".join(ch if ch.isalnum() else "-" for ch in h).strip("-")
+
+
+def _handle_meta(handle: str) -> tuple[str, str]:
+    """Given a YouTube handle, return (category_slug, category_name).
+
+    The primary handle keeps the historical slug/name from env so we don't orphan already-synced shows.
+    Extra handles get an auto-derived slug like `bbsportsbar-youtube` and a title-cased name.
+    """
+    if handle.lstrip("@").lower() == YOUTUBE_HANDLE.lstrip("@").lower():
+        return YOUTUBE_CATEGORY_SLUG, YOUTUBE_CATEGORY_NAME
+    slug = f"{_slugify_handle(handle)}-youtube"
+    stripped = handle.lstrip("@")
+    # Nicely-cased fallback (B&B stays uppercase, others get title-case)
+    display = stripped.replace("BBSPORTSBAR", "B&B Sports Bar").replace("bbkigalifm", "BB Kigali FM")
+    return slug, f"{display} on YouTube"
 
 _ISO_DUR = re.compile(r"P(?:(\d+)D)?T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?")
 
@@ -95,15 +117,15 @@ async def _resolve_channel(client: httpx.AsyncClient, handle: str) -> tuple[str,
     return ch_id, uploads, title, avatar
 
 
-async def _ensure_category(db) -> str:
+async def _ensure_category(db, slug: str, name: str) -> str:
     """Return the id of the auto-managed YouTube category, creating it if missing."""
-    cat = await db.categories.find_one({"slug": YOUTUBE_CATEGORY_SLUG}, {"_id": 0})
+    cat = await db.categories.find_one({"slug": slug}, {"_id": 0})
     if cat:
         return cat["id"]
     doc = {
         "id": str(uuid.uuid4()),
-        "name": YOUTUBE_CATEGORY_NAME,
-        "slug": YOUTUBE_CATEGORY_SLUG,
+        "name": name,
+        "slug": slug,
         "active": True,
         "isDefault": False,
         "autoManaged": True,
@@ -121,7 +143,8 @@ async def sync_channel(db, handle: str | None = None) -> dict:
     Non-throwing: caller handles failure via `ok=False`.
     """
     handle = (handle or YOUTUBE_HANDLE).strip()
-    summary = {"ok": False, "handle": handle, "upserted": 0, "skipped": 0, "errors": None}
+    slug, cat_name = _handle_meta(handle)
+    summary = {"ok": False, "handle": handle, "categorySlug": slug, "upserted": 0, "skipped": 0, "errors": None}
     if not YOUTUBE_API_KEY:
         summary["errors"] = "YOUTUBE_API_KEY not configured"
         return summary
@@ -164,7 +187,7 @@ async def sync_channel(db, handle: str | None = None) -> dict:
                 for v in det.get("items", []):
                     enriched[v["id"]] = v
 
-        category_id = await _ensure_category(db)
+        category_id = await _ensure_category(db, slug, cat_name)
         now = datetime.now(timezone.utc)
         now_iso = now.isoformat()
 
@@ -192,7 +215,7 @@ async def sync_channel(db, handle: str | None = None) -> dict:
             payload_set = {
                 "title": title,
                 "description": desc[:2000],
-                "category": YOUTUBE_CATEGORY_SLUG,
+                "category": slug,
                 "categoryId": category_id,
                 "coverUrl": thumb,
                 "thumbnail": thumb,
@@ -200,6 +223,7 @@ async def sync_channel(db, handle: str | None = None) -> dict:
                 "youtubeId": vid,
                 "youtubeChannelId": channel_id,
                 "youtubeChannelTitle": channel_title,
+                "youtubeHandle": handle,
                 "durationSeconds": duration_sec,
                 "duration": format_duration(duration_sec),
                 "durationIso": duration_iso,
@@ -224,27 +248,42 @@ async def sync_channel(db, handle: str | None = None) -> dict:
             summary["upserted"] += 1
 
         summary["ok"] = True
-        # Track last successful sync
+        # Track last successful sync (per handle)
         await db.integration_state.update_one(
-            {"key": "youtube_sync"},
+            {"key": f"youtube_sync:{handle.lower()}"},
             {"$set": {
-                "key": "youtube_sync",
+                "key": f"youtube_sync:{handle.lower()}",
                 "handle": handle,
                 "channelId": channel_id,
                 "channelTitle": channel_title,
+                "categorySlug": slug,
                 "lastSyncAt": now_iso,
                 "lastResult": {"upserted": summary["upserted"], "skipped": summary["skipped"]},
             }},
             upsert=True,
         )
+        # Also update the legacy single-channel key for backwards compatibility (primary handle only)
+        if handle.lstrip("@").lower() == YOUTUBE_HANDLE.lstrip("@").lower():
+            await db.integration_state.update_one(
+                {"key": "youtube_sync"},
+                {"$set": {
+                    "key": "youtube_sync",
+                    "handle": handle,
+                    "channelId": channel_id,
+                    "channelTitle": channel_title,
+                    "lastSyncAt": now_iso,
+                    "lastResult": {"upserted": summary["upserted"], "skipped": summary["skipped"]},
+                }},
+                upsert=True,
+            )
         logger.info("[youtube] sync ok channel=%s upserted=%s skipped=%s", channel_title, summary["upserted"], summary["skipped"])
     except Exception as e:
         summary["errors"] = str(e)[:500]
-        logger.exception("[youtube] sync failed")
+        logger.exception("[youtube] sync failed for %s", handle)
         await db.integration_state.update_one(
-            {"key": "youtube_sync"},
+            {"key": f"youtube_sync:{handle.lower()}"},
             {"$set": {
-                "key": "youtube_sync",
+                "key": f"youtube_sync:{handle.lower()}",
                 "handle": handle,
                 "lastAttemptAt": datetime.now(timezone.utc).isoformat(),
                 "lastError": summary["errors"],
@@ -254,14 +293,46 @@ async def sync_channel(db, handle: str | None = None) -> dict:
     return summary
 
 
+def _all_handles() -> list[str]:
+    handles = [YOUTUBE_HANDLE] + YOUTUBE_EXTRA_HANDLES
+    seen = set()
+    ordered: list[str] = []
+    for h in handles:
+        key = h.lstrip("@").lower()
+        if key and key not in seen:
+            seen.add(key)
+            ordered.append(h)
+    return ordered
+
+
+async def sync_all_channels(db) -> dict:
+    """Sync every configured channel (primary + extras). Returns aggregated summary."""
+    results = []
+    total_upserted = 0
+    total_skipped = 0
+    for handle in _all_handles():
+        r = await sync_channel(db, handle=handle)
+        results.append(r)
+        total_upserted += r.get("upserted", 0) or 0
+        total_skipped += r.get("skipped", 0) or 0
+    ok = all(r.get("ok") for r in results) if results else False
+    return {
+        "ok": ok,
+        "handles": [r.get("handle") for r in results],
+        "channels": results,
+        "upserted": total_upserted,
+        "skipped": total_skipped,
+    }
+
+
 async def periodic_sync_loop(db):
-    """Run sync_channel every YOUTUBE_REFRESH_HOURS. Runs as a background task."""
+    """Run sync_all_channels every YOUTUBE_REFRESH_HOURS. Runs as a background task."""
     interval = max(1, YOUTUBE_REFRESH_HOURS) * 3600
     # Initial startup delay so app boot isn't blocked.
     await asyncio.sleep(30)
     while True:
         try:
-            await sync_channel(db)
+            await sync_all_channels(db)
         except Exception:
             logger.exception("[youtube] periodic sync crashed (will retry)")
         await asyncio.sleep(interval)

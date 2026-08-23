@@ -102,7 +102,88 @@
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
 
-user_problem_statement: "Iter 21 (June 2026): (1) Switch MoMo BACK to POST /public/payments/transfer with debit-only payload (BeSoft auto-settles net to merchant). Missing X-API-Key/X-API-Secret headers previously caused 401 — those are already sent from _besoft_headers(). Test payer 250794230137. (2) Serve the Privacy Policy from the backend at /api/privacy so the in-app link resolves immediately without requiring the customer's bbkigali.com domain. Also make the Privacy link tappable on the sign-in screen so users acknowledge before continuing."
+user_problem_statement: "Iter 23 (June 2026): (1) News admin CRUD w/ cover images. (2) Bulk user invite (paste CSV). (3) User edit — role, tier, name, phone/email. (4) Subscription expiry reminder scheduler (auto every 12h + manual). (5) Add B&B Sports Bar YouTube channel (@BBSPORTSBAR) as a second content source alongside @bbkigalifm."
+
+backend:
+  - task: "Multi-channel YouTube sync (@bbkigalifm + @BBSPORTSBAR)"
+    implemented: true
+    working: true
+    file: "/app/backend/youtube_sync.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "Iter 23: POST /admin/youtube/sync returns { ok:true, channels:[...] } with both channels, each upserted=50. New category 'bbsportsbar-youtube' auto-created. Shows queryable by category. GET /admin/youtube/status returns per-channel status."
+
+  - task: "Admin News CRUD"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "POST/PATCH/DELETE /api/admin/news all work; non-admin gets 403 on writes."
+
+  - task: "Bulk invite + user edit"
+    implemented: true
+    working: true
+    file: "/app/backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "POST /admin/users/bulk-invite idempotent (create-then-update), skips empty rows, admin-only. PATCH /admin/users/{id} supports displayName, phone, email, role, tier, active; self-demote blocked with 400."
+
+  - task: "Subscription expiry reminder scheduler"
+    implemented: true
+    working: true
+    file: "/app/backend/subscription_reminders.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "Background loop runs every 12h. POST /admin/subscriptions/send-reminders triggers a manual pass. Dedup verified — same user+expiry never gets a second SMS. Reminder targets are subscriptionExpiresAt = now+3 days and now+1 day."
+
+frontend:
+  - task: "Admin News page + Bulk-invite modal + multi-channel sync UI"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/admin/news.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "All new admin surfaces render and function on mobile web (390×844). /admin has 8 cards inc. News. /admin/news creates/edits/deletes posts w/ cover image picker. /admin/users has bulk-invite icon that opens a textarea modal with role toggle. /admin/shows shows both @bbkigalifm + @BBSPORTSBAR status lines and SYNC ALL NOW button."
+
+metadata:
+  created_by: "main_agent"
+  version: "1.4"
+  test_sequence: 23
+  run_ui: true
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: "Iter 23 shipped: Multi-channel YouTube (@bbkigalifm + @BBSPORTSBAR imported 50 videos each), full Admin News CRUD, Bulk invite CSV modal, User edit endpoint, Subscription expiry reminders (auto every 12h + manual admin trigger). Backend 30/30 pytest green, frontend Playwright green."
+
+# ---------- Previous iteration (iter 22) ----------
+prev_iter22:
 
 backend:
   - task: "MoMo /public/payments/transfer (debit-only)"
