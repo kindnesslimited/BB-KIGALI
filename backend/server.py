@@ -1018,7 +1018,7 @@ async def momo_initiate(body: MoMoInitiateIn, user = Depends(get_current_user)):
             "currency": plan["currency"],
             "payment_method": "mtn_momo_collection",
             "payer_identifier": payer,
-            "description": f"BB FM Kigali — {plan['label']}",
+            "description": f"BB FM Kigali - {plan['label']}",
             "country": "RW",
             "metadata": {"userId": user["id"], "plan": body.plan},
         },
@@ -1984,6 +1984,47 @@ async def read_upload(full_path: str):
     except Exception:
         raise HTTPException(404, "Image not found")
     return Response(content=data, media_type=content_type, headers={"Cache-Control": "public, max-age=86400"})
+
+
+# ---------- Admin video file upload (for VOD without YouTube) ----------
+@api.post("/admin/uploads/video")
+async def admin_upload_video(file: UploadFile = File(...), current = Depends(require_admin)):
+    """Upload a video file (mp4/webm/mov) to Emergent Object Storage. Returns { url, storagePath, contentType, size }."""
+    contents = await file.read()
+    ext = ""
+    if file.filename and "." in file.filename:
+        ext = file.filename.rsplit(".", 1)[-1].lower()[:6]
+    ct = (file.content_type or "").lower()
+    if ext not in {"mp4", "webm", "mov", "m4v"} and not ct.startswith("video/"):
+        raise HTTPException(400, "Only mp4/webm/mov video files are accepted")
+    if len(contents) > 500 * 1024 * 1024:
+        raise HTTPException(400, "Video is too large (max 500 MB)")
+    if not ct or not ct.startswith("video/"):
+        ct = "video/mp4"
+    obj_id = uuid.uuid4().hex
+    ext_final = ext or "mp4"
+    path = f"bb-fm-kigali/videos/{current['id']}/{obj_id}.{ext_final}"
+    try:
+        from object_storage import _put  # type: ignore
+        await run_in_threadpool(_put, path, contents, ct)
+    except Exception as e:
+        logger.exception("[video-upload] failed")
+        raise HTTPException(502, f"Upload failed: {e}")
+    await db.uploads.insert_one({
+        "id": str(uuid.uuid4()),
+        "userId": current["id"],
+        "storagePath": path,
+        "contentType": ct,
+        "size": len(contents),
+        "filename": file.filename,
+        "kind": "video",
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+    })
+    public_url = f"{PUBLIC_BASE_URL}/api/uploads/{path}"
+    await audit_log.record(db, **audit_log.actor_from_user(current),
+                           action="upload.video", target_type="upload", target_id=obj_id,
+                           summary=file.filename, metadata={"size": len(contents), "contentType": ct})
+    return {"url": public_url, "storagePath": path, "contentType": ct, "size": len(contents)}
 
 
 # ---------- Admin Users management ----------
@@ -3093,6 +3134,14 @@ async def api_privacy_policy():
     path = LANDING_DIR / "privacy.html"
     if not path.exists():
         raise HTTPException(404, "Privacy policy not published yet")
+    return HTMLResponse(path.read_text(encoding="utf-8"))
+
+
+@app.get("/api/terms", response_class=HTMLResponse)
+async def api_terms():
+    path = LANDING_DIR / "terms.html"
+    if not path.exists():
+        raise HTTPException(404, "Terms not published yet")
     return HTMLResponse(path.read_text(encoding="utf-8"))
 app.add_middleware(
     CORSMiddleware,

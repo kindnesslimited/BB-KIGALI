@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, FlatList, Dimensions } from "react-native";
+import { View, Text, StyleSheet, ScrollView, Pressable, FlatList, useWindowDimensions } from "react-native";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -12,14 +12,17 @@ import { api } from "@/src/api";
 type Show = { id: string; title: string; category: string; description: string; thumbnail: string; duration: string; premium: boolean };
 type Category = { id: string; name: string; slug: string; order: number; isActive: boolean };
 
-const { width } = Dimensions.get("window");
 const COL_GAP = spacing.md;
 const H_PAD = spacing.lg;
-const COL_W = (width - H_PAD * 2 - COL_GAP) / 2;
 
 export default function Shows() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const { width: winW } = useWindowDimensions();
+  // Responsive: 2 cols on phone, 3 on tablet, 4 on ~1024, 5 on desktop >=1400
+  const numColumns = winW >= 1400 ? 5 : winW >= 1024 ? 4 : winW >= 720 ? 3 : 2;
+  const contentMaxWidth = Math.min(winW, 1400);
+  const COL_W = (contentMaxWidth - H_PAD * 2 - COL_GAP * (numColumns - 1)) / numColumns;
   const [items, setItems] = useState<Show[]>([]);
   const [cats, setCats] = useState<Category[]>([]);
   const [cat, setCat] = useState<string>("all");
@@ -79,10 +82,11 @@ export default function Shows() {
 
       <FlatList
         data={filtered}
+        key={`grid-${numColumns}`}
         keyExtractor={(i) => i.id}
-        numColumns={2}
-        columnWrapperStyle={{ gap: COL_GAP, paddingHorizontal: H_PAD }}
-        contentContainerStyle={{ paddingTop: spacing.md, paddingBottom: 200, gap: spacing.md }}
+        numColumns={numColumns}
+        columnWrapperStyle={{ gap: COL_GAP, paddingHorizontal: H_PAD, ...(numColumns > 2 ? { maxWidth: contentMaxWidth, alignSelf: "center", width: "100%" } as any : {}) }}
+        contentContainerStyle={{ paddingTop: spacing.md, paddingBottom: 200, gap: spacing.md, ...(winW > 720 ? { maxWidth: contentMaxWidth, alignSelf: "center", width: "100%" } as any : {}) }}
         ListHeaderComponent={
           showFeatured ? (
             <View style={styles.featuredWrap}>

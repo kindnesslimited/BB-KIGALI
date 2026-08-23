@@ -7,6 +7,7 @@ import { Image } from "expo-image";
 import { colors, spacing, type, radius } from "@/src/theme";
 import { api } from "@/src/api";
 import { CoverImagePicker } from "@/src/components/CoverImagePicker";
+import { VideoSourcePicker } from "@/src/components/VideoSourcePicker";
 
 type Show = { id: string; title: string; category: string; description?: string; thumbnail?: string; videoUrl: string; duration?: string; premium?: boolean };
 type Category = { id: string; name: string; slug: string; order: number; isActive: boolean };
@@ -119,7 +120,15 @@ export default function AdminShows() {
           <View style={styles.card} testID="new-show-form">
             <Text style={styles.sectionLabel}>NEW SHOW</Text>
             <TextInput value={form.title || ""} onChangeText={(v) => setForm({ ...form, title: v })} placeholder="Title" placeholderTextColor={colors.onSurfaceSecondary} style={styles.input} testID="new-show-title" />
-            <TextInput value={form.videoUrl || ""} onChangeText={(v) => setForm({ ...form, videoUrl: v })} placeholder="YouTube URL (watch or embed)" placeholderTextColor={colors.onSurfaceSecondary} style={[styles.input, { marginTop: spacing.sm }]} autoCapitalize="none" testID="new-show-url" />
+            <TextInput value={form.videoUrl || ""} onChangeText={(v) => setForm({ ...form, videoUrl: v })} placeholder="Manual video URL (advanced)" placeholderTextColor={colors.onSurfaceSecondary} style={[styles.input, { marginTop: spacing.sm }]} autoCapitalize="none" testID="new-show-url" />
+            <View style={{ marginTop: spacing.md }}>
+              <VideoSourcePicker
+                value={form.videoUrl}
+                onChange={(url) => setForm({ ...form, videoUrl: url })}
+                label="Video source (YouTube link OR upload file)"
+                testID="new-show-video-picker"
+              />
+            </View>
             <TextInput value={form.description || ""} onChangeText={(v) => setForm({ ...form, description: v })} placeholder="Description" placeholderTextColor={colors.onSurfaceSecondary} style={[styles.input, { marginTop: spacing.sm, height: 80 }]} multiline testID="new-show-desc" />
             <View style={{ marginTop: spacing.md }}>
               <CoverImagePicker

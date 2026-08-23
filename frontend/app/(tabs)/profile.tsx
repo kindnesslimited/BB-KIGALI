@@ -234,6 +234,39 @@ export default function Profile() {
             <Ionicons name="open-outline" size={18} color={colors.onSurfaceSecondary} />
           </Pressable>
           <View style={styles.sep} />
+          <Pressable style={styles.settingRow} onPress={() => Linking.openURL(`${BACKEND_URL}/api/terms`).catch(() => {})} testID="setting-terms">
+            <Ionicons name="document-text-outline" size={20} color={colors.onSurface} />
+            <Text style={styles.settingText}>Terms & Conditions</Text>
+            <Ionicons name="open-outline" size={18} color={colors.onSurfaceSecondary} />
+          </Pressable>
+          <View style={styles.sep} />
+          <Pressable style={styles.settingRow} onPress={() => Linking.openURL("mailto:info@besoft.info?subject=BB%20FM%20Kigali%20Support").catch(() => {})} testID="setting-support-email">
+            <Ionicons name="mail-outline" size={20} color={colors.onSurface} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.settingText}>Email Support</Text>
+              <Text style={type.caption}>info@besoft.info</Text>
+            </View>
+            <Ionicons name="open-outline" size={18} color={colors.onSurfaceSecondary} />
+          </Pressable>
+          <View style={styles.sep} />
+          <Pressable style={styles.settingRow} onPress={() => Linking.openURL("https://wa.me/250791446979").catch(() => {})} testID="setting-support-wa">
+            <Ionicons name="logo-whatsapp" size={20} color="#25D366" />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.settingText}>WhatsApp Support</Text>
+              <Text style={type.caption}>+250 791 446 979</Text>
+            </View>
+            <Ionicons name="open-outline" size={18} color={colors.onSurfaceSecondary} />
+          </Pressable>
+          <View style={styles.sep} />
+          <Pressable style={styles.settingRow} onPress={() => Linking.openURL("tel:+250791446979").catch(() => {})} testID="setting-support-call">
+            <Ionicons name="call-outline" size={20} color={colors.brandPrimary} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.settingText}>Call Support</Text>
+              <Text style={type.caption}>+250 791 446 979</Text>
+            </View>
+            <Ionicons name="open-outline" size={18} color={colors.onSurfaceSecondary} />
+          </Pressable>
+          <View style={styles.sep} />
           <Pressable style={styles.settingRow} onPress={doLogout} testID="logout-btn">
             <Ionicons name="log-out-outline" size={20} color={colors.error} />
             <Text style={[styles.settingText, { color: colors.error }]}>Sign out</Text>
