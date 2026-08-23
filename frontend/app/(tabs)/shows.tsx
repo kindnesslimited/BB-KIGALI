@@ -46,6 +46,8 @@ export default function Shows() {
   );
 
   const filtered = useMemo(() => cat === "all" ? items : items.filter(i => i.category === cat), [items, cat]);
+  const sportsBar = useMemo(() => items.filter(i => i.category === "bbsportsbar-youtube").slice(0, 10), [items]);
+  const showFeatured = cat === "all" && sportsBar.length > 0;
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.surface }} testID="shows-screen">
@@ -81,6 +83,37 @@ export default function Shows() {
         numColumns={2}
         columnWrapperStyle={{ gap: COL_GAP, paddingHorizontal: H_PAD }}
         contentContainerStyle={{ paddingTop: spacing.md, paddingBottom: 200, gap: spacing.md }}
+        ListHeaderComponent={
+          showFeatured ? (
+            <View style={styles.featuredWrap}>
+              <View style={styles.featuredHeader}>
+                <View style={styles.liveDot} />
+                <Text style={styles.featuredTitle}>LIVE @ B&B SPORTS BAR</Text>
+                <Pressable onPress={(e: any) => { e?.stopPropagation?.(); setCat("bbsportsbar-youtube"); }} hitSlop={8} testID="featured-see-all">
+                  <Text style={styles.featuredMore}>SEE ALL →</Text>
+                </Pressable>
+              </View>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: spacing.md, paddingHorizontal: H_PAD }}>
+                {sportsBar.map((s) => (
+                  <Pressable
+                    key={s.id}
+                    style={styles.featuredCard}
+                    onPress={() => router.push({ pathname: "/video/[id]", params: { id: s.id } })}
+                    testID={`featured-sports-${s.id}`}
+                  >
+                    <Image source={{ uri: s.thumbnail }} style={StyleSheet.absoluteFill} contentFit="cover" />
+                    <LinearGradient colors={["transparent", "rgba(15,15,19,0.95)"]} locations={[0.35, 1]} style={StyleSheet.absoluteFill} />
+                    <View style={styles.featuredPill}><Text style={styles.featuredPillText}>SPORTS BAR</Text></View>
+                    <View style={styles.featuredBottom}>
+                      <Text style={styles.featuredCardTitle} numberOfLines={2}>{s.title}</Text>
+                      <Text style={styles.featuredCardMeta}>{s.duration}</Text>
+                    </View>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            </View>
+          ) : null
+        }
         ListEmptyComponent={
           <View style={styles.empty}>
             <Ionicons name="tv-outline" size={40} color={colors.onSurfaceSecondary} />
@@ -128,6 +161,17 @@ const styles = StyleSheet.create({
   chipText: { color: colors.onSurfaceSecondary, fontSize: 13, fontFamily: "System" },
   chipTextActive: { color: colors.onBrandPrimary, fontFamily: "BarlowCondensed-Bold", letterSpacing: 1 },
   card: { aspectRatio: 3 / 4, borderRadius: radius.md, overflow: "hidden", backgroundColor: colors.surfaceSecondary },
+  featuredWrap: { marginBottom: spacing.md },
+  featuredHeader: { flexDirection: "row", alignItems: "center", gap: spacing.sm, paddingHorizontal: H_PAD, marginBottom: spacing.sm },
+  liveDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#ef4444" },
+  featuredTitle: { flex: 1, fontFamily: "BarlowCondensed-Bold", letterSpacing: 1.5, fontSize: 14, color: colors.onSurface },
+  featuredMore: { color: colors.brandPrimary, fontFamily: "BarlowCondensed-Bold", letterSpacing: 1.2, fontSize: 11 },
+  featuredCard: { width: 260, height: 150, borderRadius: radius.md, overflow: "hidden", backgroundColor: colors.surfaceSecondary },
+  featuredPill: { position: "absolute", top: 8, left: 8, backgroundColor: "#ef4444", paddingHorizontal: 8, paddingVertical: 3, borderRadius: radius.sm },
+  featuredPillText: { color: "#fff", fontFamily: "BarlowCondensed-Bold", letterSpacing: 1.2, fontSize: 10 },
+  featuredBottom: { position: "absolute", left: 10, right: 10, bottom: 10 },
+  featuredCardTitle: { color: "#fff", fontFamily: "BarlowCondensed-Bold", fontSize: 14, lineHeight: 18 },
+  featuredCardMeta: { color: colors.onSurfaceSecondary, fontSize: 11, marginTop: 2 },
   premBadge: { position: "absolute", top: spacing.sm, left: spacing.sm, flexDirection: "row", alignItems: "center", gap: 3, backgroundColor: colors.brandPrimary, paddingHorizontal: 6, paddingVertical: 3, borderRadius: radius.sm },
   premBadgeText: { color: colors.onBrandPrimary, fontFamily: "BarlowCondensed-Bold", fontSize: 9, letterSpacing: 1 },
   dur: { position: "absolute", top: spacing.sm, right: spacing.sm, backgroundColor: "rgba(0,0,0,0.6)", paddingHorizontal: 6, paddingVertical: 3, borderRadius: radius.sm },

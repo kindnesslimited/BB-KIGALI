@@ -29,9 +29,16 @@ async def _send_one(send_fn, db, user: dict, days_left: int) -> None:
     days_word = "1 day" if days_left == 1 else f"{days_left} days"
     exp = user.get("subscriptionExpiresAt", "").split("T")[0]
     tier = (user.get("tier") or "").capitalize()
+    # Renew-Now deep link. bbfmkigali:// is the app scheme; the /renew route pre-selects the current
+    # plan in the checkout screen. Also a web fallback so SMS on non-installers still opens the browser.
+    from os import environ
+    plan_key = user.get("currentPlan") or "basic_monthly"
+    app_scheme = environ.get("APP_LINK_SCHEME", "bbfmkigali").strip()
+    web_base = environ.get("PUBLIC_APP_URL", "https://radio-vod-platform.emergent.host").strip().rstrip("/")
+    renew_link = f"{web_base}/renew?plan={plan_key}"
     msg = (
         f"BB FM Kigali: Your {tier or 'BB FM'} subscription expires in {days_word} "
-        f"(on {exp}). Renew in the app to keep enjoying live radio + shows."
+        f"(on {exp}). Tap to renew: {renew_link}"
     )
 
     try:

@@ -1,0 +1,41 @@
+{
+  "summary": "Iter 25 full-stack test — BACKEND 19/19 PASS, FRONTEND all critical flows PASS. Verified new admin console endpoints (/admin/analytics/dashboard, /admin/analytics/revenue day+week+month, /admin/analytics/subscriptions active/expired/all with proper role/tier filtering, /admin/audit-log with action filter + 403 for non-admins), PDF Receipt endpoint (/billing/receipt returns real application/pdf bytes starting with '%PDF-', Content-Disposition attachment; filename=\"bb-fm-receipt-YYYY-MM.pdf\", 401 without auth, works with ?year=2026&month=6), audit rows recorded on news.create/news.delete and on user.update/user.delete of a bulk-invited throwaway user (targetId, actorPhone, actorName all populated), regression checks (Stripe /billing/subscribe by non-admin → 403; /billing/stripe/create-checkout returns cs_live_ session; session-status paid:false on new session; MoMo initiate 2xx for 250794230137; MoMo merchant-guard 400 for 250798875274; /admin/youtube/sync returns ok:true with both @bbkigalifm and @BBSPORTSBAR). FRONTEND: Shows tab shows the 'LIVE @ B&B SPORTS BAR' featured row (red LIVE dot + 10 horizontally-scrolling SPORTS BAR cards + 'SEE ALL →' link that filters the grid to the bbsportsbar-youtube chip). Admin login (+250794230137 / dev testCode 123456) lands on /admin with 4 KPIs (Active Subs, Expired Subs, Total Customers, New This Week), Revenue box (17,000 RWF · 2 EUR last 30d + Today/Last 7d/All Time), 3 tx cards (Paid 11 / Pending 75 / Failed 96), payment-method breakdown, and 10 management cards including 'Activity / Audit Log' (admin-card-audit) and 'Subscriptions Report' (admin-card-subs). /admin/audit renders recent entries including the news+user audit rows created by the backend tests (with actor phone +250794230137) and the search field is wired. Profile tab shows the orange 'THIS MONTH · PDF' button next to Payment History header (testID download-receipt-btn). No reportlab import errors in backend logs.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Shows tab", "issues": ["Shows 'SEE ALL →' Pressable sits on top of the horizontal ScrollView; because of RN-web z-order the tap can occasionally bubble to the underlying featured card image. Consider adding onStartShouldSetResponder or stopPropagation on the SEE ALL Pressable so the tap never activates a card behind it. Cosmetic only — filter still toggles."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter25_admin_restore_pdf_audit.py",
+    "/app/test_reports/pytest/pytest_iter25.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "admin_analytics.compute_dashboard() — line 77: `total_programs = await db.programs.count_documents({}) if await db.list_collection_names() else 0`. `list_collection_names()` returns a non-empty list whenever ANY collection exists in the DB, not specifically when 'programs' exists. Effectively no-op safety net. Consider `if 'programs' in await db.list_collection_names()` — minor, doesn't affect current pass.",
+    "server.py:1919 /billing/receipt — good: PDF rendering is off-loaded to run_in_threadpool (reportlab is CPU/synchronous). Content-Type + Content-Disposition set correctly. Filename uses zero-padded YYYY-MM matching the spec.",
+    "server.py:1907 /admin/audit-log — response returns raw list; consider wrapping in { items: [], total } for pagination consistency with other admin endpoints. Not blocking.",
+    "audit_log.py: record() correctly swallows exceptions so an audit-write failure never blocks business logic. Good.",
+    "admin_analytics.py:117 — `week` fmt uses '%G-W%V' which requires MongoDB $dateToString to support ISO-week; ensure Mongo 4.4+ deployed (works on our test cluster).",
+    "PDF Receipt: for a user with zero payments in the queried month the endpoint still returns a valid PDF with the empty-state message. Good defensive behaviour.",
+    "Admin dashboard card testID for subscriptions is `admin-card-subs` (matches route `/admin/subscriptions`) — the E1 spec loosely called it Subscriptions Report; UI copy 'Subscriptions Report' is displayed as the card title so this is fine, just noting the testID string."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter25_admin_restore_pdf_audit.py (NEW)"
+  ],
+  "success_rate": {
+    "backend": "100% (19/19)",
+    "frontend": "100% of critical flows (shows featured row, admin KPI dashboard, audit log, subscriptions card, profile PDF button)"
+  },
+  "seed_data_creation": "Tests create+delete throwaway news items (title prefix AUDIT_TEST_*) and one bulk-invited user (phone +2507xxxxxxxx generated from timestamp) which is then patched then deleted. All are self-cleaned within the same test. No production data modified.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run pytest with `-n 0` on the new file — the two class fixtures share OTP tokens across tests. Admin phone +250794230137 always returns testCode 123456. Regular test phone +250788123456 does NOT return testCode (WhatsApp path), so the fixture reads the code straight from db.otp_challenges via pymongo — the phone key in the collection is stored WITH the leading '+' (e.g. '+250788123456'). BulkInviteIn schema requires { users:[{phone,email?,displayName?,role?}] }, NOT { phones:[...] }. StripeCheckoutIn requires `purchase_type: 'subscription' | 'vod'`. SubscribeIn requires both `plan` AND `method`. Auth JWT is returned under key `accessToken`. On the frontend, the admin dashboard subs testID is `admin-card-subs` (not `admin-card-subscriptions`).",
+  "rca_of_issue": "N/A — no bugs. Only cosmetic z-order note on the Shows featured 'SEE ALL' Pressable."
+}

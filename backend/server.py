@@ -31,6 +31,8 @@ from subscription_reminders import (
     reminder_loop as _sub_reminder_loop,
     run_reminder_pass as _sub_reminder_pass,
 )  # noqa: E402
+from admin_analytics import compute_dashboard as _admin_dashboard, revenue_series as _admin_revenue_series, render_receipt_pdf as _render_receipt_pdf  # noqa: E402
+import audit_log  # noqa: E402
 from fastapi import UploadFile, File
 from fastapi.responses import Response
 from fastapi.concurrency import run_in_threadpool
@@ -820,25 +822,35 @@ async def admin_create_news(body: NewsIn, current = Depends(require_admin)):
         "createdBy": current["id"],
     }
     await db.news.insert_one(doc.copy())
+    await audit_log.record(db, **audit_log.actor_from_user(current),
+                           action="news.create", target_type="news", target_id=doc["id"],
+                           summary=body.title, metadata={"category": doc["category"]})
     return doc
 
 
 @api.patch("/admin/news/{news_id}")
-async def admin_update_news(news_id: str, body: NewsIn, _ = Depends(require_admin)):
+async def admin_update_news(news_id: str, body: NewsIn, current = Depends(require_admin)):
     updates = {k: v for k, v in body.dict().items() if v is not None}
     updates["updatedAt"] = datetime.now(timezone.utc).isoformat()
     r = await db.news.update_one({"id": news_id}, {"$set": updates})
     if r.matched_count == 0:
         raise HTTPException(404, "News not found")
     doc = await db.news.find_one({"id": news_id}, {"_id": 0})
+    await audit_log.record(db, **audit_log.actor_from_user(current),
+                           action="news.update", target_type="news", target_id=news_id,
+                           summary=doc.get("title") if doc else None, metadata={"fields": list(updates.keys())})
     return doc
 
 
 @api.delete("/admin/news/{news_id}")
-async def admin_delete_news(news_id: str, _ = Depends(require_admin)):
+async def admin_delete_news(news_id: str, current = Depends(require_admin)):
+    doc = await db.news.find_one({"id": news_id}, {"_id": 0, "title": 1})
     r = await db.news.delete_one({"id": news_id})
     if r.deleted_count == 0:
         raise HTTPException(404, "News not found")
+    await audit_log.record(db, **audit_log.actor_from_user(current),
+                           action="news.delete", target_type="news", target_id=news_id,
+                           summary=(doc or {}).get("title"))
     return {"ok": True}
 
 
@@ -1791,7 +1803,7 @@ class ShowIn(BaseModel):
 
 
 @api.post("/admin/shows")
-async def admin_create_show(body: ShowIn, _ = Depends(require_admin)):
+async def admin_create_show(body: ShowIn, current = Depends(require_admin)):
     url = body.videoUrl
     if url and "youtube.com/watch" in url:
         vid = _extract_yt_id(url)
@@ -1809,12 +1821,19 @@ async def admin_create_show(body: ShowIn, _ = Depends(require_admin)):
         "createdAt": datetime.now(timezone.utc).isoformat(),
     }
     await db.shows.insert_one(doc.copy())
+    await audit_log.record(db, **audit_log.actor_from_user(current),
+                           action="show.create", target_type="show", target_id=doc["id"],
+                           summary=doc["title"], metadata={"category": doc["category"]})
     return doc
 
 
 @api.delete("/admin/shows/{show_id}")
-async def admin_delete_show(show_id: str, _ = Depends(require_admin)):
+async def admin_delete_show(show_id: str, current = Depends(require_admin)):
+    doc = await db.shows.find_one({"id": show_id}, {"_id": 0, "title": 1})
     await db.shows.delete_one({"id": show_id})
+    await audit_log.record(db, **audit_log.actor_from_user(current),
+                           action="show.delete", target_type="show", target_id=show_id,
+                           summary=(doc or {}).get("title"))
     return {"ok": True}
 
 
@@ -1853,6 +1872,73 @@ async def admin_list_reminders(limit: int = 100, _ = Depends(require_admin)):
     """List recent reminder attempts for audit."""
     docs = await db.subscription_reminders.find({}, {"_id": 0}).sort("createdAt", -1).to_list(min(limit, 500))
     return docs
+
+
+# ==================== ADMIN DASHBOARD / REPORTS ====================
+@api.get("/admin/analytics/dashboard")
+async def admin_dashboard(_ = Depends(require_admin)):
+    """One-shot KPIs for the admin home: users, subs, revenue, transactions, content."""
+    return await _admin_dashboard(db)
+
+
+@api.get("/admin/analytics/revenue")
+async def admin_revenue_series(granularity: Literal["day", "week", "month"] = "day", days: int = 30, _ = Depends(require_admin)):
+    """Revenue time series grouped by day / week / month. Returns rows { period, currency, count, amount }."""
+    return await _admin_revenue_series(db, granularity=granularity, days=days)
+
+
+@api.get("/admin/analytics/subscriptions")
+async def admin_subscriptions_report(status: Literal["active", "expired", "all"] = "all", _ = Depends(require_admin)):
+    """Customer + subscription list. Filter by active/expired/all."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    q: dict = {"tier": {"$in": ["basic", "premium"]}}
+    if status == "active":
+        q["subscriptionExpiresAt"] = {"$gt": now_iso}
+    elif status == "expired":
+        q["subscriptionExpiresAt"] = {"$lte": now_iso}
+    users = await db.users.find(q, {"_id": 0, "id": 1, "displayName": 1, "phone": 1, "email": 1,
+                                    "tier": 1, "currentPlan": 1, "subscriptionExpiresAt": 1,
+                                    "provider": 1, "createdAt": 1}).sort("subscriptionExpiresAt", -1).to_list(500)
+    for u in users:
+        u["status"] = "active" if (u.get("subscriptionExpiresAt") or "") > now_iso else "expired"
+    return users
+
+
+@api.get("/admin/audit-log")
+async def admin_audit_log(limit: int = 200, action: Optional[str] = None, actor_id: Optional[str] = None, _ = Depends(require_admin)):
+    q: dict = {}
+    if action:
+        q["action"] = action
+    if actor_id:
+        q["actorId"] = actor_id
+    docs = await db.audit_log.find(q, {"_id": 0}).sort("createdAt", -1).to_list(min(limit, 1000))
+    return docs
+
+
+# ==================== PAYMENT RECEIPT PDF ====================
+@api.get("/billing/receipt")
+async def payment_receipt_pdf(year: Optional[int] = None, month: Optional[int] = None, user = Depends(get_current_user)):
+    """Generate a monthly payment receipt PDF for the current user.
+
+    Query params: year, month (default = current month). Returns application/pdf.
+    """
+    now = datetime.now(timezone.utc)
+    year = year or now.year
+    month = month or now.month
+    if not (1 <= month <= 12):
+        raise HTTPException(400, "Invalid month")
+    # Period bounds as ISO strings so we match the way payments.createdAt is stored (string).
+    start = datetime(year, month, 1, tzinfo=timezone.utc)
+    end = datetime(year + (month // 12), (month % 12) + 1, 1, tzinfo=timezone.utc)
+    payments = await db.payments.find(
+        {"userId": user["id"], "createdAt": {"$gte": start.isoformat(), "$lt": end.isoformat()}},
+        {"_id": 0},
+    ).sort("createdAt", 1).to_list(500)
+    month_label = start.strftime("%B %Y")
+    pdf_bytes = await run_in_threadpool(_render_receipt_pdf, user, payments, month_label)
+    filename = f"bb-fm-receipt-{year:04d}-{month:02d}.pdf"
+    return Response(content=pdf_bytes, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 # ---------- Admin cover image upload (Emergent Object Storage) ----------
@@ -2091,6 +2177,10 @@ async def admin_update_user(user_id: str, body: UserUpdateIn, current = Depends(
         updates["updatedAt"] = datetime.now(timezone.utc).isoformat()
         await db.users.update_one({"id": user_id}, {"$set": updates})
     u = await db.users.find_one({"id": user_id}, {"_id": 0})
+    await audit_log.record(db, **audit_log.actor_from_user(current),
+                           action="user.update", target_type="user", target_id=user_id,
+                           summary=(u or {}).get("displayName") or (u or {}).get("phone"),
+                           metadata={"fields": list(updates.keys())})
     return _clean_user(u)
 
 
@@ -2106,6 +2196,10 @@ async def admin_delete_user(user_id: str, current = Depends(require_admin)):
         if remaining == 0:
             raise HTTPException(400, "At least one admin must remain.")
     await db.users.delete_one({"id": user_id})
+    await audit_log.record(db, **audit_log.actor_from_user(current),
+                           action="user.delete", target_type="user", target_id=user_id,
+                           summary=target.get("displayName") or target.get("phone") or target.get("email"),
+                           metadata={"role": target.get("role")})
     return {"ok": True}
 
 

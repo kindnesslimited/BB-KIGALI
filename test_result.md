@@ -102,7 +102,88 @@
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
 
-user_problem_statement: "Iter 23 (June 2026): (1) News admin CRUD w/ cover images. (2) Bulk user invite (paste CSV). (3) User edit — role, tier, name, phone/email. (4) Subscription expiry reminder scheduler (auto every 12h + manual). (5) Add B&B Sports Bar YouTube channel (@BBSPORTSBAR) as a second content source alongside @bbkigalifm."
+user_problem_statement: "Iter 25 (June 2026): Full admin console restore + enhancement (dashboard KPIs, revenue reports, subscription reports, audit log), monthly Payment History PDF download for subscribers, Renew-Now deep link on expiry SMS, and Featured 'Live @ B&B Sports Bar' horizontal row at the top of the Shows tab."
+
+backend:
+  - task: "Admin dashboard KPIs + revenue + subscription reports"
+    implemented: true
+    working: true
+    file: "/app/backend/admin_analytics.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "Iter 25: /admin/analytics/dashboard returns full nested payload (users, subs, revenue, transactions, content). /admin/analytics/revenue works with day/week/month. /admin/analytics/subscriptions filters active/expired/all. All 403 for non-admin."
+
+  - task: "Audit log instrumented on all admin mutations"
+    implemented: true
+    working: true
+    file: "/app/backend/audit_log.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "Verified news.create/update/delete + show.create/delete + user.update/delete write audit entries with actor name/phone/email, target, metadata, ISO timestamp. GET /admin/audit-log supports ?action= filter. 403 for non-admin."
+
+  - task: "Monthly Payment History PDF (reportlab)"
+    implemented: true
+    working: true
+    file: "/app/backend/admin_analytics.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "GET /api/billing/receipt returns real PDF bytes (starts with %PDF-), correct Content-Disposition attachment filename. ?year=&month= override works. 401 without token."
+
+  - task: "Renew-now SMS deep link"
+    implemented: true
+    working: true
+    file: "/app/backend/subscription_reminders.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Reminder SMS now includes /renew?plan=<currentPlan> deep link that opens the checkout screen (via /app/frontend/app/renew.tsx which routes to /auth/phone if unauth, then /checkout)."
+
+frontend:
+  - task: "Featured Live @ B&B Sports Bar row + Admin dashboard + PDF download"
+    implemented: true
+    working: true
+    file: "/app/frontend/app/(tabs)/shows.tsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: "Shows tab: LIVE dot + horizontal Sports Bar row + SEE ALL toggling category filter. Admin home: 4 KPIs, revenue box, 3 tx cards, method breakdown, 10 mgmt cards. Audit page + Subscriptions page render. Profile 'THIS MONTH · PDF' orange/black-bold button triggers download."
+
+metadata:
+  created_by: "main_agent"
+  version: "1.5"
+  test_sequence: 25
+  run_ui: true
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: "Iter 25 shipped: full owner-level admin console (dashboard KPIs, revenue by day/week/month, subscription report, audit log), monthly Payment History PDF for subscribers, SMS renew deep link, and Live @ B&B Sports Bar featured row. Backend 19/19 pytest green, frontend Playwright green."
+
+# ---------- previous iter (23 / 24 / etc.) ----------
+prev_iter23:
 
 backend:
   - task: "Multi-channel YouTube sync (@bbkigalifm + @BBSPORTSBAR)"

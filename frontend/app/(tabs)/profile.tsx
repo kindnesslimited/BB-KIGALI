@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, Alert, Linking } from "react-native";
+import { View, Text, StyleSheet, ScrollView, Pressable, Alert, Linking, ActivityIndicator, Platform } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { colors, spacing, type, radius } from "@/src/theme";
 import { useAuth } from "@/src/context/auth";
-import { api } from "@/src/api";
+import { api, getToken } from "@/src/api";
 
 type Payment = { id: string; planLabel: string; amount: number; currency: string; method: string; status: string; createdAt: string };
 
@@ -23,6 +23,7 @@ export default function Profile() {
   const router = useRouter();
   const { user, logout, refresh, deleteAccount } = useAuth();
   const [payments, setPayments] = useState<Payment[]>([]);
+  const [pdfLoading, setPdfLoading] = useState(false);
 
   useEffect(() => {
     refresh();
@@ -71,6 +72,42 @@ export default function Profile() {
 
   const openPrivacy = async () => {
     try { await Linking.openURL(PRIVACY_URL); } catch { Alert.alert("Privacy Policy", "Please visit https://bbkigali.com/privacy"); }
+  };
+  const downloadReceipt = async () => {
+    setPdfLoading(true);
+    try {
+      const token = await getToken();
+      const url = `${BACKEND_URL}/api/billing/receipt`;
+      if (Platform.OS === "web") {
+        // Fetch as blob then trigger a download in the current tab
+        const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const blob = await r.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = objectUrl;
+        a.download = `bb-fm-receipt-${new Date().toISOString().slice(0,7)}.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(objectUrl); }, 500);
+      } else {
+        // On native we hand off to the OS via Linking with a bearer token via URL isn't safe;
+        // easiest is to open the URL. The backend requires auth via header so we need a signed helper.
+        // Simplest: fetch and share via expo-sharing.
+        const FileSystem = require("expo-file-system");
+        const Sharing = require("expo-sharing");
+        const target = `${FileSystem.cacheDirectory}bb-fm-receipt-${Date.now()}.pdf`;
+        const dl = await FileSystem.downloadAsync(url, target, { headers: { Authorization: `Bearer ${token}` } });
+        if (dl.status !== 200) throw new Error(`HTTP ${dl.status}`);
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(dl.uri, { UTI: "com.adobe.pdf", mimeType: "application/pdf" });
+        } else {
+          Alert.alert("Receipt saved", `File saved to ${dl.uri}`);
+        }
+      }
+    } catch (e: any) {
+      Alert.alert("Download failed", e?.message || "Please try again.");
+    } finally { setPdfLoading(false); }
   };
 
   const doDelete = () => {
@@ -150,7 +187,17 @@ export default function Profile() {
 
       {/* Payment history */}
       <View style={styles.section}>
-        <Text style={styles.sectionLabel}>PAYMENT HISTORY</Text>
+        <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: spacing.sm }}>
+          <Text style={styles.sectionLabel}>PAYMENT HISTORY</Text>
+          <Pressable onPress={downloadReceipt} disabled={pdfLoading} style={styles.pdfBtn} testID="download-receipt-btn">
+            {pdfLoading ? <ActivityIndicator size="small" color="#000" /> : (
+              <>
+                <Ionicons name="download-outline" size={16} color="#000" />
+                <Text style={styles.pdfBtnText}>THIS MONTH · PDF</Text>
+              </>
+            )}
+          </Pressable>
+        </View>
         <View style={styles.list}>
           {payments.length === 0 && <Text style={styles.emptyList}>No payments yet</Text>}
           {payments.map((p) => (
@@ -219,6 +266,8 @@ const styles = StyleSheet.create({
   upgradeText: { color: colors.onBrandPrimary, fontFamily: "BarlowCondensed-Bold", fontSize: 13, letterSpacing: 1 },
   list: { marginHorizontal: spacing.lg, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, overflow: "hidden" },
   emptyList: { ...type.bodyMuted, padding: spacing.lg, textAlign: "center" },
+  pdfBtn: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.brandPrimary, paddingHorizontal: spacing.md, paddingVertical: 6, borderRadius: radius.pill },
+  pdfBtnText: { color: "#000", fontFamily: "BarlowCondensed-Bold", letterSpacing: 1.5, fontSize: 11, fontWeight: "900" },
   payRow: { flexDirection: "row", alignItems: "center", padding: spacing.md, gap: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.divider },
   payLabel: { ...type.body, fontSize: 14 },
   payMeta: { ...type.caption, marginTop: 2 },
