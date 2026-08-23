@@ -892,8 +892,8 @@ async def subscribe(body: SubscribeIn, current = Depends(get_current_user)):
         "amount": plan["amount"],
         "currency": plan["currency"],
         "method": body.method,
-        "mocked": True,
-        "note": f"Payment via {body.method} was processed in demo mode.",
+        "comp": True,
+        "note": "Complimentary subscription issued by admin (no payment collected).",
     }
 
 
@@ -2556,22 +2556,17 @@ async def stripe_webhook(request: Request):
         raise HTTPException(500, "Stripe not configured")
     payload = await request.body()
     sig = request.headers.get("stripe-signature", "")
-    if STRIPE_WEBHOOK_SECRET:
-        try:
-            event = stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
-        except ValueError:
-            raise HTTPException(400, "Invalid payload")
-        except stripe.error.SignatureVerificationError:  # type: ignore
-            raise HTTPException(400, "Invalid signature")
-    else:
-        # If no webhook secret is configured (e.g. pre-launch), accept unsigned events but
-        # log a warning. The user should set STRIPE_WEBHOOK_SECRET before production.
-        import json as _json
-        try:
-            event = _json.loads(payload)
-        except Exception:
-            raise HTTPException(400, "Invalid payload")
-        logger.warning("Stripe webhook received without signing secret configured; recommend setting STRIPE_WEBHOOK_SECRET.")
+    if not STRIPE_WEBHOOK_SECRET:
+        # Defense in depth: refuse ANY unsigned webhook event. Even in local dev, spinning
+        # up Stripe CLI is trivial and grants access to real subscription tiers.
+        logger.error("Stripe webhook received but STRIPE_WEBHOOK_SECRET is not configured — rejecting.")
+        raise HTTPException(400, "Webhook signature verification not configured on the server")
+    try:
+        event = stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
+    except ValueError:
+        raise HTTPException(400, "Invalid payload")
+    except stripe.error.SignatureVerificationError:  # type: ignore
+        raise HTTPException(400, "Invalid signature")
 
     event_id = event["id"] if isinstance(event, dict) else event.id
     # Idempotency guard

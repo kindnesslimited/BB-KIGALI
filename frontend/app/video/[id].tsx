@@ -101,9 +101,15 @@ export default function VideoPlayerScreen() {
         );
         // STRICT: only unlock the VOD when Stripe confirms payment_status='paid'
         if (r.paid === true || r.paymentStatus === "paid") {
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-          await loadShow();
-          return;
+          // Belt-and-suspenders: re-fetch the show and confirm it's now unlocked before dismissing.
+          try {
+            const fresh = await api<any>(`/shows/${id}`, { auth: true });
+            if (fresh && fresh.locked === false) {
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+              await loadShow();
+              return;
+            }
+          } catch { /* keep polling */ }
         }
         if (r.status === "complete" && r.paymentStatus !== "paid") {
           setErr("Card payment did not go through. Please try again.");

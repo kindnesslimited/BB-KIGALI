@@ -11,11 +11,11 @@ import { useAuth } from "@/src/context/auth";
 
 type Method = "stripe" | "paypal" | "mtn_momo" | "airtel";
 const isIOS = Platform.OS === "ios";
-const ALL_METHODS: { id: Method; label: string; sub: string; icon: any; needsPhone?: boolean; hiddenOnIOS?: boolean }[] = [
+const ALL_METHODS: { id: Method; label: string; sub: string; icon: any; needsPhone?: boolean; hiddenOnIOS?: boolean; disabled?: boolean }[] = [
   { id: "paypal", label: "PayPal", sub: "Live — Visa/Mastercard or PayPal balance", icon: "logo-paypal" },
   { id: "stripe", label: "Card (Stripe)", sub: "Live — Visa, Mastercard, Amex, Apple Pay & Google Pay", icon: "card-outline", hiddenOnIOS: true },
   { id: "mtn_momo", label: "MTN Mobile Money", sub: "Live — Rwanda MTN MoMo via BeSoft Pay", icon: "phone-portrait-outline", needsPhone: true },
-  { id: "airtel", label: "Airtel Money", sub: "Coming soon", icon: "phone-portrait-outline", needsPhone: true },
+  { id: "airtel", label: "Airtel Money", sub: "Coming soon", icon: "phone-portrait-outline", needsPhone: true, disabled: true },
 ];
 const METHODS = ALL_METHODS.filter((m) => !(isIOS && m.hiddenOnIOS));
 
@@ -73,9 +73,16 @@ export default function Checkout() {
         // STRICT: only count as success when Stripe confirmed payment_status='paid'.
         if (r.paid === true || r.paymentStatus === "paid") {
           await refresh();
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-          setSuccess(true);
-          return;
+          // Belt-and-suspenders: re-fetch /auth/me and confirm the tier actually flipped.
+          // If the backend hasn't granted (e.g. race with webhook), keep polling.
+          try {
+            const me = await api<{ tier?: string }>("/auth/me", { auth: true });
+            if (me?.tier && me.tier !== "free") {
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+              setSuccess(true);
+              return;
+            }
+          } catch { /* fall through to keep polling */ }
         }
         // Session ended but payment failed / was cancelled by Stripe → surface immediately.
         if (r.status === "complete" && r.paymentStatus !== "paid") {
@@ -176,11 +183,8 @@ export default function Checkout() {
         await pollMomo(r.reference);
         return;
       }
-      // Fallback for airtel (mocked)
-      await api("/billing/subscribe", { method: "POST", auth: true, body: { plan, method, phone: chosen.needsPhone ? phone : null } });
-      await refresh();
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      setSuccess(true);
+      // Airtel Money is not yet integrated. Reject the tap so no unpaid access is ever granted.
+      throw new Error("Airtel Money is not available yet. Please use Card (Stripe), PayPal, or MTN Mobile Money.");
     } catch (e: any) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
       setErr(e.message || "Payment failed");
@@ -332,8 +336,13 @@ export default function Checkout() {
             return (
               <Pressable
                 key={m.id}
-                onPress={() => { Haptics.selectionAsync().catch(() => {}); setMethod(m.id); }}
-                style={[styles.methodRow, active && styles.methodRowActive]}
+                onPress={() => {
+                  if (m.disabled) return;
+                  Haptics.selectionAsync().catch(() => {});
+                  setMethod(m.id);
+                }}
+                disabled={!!m.disabled}
+                style={[styles.methodRow, active && styles.methodRowActive, m.disabled && { opacity: 0.4 }]}
                 testID={`method-${m.id}`}
               >
                 <View style={styles.methodIcon}>

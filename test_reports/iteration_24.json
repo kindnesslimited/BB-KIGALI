@@ -1,0 +1,45 @@
+{
+  "summary": "Backend SECURITY AUDIT of Stripe payment path — 13/13 tests PASSED. Confirmed on PREVIEW that (a) POST /api/billing/subscribe by non-admin returns 403 with 'Payment must be completed via Stripe, PayPal or MTN MoMo.' and tier/payment doc are unchanged; (b) POST /api/billing/subscribe by admin returns { ok:true, comp:true, note:'Complimentary subscription issued by admin (no payment collected).' } with NO 'mocked' flag; (c) POST /api/billing/stripe/create-checkout returns REAL LIVE Stripe session — sessionId starts with 'cs_live_', checkoutUrl starts with 'https://checkout.stripe.com/c/pay/cs_live_', publishableKey starts with 'pk_live_'; (d) GET /api/billing/stripe/session-status on an unpaid session returns paid:false / paymentStatus:'unpaid' / status:'open', the caller's tier remains 'free' and the db.payments row stays status='pending'; (e) User B calling GET /api/billing/stripe/session-status/{userA_sessionId} returns 404 'Session not found for this user' (cross-user isolation enforced); (f) VOD Stripe checkout also returns cs_live_ and the show is NOT added to unlockedVods until Stripe confirms payment; (g) POST /api/billing/stripe/webhook with garbage body & no stripe-signature is rejected 400; (h) regressions PASS — PayPal approveUrl still on paypal.com, MoMo initiate 2xx for 250794230137, MoMo safety guard 400 for 250798875274, /api/health = 200, /api/privacy = 200. Code review of every db.users.update_one(tier=...) call in server.py confirms each is gated on either admin comp, Stripe paid webhook/session-status, PayPal capture/webhook, or MoMo debit success. NO BYPASS PATH FOUND.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_stripe_security_audit.py",
+    "/app/test_reports/pytest/pytest_iter24.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "AUDIT of every db.users.update_one(...tier=...) in /app/backend/server.py — all 7 tier-mutation call sites are properly gated:",
+    "server.py:253 — sets tier='free' on subscription expiry (safe downgrade, no bypass).",
+    "server.py:879 — /billing/subscribe: only reachable after `if current.get('role') != 'admin': raise 403` (line 857). Admin comp only.",
+    "server.py:1170 — MoMo callback: gated on `final_status == 'success' and tx_type in ('debit', '')` after BeSoft signals successful debit.",
+    "server.py:1202 — MoMo polling status: gated on `new_status == 'success'` from BeSoft `/public/payments/{txId}/status`.",
+    "server.py:1393 — PayPal capture: gated on `final_status == 'success'` after `/v1/billing/subscriptions/{id}` returns ACTIVE/APPROVED.",
+    "server.py:1446 — PayPal webhook: only granted on ACTIVATED/SALE_COMPLETED/CAPTURE_COMPLETED events (signature verified when PAYPAL_WEBHOOK_ID is set).",
+    "server.py:1449 — PayPal webhook cancellation → tier='free' (safe downgrade).",
+    "server.py:2474 — Stripe grant helper `_stripe_grant_from_session` — only ever called from (a) session-status endpoint after `paid = payment_status == 'paid'` check (line 2524-2528) or (b) webhook after signature verification AND `payment_status == 'paid'` (line 2586).",
+    "server.py:2488 — VOD unlock via $addToSet — same gate: only inside `_stripe_grant_from_session`, only when Stripe reports paid.",
+    "Stripe webhook signature enforcement at server.py:2560-2565 — STRIPE_WEBHOOK_SECRET is set in .env so signed verification is active; garbage payloads return 400.",
+    "MINOR: server.py:2566-2574 — fallback path when STRIPE_WEBHOOK_SECRET is empty accepts unsigned events; in current .env the secret IS set so this branch is inert, but recommend removing this branch entirely for defense-in-depth.",
+    "MINOR: server.py:2528 — session-status calls `_stripe_grant_from_session` directly on paid=true without additional idempotency guard; the helper uses $set/upsert so replays are safe, but a spammy client could invoke it in a tight loop. Consider a per-user rate-limit on this endpoint."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_stripe_security_audit.py (NEW)"
+  ],
+  "success_rate": {
+    "backend": "100% (13/13)",
+    "frontend": "n/a — backend-only audit"
+  },
+  "seed_data_creation": "None. Test creates real LIVE Stripe checkout sessions (cs_live_...) but no card is entered, so no payment is captured and no money moves. Sessions remain in 'open/unpaid' state and auto-expire per Stripe policy. Payment docs in db.payments remain status='pending'. Test user +250788123456 and +250788111222 are auto-created via OTP flow.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Use `-n 0` when running /app/backend/tests/test_stripe_security_audit.py because tests share state (a Stripe session id created in test 1 is used in tests 2-4 within the same class). The regular test phone +250788123456 receives OTP via WhatsApp so testCode is not returned in the /auth/otp/start response — the fixture reads the code from db.otp_challenges directly via MongoClient. Admin phone +250794230137 always returns testCode=123456. Note: /api/auth/otp/verify returns the JWT under the key `accessToken`, not `token`.",
+  "rca_of_issue": "N/A — no bugs. Audit conclusion: the Stripe payment path IS fully gated. Every tier-upgrade and every unlockedVods $addToSet is protected behind a real provider confirmation (admin comp, Stripe paid, PayPal ACTIVE/CAPTURED, or MoMo debit success). No mock and no free-grant bypass exists."
+}
