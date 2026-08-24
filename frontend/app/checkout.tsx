@@ -9,13 +9,12 @@ import { colors, spacing, type, radius } from "@/src/theme";
 import { api } from "@/src/api";
 import { useAuth } from "@/src/context/auth";
 
-type Method = "stripe" | "paypal" | "mtn_momo" | "airtel";
+type Method = "stripe" | "paypal" | "mtn_momo";
 const isIOS = Platform.OS === "ios";
 const ALL_METHODS: { id: Method; label: string; sub: string; icon: any; needsPhone?: boolean; hiddenOnIOS?: boolean; disabled?: boolean }[] = [
-  { id: "paypal", label: "PayPal", sub: "Live — Visa/Mastercard or PayPal balance", icon: "logo-paypal" },
+  { id: "paypal", label: "PayPal", sub: "Live — Visa/Mastercard or PayPal balance", icon: "logo-paypal", hiddenOnIOS: true },
   { id: "stripe", label: "Card (Stripe)", sub: "Live — Visa, Mastercard, Amex, Apple Pay & Google Pay", icon: "card-outline", hiddenOnIOS: true },
-  { id: "mtn_momo", label: "MTN Mobile Money", sub: "Live — Rwanda MTN MoMo via BeSoft Pay", icon: "phone-portrait-outline", needsPhone: true },
-  { id: "airtel", label: "Airtel Money", sub: "Coming soon", icon: "phone-portrait-outline", needsPhone: true, disabled: true },
+  { id: "mtn_momo", label: "MTN Mobile Money", sub: "Live — Rwanda MTN MoMo via BeSoft Pay", icon: "phone-portrait-outline", needsPhone: true, hiddenOnIOS: true },
 ];
 const METHODS = ALL_METHODS.filter((m) => !(isIOS && m.hiddenOnIOS));
 
@@ -183,8 +182,7 @@ export default function Checkout() {
         await pollMomo(r.reference);
         return;
       }
-      // Airtel Money is not yet integrated. Reject the tap so no unpaid access is ever granted.
-      throw new Error("Airtel Money is not available yet. Please use Card (Stripe), PayPal, or MTN Mobile Money.");
+      throw new Error("This payment method is not available right now. Please try another.");
     } catch (e: any) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
       setErr(e.message || "Payment failed");
@@ -223,6 +221,40 @@ export default function Checkout() {
 
   return (
     <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1, backgroundColor: colors.surface }}>
+      {isIOS && (
+        <View style={styles.iosGate}>
+          <View style={[styles.top, { paddingTop: insets.top + spacing.md }]}>
+            <Pressable onPress={() => router.back()} hitSlop={12} testID="ios-gate-close">
+              <Ionicons name="chevron-back" size={26} color={colors.onSurface} />
+            </Pressable>
+            <Text style={styles.topTitle}>SUBSCRIBE</Text>
+            <View style={{ width: 26 }} />
+          </View>
+          <ScrollView contentContainerStyle={styles.iosGateBody}>
+            <View style={styles.iosGateIconWrap}>
+              <Ionicons name="logo-apple" size={44} color={colors.onSurface} />
+            </View>
+            <Text style={styles.iosGateTitle}>PREMIUM COMING SOON ON iOS</Text>
+            <Text style={styles.iosGateSub}>
+              We&apos;re bringing subscriptions to iPhone through Apple&apos;s in-app purchase system.
+              In the meantime, keep enjoying the free tier — live radio, news and public podcasts —
+              all completely free on iOS.
+            </Text>
+            <View style={styles.iosGateFeatureCard}>
+              <Text style={styles.iosGateFeatureTitle}>Free on iOS right now:</Text>
+              <View style={styles.iosGateFeatureRow}><Ionicons name="checkmark-circle" size={18} color={colors.success} /><Text style={styles.iosGateFeatureText}>Live BB FM 89.7 radio 24/7</Text></View>
+              <View style={styles.iosGateFeatureRow}><Ionicons name="checkmark-circle" size={18} color={colors.success} /><Text style={styles.iosGateFeatureText}>Full news feed with external sources</Text></View>
+              <View style={styles.iosGateFeatureRow}><Ionicons name="checkmark-circle" size={18} color={colors.success} /><Text style={styles.iosGateFeatureText}>Today&apos;s schedule + reminders</Text></View>
+              <View style={styles.iosGateFeatureRow}><Ionicons name="checkmark-circle" size={18} color={colors.success} /><Text style={styles.iosGateFeatureText}>Free public podcasts</Text></View>
+            </View>
+            <Pressable onPress={() => router.replace("/(tabs)")} style={styles.iosGateBtn} testID="ios-gate-continue">
+              <Text style={styles.iosGateBtnText}>CONTINUE FREE</Text>
+            </Pressable>
+          </ScrollView>
+        </View>
+      )}
+      {!isIOS && (
+      <>
       <Modal visible={!!stripeUrl} animationType="slide" onRequestClose={() => setStripeUrl(null)} presentationStyle="fullScreen">
         <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1, backgroundColor: "#fff" }}>
           <View style={[styles.top, { paddingTop: insets.top + spacing.md, backgroundColor: "#635bff" }]}>
@@ -390,12 +422,6 @@ export default function Checkout() {
             <Text style={styles.demoText}>Live Stripe. Pay by Visa, Mastercard, Amex, or wallet — you&apos;ll be redirected to secure Stripe Checkout.</Text>
           </View>
         )}
-        {method === "airtel" && (
-          <View style={styles.demoBox}>
-            <Ionicons name="information-circle-outline" size={16} color={colors.warning} />
-            <Text style={styles.demoText}>Airtel Money is coming soon. Please use PayPal, Stripe, or MTN MoMo for now.</Text>
-          </View>
-        )}
         {method === "mtn_momo" && (
           <View style={[styles.demoBox, { borderColor: colors.success }]}>
             <Ionicons name="shield-checkmark-outline" size={16} color={colors.success} />
@@ -442,6 +468,8 @@ export default function Checkout() {
           )}
         </Pressable>
       </View>
+      </>
+      )}
     </KeyboardAvoidingView>
   );
 }
@@ -491,4 +519,16 @@ const styles = StyleSheet.create({
   successSub: { ...type.bodyMuted, textAlign: "center", marginBottom: spacing.xl, lineHeight: 22 },
   doneBtn: { backgroundColor: colors.brandPrimary, paddingHorizontal: spacing.xxl, paddingVertical: spacing.md, borderRadius: radius.pill },
   doneText: { ...type.h2, color: colors.onBrandPrimary, letterSpacing: 1.5, fontSize: 14 },
+  // iOS App Store 3.1.1 compliance gate
+  iosGate: { flex: 1, backgroundColor: colors.surface },
+  iosGateBody: { padding: spacing.xl, gap: spacing.lg, alignItems: "center", paddingBottom: 80 },
+  iosGateIconWrap: { width: 80, height: 80, borderRadius: 40, backgroundColor: colors.surfaceSecondary, alignItems: "center", justifyContent: "center", marginTop: spacing.lg, borderWidth: 1, borderColor: colors.border },
+  iosGateTitle: { ...type.h1, letterSpacing: 1.2, fontSize: 22, textAlign: "center", marginTop: spacing.md },
+  iosGateSub: { ...type.bodyMuted, textAlign: "center", lineHeight: 22, fontSize: 14, paddingHorizontal: spacing.sm },
+  iosGateFeatureCard: { width: "100%", backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.lg, borderWidth: 1, borderColor: colors.border, gap: 10 },
+  iosGateFeatureTitle: { ...type.h2, fontSize: 14, marginBottom: 4, color: colors.onSurface },
+  iosGateFeatureRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  iosGateFeatureText: { ...type.body, fontSize: 13, color: colors.onSurface, flex: 1 },
+  iosGateBtn: { backgroundColor: colors.brandPrimary, paddingHorizontal: spacing.xxl, paddingVertical: spacing.md, borderRadius: radius.pill, marginTop: spacing.md },
+  iosGateBtnText: { ...type.h2, color: "#000", letterSpacing: 1.8, fontSize: 15, fontFamily: "BarlowCondensed-Bold" },
 });

@@ -158,6 +158,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       method: "POST",
       body: {
         identityToken: credential.identityToken,
+        authorizationCode: credential.authorizationCode || undefined,
         fullName,
         email: credential.email || undefined,
       },

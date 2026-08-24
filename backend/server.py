@@ -31,6 +31,10 @@ from youtube_live import (
     periodic_live_loop as _yt_live_periodic_loop,
 )  # noqa: E402
 from apple_auth import verify_apple_identity_token  # noqa: E402
+from apple_auth import (
+    exchange_code_for_refresh_token as _apple_exchange_code,
+    revoke_apple_refresh_token as _apple_revoke_token,
+)  # noqa: E402
 from object_storage import upload_image_bytes, read_object  # noqa: E402
 from subscription_reminders import (
     reminder_loop as _sub_reminder_loop,
@@ -640,6 +644,7 @@ async def update_me(body: ProfileUpdateIn, user = Depends(get_current_user)):
 # ---------- Sign in with Apple ----------
 class AppleSignInIn(BaseModel):
     identityToken: str
+    authorizationCode: Optional[str] = None
     fullName: Optional[str] = None
     email: Optional[str] = None
 
@@ -667,6 +672,18 @@ async def auth_apple(body: AppleSignInIn):
         # Fall back to email lookup for accounts that first signed in via Google / phone with same email
         user = await db.users.find_one({"email": (token_email or "").lower()}, {"_id": 0})
 
+    # Best-effort exchange of the one-shot authorizationCode for a long-lived
+    # refresh_token so we can revoke it on account deletion (Apple 5.1.1(v)).
+    # Silently no-ops if APPLE_TEAM_ID / APPLE_KEY_ID / APPLE_PRIVATE_KEY aren't
+    # provisioned yet — sign-in must never fail because of this.
+    apple_refresh_token = None
+    if body.authorizationCode:
+        try:
+            apple_refresh_token = await _apple_exchange_code(body.authorizationCode)
+        except Exception:
+            logger.exception("[apple-auth] code exchange raised")
+            apple_refresh_token = None
+
     now_iso = datetime.now(timezone.utc).isoformat()
     if not user:
         is_admin_email = (token_email or "").lower() in ADMIN_EMAILS
@@ -680,6 +697,7 @@ async def auth_apple(body: AppleSignInIn):
             "role": "admin" if is_admin_email else "user",
             "appleSub": apple_sub,
             "appleEmailPrivate": is_private,
+            "appleRefreshToken": apple_refresh_token,  # may be None; that's OK
             "subscriptionExpiresAt": None,
             "createdAt": now_iso,
         }
@@ -692,6 +710,9 @@ async def auth_apple(body: AppleSignInIn):
             updates["email"] = token_email.lower()
         if is_private and not user.get("appleEmailPrivate"):
             updates["appleEmailPrivate"] = True
+        # Only persist a NEW refresh token — never overwrite a good one with None.
+        if apple_refresh_token and not user.get("appleRefreshToken"):
+            updates["appleRefreshToken"] = apple_refresh_token
         if (user.get("email") or "").lower() in ADMIN_EMAILS and user.get("role") != "admin":
             updates["role"] = "admin"
         await db.users.update_one({"id": user["id"]}, {"$set": updates})
@@ -711,6 +732,16 @@ async def delete_my_account(user = Depends(get_current_user)):
     uid = user["id"]
     phone = user.get("phone")
     email = user.get("email")
+    apple_refresh = user.get("appleRefreshToken")
+
+    # 0. Apple guideline 5.1.1(v) — revoke Sign in with Apple tokens BEFORE local wipe.
+    # Best-effort: never blocks the delete, but is required by Apple review.
+    apple_revoked = False
+    if apple_refresh:
+        try:
+            apple_revoked = await _apple_revoke_token(apple_refresh)
+        except Exception:
+            logger.exception("[delete-account] apple revoke crashed (continuing)")
 
     # 1. Delete auth artefacts
     await db.user_sessions.delete_many({"user_id": uid})
@@ -724,8 +755,15 @@ async def delete_my_account(user = Depends(get_current_user)):
     # 3. Delete the user record itself
     await db.users.delete_one({"id": uid})
 
-    logger.info("[delete-account] user=%s phone=%s email=%s wiped", uid, phone, email)
-    return {"ok": True, "message": "Account and personal data deleted."}
+    logger.info(
+        "[delete-account] user=%s phone=%s email=%s appleRevoked=%s wiped",
+        uid, phone, email, apple_revoked,
+    )
+    return {
+        "ok": True,
+        "message": "Account and personal data deleted.",
+        "appleRevoked": apple_revoked,
+    }
 
 
 # ---------- Radio ----------

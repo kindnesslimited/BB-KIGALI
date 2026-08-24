@@ -15,9 +15,7 @@
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSPhotoLibraryUsageDescription": "Upload cover art for shows and news",
-        "NSCameraUsageDescription": "Take photos to upload as cover art",
-        "NSMicrophoneUsageDescription": "Record audio when live-streaming to listeners",
-        "NSUserTrackingUsageDescription": "Improve programming recommendations for you"
+        "NSCameraUsageDescription": "Take photos to upload as cover art"
       },
       "privacyManifests": {
         "NSPrivacyAccessedAPITypes": [

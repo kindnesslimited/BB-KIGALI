@@ -11,6 +11,7 @@ import { useIconFonts } from "@/src/hooks/use-icon-fonts";
 import { useGlobalScreenCaptureBlock } from "@/src/hooks/use-screen-capture-guard";
 import { AuthProvider, useAuth } from "@/src/context/auth";
 import { PlayerProvider } from "@/src/context/player";
+import { ErrorBoundary } from "@/src/components/ErrorBoundary";
 import { colors } from "@/src/theme";
 
 LogBox.ignoreAllLogs(true);
@@ -67,35 +68,37 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.surface }}>
       <SafeAreaProvider>
-        <AuthProvider>
-          <PlayerProvider>
-            <StatusBar style="light" />
-            <AuthGate>
-              <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.surface } }}>
-                <Stack.Screen name="index" />
-                <Stack.Screen name="onboarding" />
-                <Stack.Screen name="auth/phone" />
-                <Stack.Screen name="auth/otp" />
-                <Stack.Screen name="(tabs)" />
-                <Stack.Screen name="player" options={{ presentation: "modal" }} />
-                <Stack.Screen name="video/[id]" />
-                <Stack.Screen name="paywall" options={{ presentation: "modal" }} />
-                <Stack.Screen name="checkout" options={{ presentation: "modal" }} />
-                <Stack.Screen name="admin/index" />
-                <Stack.Screen name="admin/settings" />
-                <Stack.Screen name="admin/programs" />
-                <Stack.Screen name="admin/shows" />
-                <Stack.Screen name="admin/categories" />
-                <Stack.Screen name="admin/users" />
-                <Stack.Screen name="admin/sms" />
-                <Stack.Screen name="admin/payments" />
-                <Stack.Screen name="admin/schedule" />
-                <Stack.Screen name="live-news" options={{ presentation: "modal" }} />
-                <Stack.Screen name="program/[id]" />
-              </Stack>
-            </AuthGate>
-          </PlayerProvider>
-        </AuthProvider>
+        <ErrorBoundary>
+          <AuthProvider>
+            <PlayerProvider>
+              <StatusBar style="light" />
+              <AuthGate>
+                <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.surface } }}>
+                  <Stack.Screen name="index" />
+                  <Stack.Screen name="onboarding" />
+                  <Stack.Screen name="auth/phone" />
+                  <Stack.Screen name="auth/otp" />
+                  <Stack.Screen name="(tabs)" />
+                  <Stack.Screen name="player" options={{ presentation: "modal" }} />
+                  <Stack.Screen name="video/[id]" />
+                  <Stack.Screen name="paywall" options={{ presentation: "modal" }} />
+                  <Stack.Screen name="checkout" options={{ presentation: "modal" }} />
+                  <Stack.Screen name="admin/index" />
+                  <Stack.Screen name="admin/settings" />
+                  <Stack.Screen name="admin/programs" />
+                  <Stack.Screen name="admin/shows" />
+                  <Stack.Screen name="admin/categories" />
+                  <Stack.Screen name="admin/users" />
+                  <Stack.Screen name="admin/sms" />
+                  <Stack.Screen name="admin/payments" />
+                  <Stack.Screen name="admin/schedule" />
+                  <Stack.Screen name="live-news" options={{ presentation: "modal" }} />
+                  <Stack.Screen name="program/[id]" />
+                </Stack>
+              </AuthGate>
+            </PlayerProvider>
+          </AuthProvider>
+        </ErrorBoundary>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );

@@ -2,16 +2,35 @@
 
 Mobile + web platform for BB FM Kigali (Rwanda). Live radio + VOD + News + Subscriptions + Admin console.
 
-## Latest updates (iter 28)
-1. **YouTube LIVE Auto-Detection** 🔴 — Backend polls `@bbkigalifm` every 10 min and caches the answer for 60 s. New endpoint `GET /api/live/status` returns `{ isLive, videoId, title, thumbnail, watchUrl, embedUrl }`. Home page shows a red "LIVE NOW · YOUTUBE" banner with WATCH ON YOUTUBE button automatically when a broadcast is on-air. Verified in production traffic during test — banner appeared with real live stream #BBSPORTSTALK.
-2. **Featured Schedule Slot** ⭐ — Admin `/admin/schedule` has a "Feature at top of Home" switch (only one featured slot at a time, enforced backend-side). Home sort priority: LIVE slot → featured slot → normal order. Featured non-live slot gets an "UP NEXT · FEATURED" pill. Admin schedule list rows show a FEATURED badge.
-3. **Program Reminders** 🔔 — Every non-live schedule card on Home shows a REMIND ME button. Uses `expo-notifications` to schedule a local notification 15 min before slot start; state stored in AsyncStorage. Tapping REMIND ME shows "we'll ping you 15 min before" and toggling again cancels. Works on real device builds (Expo Go on iOS has SDK-53+ limitations — see below).
-4. **GCP hosting + TestFlight** — Ready-to-send support ticket drafted at `/app/memory/support_ticket_gcp_and_testflight.md` — customer only has to fill in `[YOUR_JOB_ID]` and email it to support@emergent.sh.
+## Latest updates (iter 29 — App Store Readiness)
+1. **Apple 3.1.1 IAP compliance** ✅ — On iOS, ALL non-IAP payment methods are hidden:
+   - `/checkout` shows a clean **"PREMIUM COMING SOON ON iOS"** gate with a feature list of what's already free on iOS and a CONTINUE FREE button.
+   - `/video/[id]` locked-video modal shows a **"COMING SOON ON iOS"** gate instead of Stripe/PayPal/MoMo cards.
+   - Web and Android continue to show full payment options (PayPal, Stripe, MoMo).
+2. **Apple 5.1.1(v) — Sign in with Apple token revocation** ✅ — On account deletion, the backend now calls Apple's `/auth/revoke` endpoint. New helpers in `apple_auth.py`:
+   - `exchange_code_for_refresh_token()` — swaps the one-shot `authorizationCode` from `expo-apple-authentication` for a long-lived `refresh_token` stored on the user record.
+   - `revoke_apple_refresh_token()` — signs a client_secret JWT (ES256) and posts to Apple's revoke endpoint on delete.
+   - If `APPLE_TEAM_ID` / `APPLE_KEY_ID` / `APPLE_CLIENT_ID` / `APPLE_PRIVATE_KEY` env vars aren't provisioned yet (they're currently empty placeholders in `backend/.env`), Apple calls silently no-op and account deletion still completes locally.
+   - DELETE /api/auth/me now returns `{ok: true, appleRevoked: bool}`.
+3. **Over-declared iOS permissions cleaned up** ✅ — `NSMicrophoneUsageDescription` and `NSUserTrackingUsageDescription` removed from `app.json` (no mic recording or ATT tracking in the app).
+4. **"Coming soon" placeholder removed** — Airtel Money row deleted from checkout.
+5. **Root ErrorBoundary added** — new `/src/components/ErrorBoundary.tsx` wraps the entire app in `_layout.tsx` with a friendly Reload UI if the JS bundle crashes.
+6. **All 10 backend + all frontend flows passed the testing agent** — no regressions.
+
+## Env vars to provision before TestFlight goes live
+Add these to `backend/.env` once you have your Apple Developer credentials so token revocation actually reaches Apple's servers:
+```
+APPLE_TEAM_ID="10-char Team ID from Apple Developer"
+APPLE_KEY_ID="Key ID of your Sign in with Apple key"
+APPLE_CLIENT_ID="com.emergent.radiovodplatform.reybr3"
+APPLE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...contents of AuthKey_XXX.p8...\n-----END PRIVATE KEY-----"
+```
 
 ## Prior updates
-- iter 27: Video upload MIME/magic-byte fix; schedule cover image + status; TODAY'S SCHEDULE on Home
-- iter 26: iOS privacy manifests; VOD dedicated checkout modal; News source fields; Web/Desktop maxWidth 1200 + how-app-works + contact
-- iter 25 and earlier: full app baseline (auth, live radio, VOD, YouTube sync, Stripe, PayPal, MoMo, admin console, reports).
+- iter 28: YouTube LIVE auto-detection, Featured Schedule Slot, Program Reminders, GCP+TestFlight support ticket
+- iter 27: Video upload MIME/magic-byte fix; schedule cover image + status
+- iter 26: iOS privacy manifests; VOD dedicated checkout modal; News source fields; Web responsive layout
+- iter 25 and earlier: full app baseline
 
 ## Test credentials
 See `/app/memory/test_credentials.md`.

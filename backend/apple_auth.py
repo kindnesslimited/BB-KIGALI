@@ -84,3 +84,108 @@ async def verify_apple_identity_token(identity_token: str) -> dict[str, Any]:
         except Exception as e:
             raise ValueError(f"Apple token verification failed: {e}")
     raise ValueError(f"Apple token audience not accepted: {last_err}")
+
+
+# ---------- Server-side revocation (Apple guideline 5.1.1(v)) ----------
+# Exchange the one-shot authorizationCode from Apple sign-in for a long-lived
+# refresh_token, and revoke it when the user deletes their account.
+
+APPLE_TOKEN_URL = f"{APPLE_ISSUER}/auth/token"
+APPLE_REVOKE_URL = f"{APPLE_ISSUER}/auth/revoke"
+
+
+def _load_apple_private_key() -> str | None:
+    raw = os.environ.get("APPLE_PRIVATE_KEY", "").strip()
+    if not raw:
+        return None
+    # Support env vars that contain "\n" literals instead of real newlines.
+    if "\\n" in raw and "\n" not in raw:
+        raw = raw.replace("\\n", "\n")
+    return raw
+
+
+def apple_revocation_ready() -> bool:
+    """Returns True iff all env vars needed to talk to Apple's token endpoint are set."""
+    return all([
+        os.environ.get("APPLE_TEAM_ID", "").strip(),
+        os.environ.get("APPLE_KEY_ID", "").strip(),
+        os.environ.get("APPLE_CLIENT_ID", "").strip(),
+        _load_apple_private_key(),
+    ])
+
+
+def _make_apple_client_secret() -> str:
+    team_id = os.environ["APPLE_TEAM_ID"].strip()
+    key_id = os.environ["APPLE_KEY_ID"].strip()
+    client_id = os.environ["APPLE_CLIENT_ID"].strip()
+    private_key = _load_apple_private_key()
+    assert private_key is not None
+    now = int(time.time())
+    return jwt.encode(
+        {
+            "iss": team_id,
+            "iat": now,
+            "exp": now + 60 * 60,
+            "aud": APPLE_ISSUER,
+            "sub": client_id,
+        },
+        private_key,
+        algorithm="ES256",
+        headers={"kid": key_id, "alg": "ES256"},
+    )
+
+
+async def exchange_code_for_refresh_token(authorization_code: str | None) -> str | None:
+    """Exchange the one-shot authorizationCode returned by expo-apple-authentication
+    for a long-lived refresh_token. Returns None if Apple keys aren't configured
+    or Apple returns an error — this is best-effort and MUST NOT block sign-in."""
+    if not authorization_code:
+        return None
+    if not apple_revocation_ready():
+        logger.info("[apple-auth] APPLE_* env not set — skipping code exchange (revocation unavailable)")
+        return None
+    try:
+        client_secret = _make_apple_client_secret()
+        client_id = os.environ["APPLE_CLIENT_ID"].strip()
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.post(APPLE_TOKEN_URL, data={
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "code": authorization_code,
+                "grant_type": "authorization_code",
+            })
+        if r.is_error:
+            logger.warning("[apple-auth] token exchange failed: %s %s", r.status_code, r.text[:400])
+            return None
+        return (r.json() or {}).get("refresh_token")
+    except Exception:
+        logger.exception("[apple-auth] token exchange crashed")
+        return None
+
+
+async def revoke_apple_refresh_token(refresh_token: str | None) -> bool:
+    """Revoke a stored refresh_token per Apple 5.1.1(v). Returns True on Apple 200,
+    False otherwise. Never raises — account deletion must never be blocked by this."""
+    if not refresh_token:
+        return False
+    if not apple_revocation_ready():
+        logger.warning("[apple-auth] APPLE_* env not set — cannot call /auth/revoke")
+        return False
+    try:
+        client_secret = _make_apple_client_secret()
+        client_id = os.environ["APPLE_CLIENT_ID"].strip()
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.post(APPLE_REVOKE_URL, data={
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "token": refresh_token,
+                "token_type_hint": "refresh_token",
+            })
+        if r.status_code == 200:
+            logger.info("[apple-auth] refresh token revoked")
+            return True
+        logger.warning("[apple-auth] revoke failed: %s %s", r.status_code, r.text[:400])
+        return False
+    except Exception:
+        logger.exception("[apple-auth] revoke crashed")
+        return False

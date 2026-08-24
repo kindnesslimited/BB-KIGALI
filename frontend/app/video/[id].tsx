@@ -340,20 +340,33 @@ export default function VideoPlayerScreen() {
 
             <Text style={styles.checkoutSectionLabel}>CHOOSE PAYMENT METHOD</Text>
 
-            {!showMomo ? (
+            {isIOS ? (
+              // Apple 3.1.1: no non-IAP digital payments allowed. Show a friendly
+              // "coming soon on iOS" gate instead of card/PayPal/MoMo options.
+              <View style={styles.iosVodGate} testID="checkout-ios-gate">
+                <Ionicons name="logo-apple" size={40} color={colors.onSurface} />
+                <Text style={styles.iosVodGateTitle}>COMING SOON ON iOS</Text>
+                <Text style={styles.iosVodGateSub}>
+                  Paid video unlocks are on the way to iPhone through Apple&apos;s in-app
+                  purchase system. In the meantime you can still enjoy free live radio,
+                  news and public podcasts.
+                </Text>
+                <Pressable onPress={() => setCheckoutOpen(false)} style={styles.iosVodGateBtn} testID="checkout-ios-back">
+                  <Text style={styles.iosVodGateBtnText}>BACK TO APP</Text>
+                </Pressable>
+              </View>
+            ) : !showMomo ? (
               <View style={styles.methodList}>
-                {!isIOS && (
-                  <Pressable onPress={buyVodStripe} disabled={buying} style={[styles.method, styles.methodPrimary, buying && { opacity: 0.6 }]} testID="checkout-stripe">
-                    <View style={[styles.methodIcon, { backgroundColor: "#635bff" }]}>
-                      <Ionicons name="card" size={20} color="#fff" />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.methodTitle}>Card (Stripe)</Text>
-                      <Text style={styles.methodSub}>Visa, Mastercard, Apple Pay</Text>
-                    </View>
-                    {buying ? <ActivityIndicator color={colors.brandPrimary} /> : <Ionicons name="chevron-forward" size={22} color={colors.brandPrimary} />}
-                  </Pressable>
-                )}
+                <Pressable onPress={buyVodStripe} disabled={buying} style={[styles.method, styles.methodPrimary, buying && { opacity: 0.6 }]} testID="checkout-stripe">
+                  <View style={[styles.methodIcon, { backgroundColor: "#635bff" }]}>
+                    <Ionicons name="card" size={20} color="#fff" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.methodTitle}>Card (Stripe)</Text>
+                    <Text style={styles.methodSub}>Visa, Mastercard, Apple Pay</Text>
+                  </View>
+                  {buying ? <ActivityIndicator color={colors.brandPrimary} /> : <Ionicons name="chevron-forward" size={22} color={colors.brandPrimary} />}
+                </Pressable>
                 <Pressable onPress={buyVod} disabled={buying} style={[styles.method, buying && { opacity: 0.6 }]} testID="checkout-paypal">
                   <View style={[styles.methodIcon, { backgroundColor: "#003087" }]}>
                     <Ionicons name="logo-paypal" size={20} color="#fff" />
@@ -411,15 +424,19 @@ export default function VideoPlayerScreen() {
               </Pressable>
             )}
 
+            {!isIOS && (
             <Pressable onPress={() => { setCheckoutOpen(false); router.push("/paywall"); }} style={styles.premiumUpsell} testID="checkout-premium">
               <Ionicons name="star" size={16} color={colors.brandPrimary} />
               <Text style={styles.premiumUpsellText}>Or go Premium — unlock ALL VOD from 1,000 RWF/mo →</Text>
             </Pressable>
+            )}
 
+            {!isIOS && (
             <View style={styles.trustRow}>
               <Ionicons name="shield-checkmark" size={14} color={colors.success} />
               <Text style={styles.trustText}>Encrypted payment · no card details stored</Text>
             </View>
+            )}
           </ScrollView>
         </KeyboardAvoidingView>
       </Modal>
@@ -495,4 +512,10 @@ const styles = StyleSheet.create({
   premiumUpsellText: { color: colors.brandPrimary, fontFamily: "BarlowCondensed-Bold", fontSize: 12, letterSpacing: 0.5, textAlign: "center" },
   trustRow: { flexDirection: "row", alignItems: "center", gap: 6, justifyContent: "center", paddingTop: spacing.sm },
   trustText: { ...type.caption, fontSize: 11, color: colors.onSurfaceSecondary },
+  // iOS 3.1.1 compliance gate for VOD checkout modal
+  iosVodGate: { alignItems: "center", padding: spacing.xl, gap: spacing.md, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border },
+  iosVodGateTitle: { ...type.h1, letterSpacing: 1.2, fontSize: 20, textAlign: "center", marginTop: spacing.sm },
+  iosVodGateSub: { ...type.bodyMuted, textAlign: "center", lineHeight: 20, fontSize: 13 },
+  iosVodGateBtn: { backgroundColor: colors.brandPrimary, paddingHorizontal: spacing.xxl, paddingVertical: spacing.md, borderRadius: radius.pill, marginTop: spacing.sm },
+  iosVodGateBtnText: { color: "#000", fontFamily: "BarlowCondensed-Bold", letterSpacing: 1.8, fontSize: 14 },
 });
