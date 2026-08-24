@@ -268,6 +268,35 @@ async def _tier_refresh(user: dict) -> dict:
     return user
 
 
+def _has_active_paid_sub(user: Optional[dict]) -> bool:
+    """True iff the user currently has an active basic or premium subscription.
+
+    Business rule: browse freely, but streaming/playback requires an active
+    paid subscription. Applies to VOD, YouTube LIVE, protected programs and
+    subscriber-only radio.
+    """
+    if not user:
+        return False
+    tier = user.get("tier", "free")
+    if tier not in ("basic", "premium"):
+        return False
+    exp = user.get("subscriptionExpiresAt")
+    if exp:
+        try:
+            if datetime.fromisoformat(exp) < datetime.now(timezone.utc):
+                return False
+        except Exception:
+            pass
+    return True
+
+
+def _has_premium(user: Optional[dict]) -> bool:
+    """True iff the user has an active PREMIUM (top tier) subscription."""
+    if not _has_active_paid_sub(user):
+        return False
+    return user.get("tier") == "premium"
+
+
 def user_public(u: dict) -> dict:
     return {
         "id": u["id"],
@@ -463,6 +492,39 @@ async def _send_sms(destination: str, message: str) -> tuple[bool, str]:
     combined = " | ".join(attempts) if attempts else "no_providers_configured"
     logger.warning("[sms] all providers failed: %s", combined)
     return False, combined
+
+
+async def _send_payment_receipt(*, user_id: Optional[str], phone: Optional[str],
+                                plan_label: str, amount, currency: str,
+                                provider: str, reference: Optional[str] = None) -> None:
+    """Send a customer-facing SMS receipt after successful payment.
+
+    Best-effort — never raises. If we can find the user's phone and any SMS
+    provider is configured, one confirmation SMS goes out. All attempts are
+    recorded in `sms_deliveries` (via `_send_sms`).
+    """
+    try:
+        dest = phone
+        if not dest and user_id:
+            u = await db.users.find_one({"id": user_id}, {"_id": 0, "phone": 1})
+            dest = (u or {}).get("phone")
+        if not dest:
+            logger.info("[payment-sms] no phone on file for user=%s — skipping receipt", user_id)
+            return
+        try:
+            amt_disp = f"{int(amount):,}" if isinstance(amount, (int, float)) or (isinstance(amount, str) and str(amount).isdigit()) else str(amount)
+        except Exception:
+            amt_disp = str(amount)
+        ref_line = f"\nRef: {reference}" if reference else ""
+        msg = (
+            f"BB FM Kigali: Payment received for {plan_label}. "
+            f"Amount: {amt_disp} {currency} via {provider}.{ref_line}\n"
+            f"Your subscription/access is now active. Murakoze!"
+        )
+        ok, resp = await _send_sms(dest, msg)
+        logger.info("[payment-sms] user=%s phone=%s plan=%s ok=%s resp=%s", user_id, dest, plan_label, ok, resp[:120])
+    except Exception:  # pragma: no cover - never let SMS block payment success
+        logger.exception("[payment-sms] failed for user=%s", user_id)
 
 
 @api.post("/auth/otp/start")
@@ -793,33 +855,84 @@ async def schedule():
 
 
 # ---------- YouTube LIVE auto-detection ----------
+_PROTECTED_LIVE_FIELDS = ("videoId", "watchUrl", "embedUrl")
+
+
+def _sanitize_live_for_public(result: dict) -> dict:
+    """Strip playback fields so unauthenticated / non-subscribed users can SEE
+    that a broadcast is live but cannot bypass the paywall by grabbing the
+    YouTube URL directly."""
+    safe = {k: v for k, v in result.items() if k not in _PROTECTED_LIVE_FIELDS}
+    safe["requiresSubscription"] = True
+    return safe
+
+
 @api.get("/live/status")
-async def live_status(refresh: bool = False):
+async def live_status(refresh: bool = False, user = Depends(get_optional_user)):
     """Returns the current YouTube-live status of the primary channel (@bbkigalifm).
 
-    Result is cached for ~60 s server-side so listening this doesn't hammer the
-    YouTube API. Pass `?refresh=true` to force a live probe (admin diagnostics).
+    - Cached ~60s server-side (Youtube quota-aware).
+    - **Playback URL is gated**: only authenticated subscribers receive
+      `watchUrl` / `embedUrl` / `videoId`. Everyone else sees `isLive`,
+      `title`, `thumbnail` plus `requiresSubscription: true` so the UI can
+      show the LIVE banner but route to the paywall.
     """
     if refresh:
         result = await _yt_live_refresh(db)
     else:
         result = await _yt_live_get_cached(db)
-    # Add a click-through link the client can open.
-    if result.get("isLive") and result.get("videoId"):
-        vid = result["videoId"]
+    if not (result.get("isLive") and result.get("videoId")):
+        # Not live — nothing to protect. Strip protected fields defensively anyway.
+        return {k: v for k, v in result.items() if k not in _PROTECTED_LIVE_FIELDS}
+    vid = result["videoId"]
+    if _has_active_paid_sub(user):
         result["watchUrl"] = f"https://www.youtube.com/watch?v={vid}"
-        result["embedUrl"] = f"https://www.youtube.com/embed/{vid}?autoplay=1&playsinline=1&rel=0"
-    return result
+        result["embedUrl"] = f"https://www.youtube.com/embed/{vid}?autoplay=1&playsinline=1&rel=0&modestbranding=1"
+        result["requiresSubscription"] = False
+        return result
+    return _sanitize_live_for_public(result)
+
+
+@api.get("/live/session")
+async def live_session(user = Depends(get_current_user)):
+    """Authenticated + paid endpoint that returns a fresh in-app playback URL
+    for the current YouTube LIVE broadcast. If the user has no active
+    subscription, returns 402 so the client can route to /paywall."""
+    if not _has_active_paid_sub(user):
+        raise HTTPException(402, "Active subscription required to watch live")
+    result = await _yt_live_get_cached(db)
+    if not (result.get("isLive") and result.get("videoId")):
+        raise HTTPException(404, "No live broadcast right now")
+    vid = result["videoId"]
+    return {
+        "videoId": vid,
+        "title": result.get("title"),
+        "thumbnail": result.get("thumbnail"),
+        "embedUrl": f"https://www.youtube.com/embed/{vid}?autoplay=1&playsinline=1&rel=0&modestbranding=1",
+        "startedAt": result.get("startedAt"),
+    }
 
 
 # ---------- Shows / VOD / Podcasts ----------
+_PROTECTED_SHOW_FIELDS = ("videoUrl", "streamUrl", "downloadUrl", "sourceUrl", "youtubeUrl", "embedUrl", "hlsUrl")
+
+
+def _sanitize_show_for_list(item: dict, user: Optional[dict]) -> dict:
+    """Strip protected playback URLs from a show LIST item unless the user has
+    an active PREMIUM subscription. Metadata (title, thumbnail, description,
+    duration, category, tier, etc.) is always visible so users can browse."""
+    if _has_premium(user):
+        return item
+    return {k: v for k, v in item.items() if k not in _PROTECTED_SHOW_FIELDS}
+
+
 @api.get("/shows")
-async def list_shows(category: Optional[str] = None):
+async def list_shows(category: Optional[str] = None, user = Depends(get_optional_user)):
     q = {}
     if category and category.lower() != "all":
         q = {"category": category.lower()}
     items = await db.shows.find(q, {"_id": 0}).sort("createdAt", -1).to_list(200)
-    return items
+    return [_sanitize_show_for_list(i, user) for i in items]
 
 
 @api.get("/shows/{show_id}")
@@ -1016,6 +1129,364 @@ async def admin_delete_schedule(item_id: str, current = Depends(require_admin)):
                            action="schedule.delete", target_type="schedule", target_id=item_id,
                            summary=(doc or {}).get("showTitle"))
     return {"ok": True}
+
+
+# ---------- Live Shows (private streaming + YouTube publish toggle) ----------
+LIVE_SHOW_STATES = ("scheduled", "live", "ended", "published")
+
+
+class LiveShowIn(BaseModel):
+    title: str
+    description: Optional[str] = None
+    coverImage: Optional[str] = None
+    scheduledAt: Optional[str] = None  # ISO 8601
+    expectedDurationMin: Optional[int] = None
+    status: Optional[str] = "scheduled"  # scheduled | live | ended | published
+    tier: Optional[str] = "premium"  # gating tier for playback in-app
+    # Recording (private on our secure host by default)
+    recordingUrl: Optional[str] = None
+    recordingStoragePath: Optional[str] = None
+    # Optional link to a currently-live YouTube broadcast
+    youtubeVideoId: Optional[str] = None
+    youtubeChannelHandle: Optional[str] = None
+    # Publish-to-YouTube toggle (does not upload — call /publish-to-youtube to actually upload)
+    publishToYoutube: bool = False
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+@api.get("/admin/live-shows")
+async def admin_list_live_shows(current = Depends(require_admin)):
+    items = await db.live_shows.find({}, {"_id": 0}).sort("createdAt", -1).to_list(200)
+    return items
+
+
+@api.post("/admin/live-shows")
+async def admin_create_live_show(body: LiveShowIn, current = Depends(require_admin)):
+    status = body.status if body.status in LIVE_SHOW_STATES else "scheduled"
+    doc = {
+        "id": str(uuid.uuid4()),
+        "title": body.title,
+        "description": body.description or "",
+        "coverImage": body.coverImage or "",
+        "scheduledAt": body.scheduledAt,
+        "expectedDurationMin": body.expectedDurationMin,
+        "status": status,
+        "tier": body.tier or "premium",
+        "recordingUrl": body.recordingUrl or "",
+        "recordingStoragePath": body.recordingStoragePath or "",
+        "youtubeVideoId": body.youtubeVideoId or "",
+        "youtubeChannelHandle": body.youtubeChannelHandle or "",
+        "youtubePublishedVideoId": "",  # populated when uploaded
+        "publishToYoutube": bool(body.publishToYoutube),
+        "publishedToYoutubeAt": None,
+        "createdBy": current["id"],
+        "createdAt": _now_iso(),
+    }
+    await db.live_shows.insert_one(doc.copy())
+    await audit_log.record(db, **audit_log.actor_from_user(current),
+                           action="live-show.create", target_type="live-show", target_id=doc["id"],
+                           summary=body.title)
+    return doc
+
+
+@api.patch("/admin/live-shows/{show_id}")
+async def admin_update_live_show(show_id: str, body: LiveShowIn, current = Depends(require_admin)):
+    updates = body.dict(exclude_unset=True)
+    if "status" in updates and updates["status"] not in LIVE_SHOW_STATES:
+        raise HTTPException(400, f"Invalid status. Must be one of {LIVE_SHOW_STATES}")
+    updates["updatedAt"] = _now_iso()
+    r = await db.live_shows.update_one({"id": show_id}, {"$set": updates})
+    if r.matched_count == 0:
+        raise HTTPException(404, "Live show not found")
+    doc = await db.live_shows.find_one({"id": show_id}, {"_id": 0})
+    await audit_log.record(db, **audit_log.actor_from_user(current),
+                           action="live-show.update", target_type="live-show", target_id=show_id,
+                           summary=(doc or {}).get("title"))
+    return doc
+
+
+@api.delete("/admin/live-shows/{show_id}")
+async def admin_delete_live_show(show_id: str, current = Depends(require_admin)):
+    doc = await db.live_shows.find_one({"id": show_id}, {"_id": 0, "title": 1})
+    r = await db.live_shows.delete_one({"id": show_id})
+    if r.deleted_count == 0:
+        raise HTTPException(404, "Live show not found")
+    await audit_log.record(db, **audit_log.actor_from_user(current),
+                           action="live-show.delete", target_type="live-show", target_id=show_id,
+                           summary=(doc or {}).get("title"))
+    return {"ok": True}
+
+
+@api.post("/admin/live-shows/{show_id}/attach-youtube-live")
+async def admin_attach_youtube_live(show_id: str, current = Depends(require_admin)):
+    """Attach the currently-detected YouTube LIVE broadcast to this live show and
+    mark the show status as 'live'. Uses whatever handle/channel is stored in
+    youtube_config; falls back to the YOUTUBE_HANDLE env var."""
+    show = await db.live_shows.find_one({"id": show_id}, {"_id": 0})
+    if not show:
+        raise HTTPException(404, "Live show not found")
+    cfg = await db.integration_state.find_one({"key": "youtube_config"}, {"_id": 0}) or {}
+    handle = cfg.get("handle") or os.environ.get("YOUTUBE_HANDLE", "@bbkigalifm")
+    live = await _yt_live_refresh(db, handle)
+    if not (live.get("isLive") and live.get("videoId")):
+        raise HTTPException(409, f"Channel {handle} is not currently live")
+    updates = {
+        "status": "live",
+        "youtubeVideoId": live["videoId"],
+        "youtubeChannelHandle": handle,
+        "youtubeThumbnail": live.get("thumbnail"),
+        "attachedAt": _now_iso(),
+        "updatedAt": _now_iso(),
+    }
+    await db.live_shows.update_one({"id": show_id}, {"$set": updates})
+    await audit_log.record(db, **audit_log.actor_from_user(current),
+                           action="live-show.attach-youtube", target_type="live-show", target_id=show_id,
+                           summary=show.get("title"), metadata={"videoId": live["videoId"], "handle": handle})
+    return {"ok": True, "videoId": live["videoId"], "handle": handle, **updates}
+
+
+@api.post("/admin/live-shows/{show_id}/end")
+async def admin_end_live_show(show_id: str, current = Depends(require_admin)):
+    show = await db.live_shows.find_one({"id": show_id}, {"_id": 0})
+    if not show:
+        raise HTTPException(404, "Live show not found")
+    await db.live_shows.update_one({"id": show_id}, {"$set": {"status": "ended", "endedAt": _now_iso(), "updatedAt": _now_iso()}})
+    await audit_log.record(db, **audit_log.actor_from_user(current),
+                           action="live-show.end", target_type="live-show", target_id=show_id,
+                           summary=show.get("title"))
+    return {"ok": True}
+
+
+@api.post("/admin/live-shows/{show_id}/publish-to-youtube")
+async def admin_publish_live_show_to_youtube(show_id: str, current = Depends(require_admin)):
+    """Upload the show's private recording to the connected YouTube channel.
+
+    Requires (a) a recording on our secure host and (b) YouTube OAuth2 refresh
+    token stored in integration_state.youtube_config. Returns detailed guidance
+    when either is missing.
+    """
+    from youtube_publish import upload_recording_to_youtube  # local import to avoid circular
+    show = await db.live_shows.find_one({"id": show_id}, {"_id": 0})
+    if not show:
+        raise HTTPException(404, "Live show not found")
+    if not show.get("recordingUrl") and not show.get("recordingStoragePath"):
+        raise HTTPException(400, "This live show has no recording uploaded yet. Upload the recording first, then try again.")
+    cfg = await db.integration_state.find_one({"key": "youtube_config"}, {"_id": 0}) or {}
+    if not cfg.get("oauthRefreshToken"):
+        raise HTTPException(412,
+            "YouTube channel is not connected for uploads yet. Go to Admin → YouTube → Connect Channel and complete the OAuth grant, then try again.")
+    try:
+        result = await upload_recording_to_youtube(
+            recording_url=show.get("recordingUrl") or "",
+            title=show.get("title") or "BB FM Kigali Live",
+            description=show.get("description") or "",
+            oauth_client_id=cfg.get("oauthClientId", ""),
+            oauth_client_secret=cfg.get("oauthClientSecret", ""),
+            refresh_token=cfg["oauthRefreshToken"],
+        )
+    except Exception as e:
+        logger.exception("[live-show] YouTube upload failed")
+        raise HTTPException(502, f"YouTube upload failed: {e}")
+    await db.live_shows.update_one({"id": show_id}, {"$set": {
+        "publishToYoutube": True,
+        "youtubePublishedVideoId": result.get("videoId"),
+        "publishedToYoutubeAt": _now_iso(),
+        "status": "published",
+        "updatedAt": _now_iso(),
+    }})
+    await audit_log.record(db, **audit_log.actor_from_user(current),
+                           action="live-show.publish-youtube", target_type="live-show", target_id=show_id,
+                           summary=show.get("title"), metadata={"videoId": result.get("videoId")})
+    return {"ok": True, "videoId": result.get("videoId"), "watchUrl": f"https://www.youtube.com/watch?v={result.get('videoId')}"}
+
+
+# ---------- Public live-shows (subscribers only) ----------
+@api.get("/live-shows")
+async def list_public_live_shows(user = Depends(get_optional_user)):
+    """Anyone can browse metadata; playback URL only revealed to active subscribers."""
+    items = await db.live_shows.find({"status": {"$in": ["live", "ended", "published"]}}, {"_id": 0}).sort("createdAt", -1).to_list(50)
+    sanitized = []
+    is_sub = _has_active_paid_sub(user)
+    for it in items:
+        safe = {k: v for k, v in it.items() if k not in ("recordingUrl", "recordingStoragePath", "youtubeVideoId")}
+        if is_sub:
+            safe["recordingUrl"] = it.get("recordingUrl") or ""
+            if it.get("youtubeVideoId"):
+                safe["youtubeEmbedUrl"] = f"https://www.youtube.com/embed/{it['youtubeVideoId']}?autoplay=1&playsinline=1&rel=0&modestbranding=1"
+            safe["requiresSubscription"] = False
+        else:
+            safe["requiresSubscription"] = True
+        sanitized.append(safe)
+    return sanitized
+
+
+# ---------- Admin YouTube channel config ----------
+class YouTubeConfigIn(BaseModel):
+    handle: Optional[str] = None
+    apiKey: Optional[str] = None
+    oauthClientId: Optional[str] = None
+    oauthClientSecret: Optional[str] = None
+    channelName: Optional[str] = None
+    channelId: Optional[str] = None
+
+
+@api.get("/admin/youtube/config")
+async def admin_get_youtube_config(current = Depends(require_admin)):
+    cfg = await db.integration_state.find_one({"key": "youtube_config"}, {"_id": 0}) or {}
+    # Never leak the client_secret or refresh_token — only report presence.
+    safe = {
+        "handle": cfg.get("handle") or os.environ.get("YOUTUBE_HANDLE", "@bbkigalifm"),
+        "apiKey": ("***" + (cfg.get("apiKey") or "")[-4:]) if cfg.get("apiKey") else (("***" + (os.environ.get("YOUTUBE_API_KEY") or "")[-4:]) if os.environ.get("YOUTUBE_API_KEY") else ""),
+        "hasApiKey": bool(cfg.get("apiKey") or os.environ.get("YOUTUBE_API_KEY")),
+        "hasOAuthClient": bool(cfg.get("oauthClientId") and cfg.get("oauthClientSecret")),
+        "hasRefreshToken": bool(cfg.get("oauthRefreshToken")),
+        "channelName": cfg.get("channelName"),
+        "channelId": cfg.get("channelId"),
+        "connectedAt": cfg.get("connectedAt"),
+        "callbackUrl": f"{PUBLIC_BASE_URL}/api/admin/youtube/callback",
+    }
+    return safe
+
+
+@api.put("/admin/youtube/config")
+async def admin_put_youtube_config(body: YouTubeConfigIn, current = Depends(require_admin)):
+    updates = {k: v for k, v in body.dict().items() if v is not None}
+    if not updates:
+        raise HTTPException(400, "No fields to update")
+    updates["updatedAt"] = _now_iso()
+    updates["updatedBy"] = current["id"]
+    await db.integration_state.update_one(
+        {"key": "youtube_config"},
+        {"$set": {"key": "youtube_config", **updates}},
+        upsert=True,
+    )
+    await audit_log.record(db, **audit_log.actor_from_user(current),
+                           action="youtube.config.update", target_type="integration", target_id="youtube_config",
+                           summary=updates.get("handle"))
+    return {"ok": True}
+
+
+@api.get("/admin/youtube/oauth-start")
+async def admin_youtube_oauth_start(current = Depends(require_admin)):
+    """Return the Google OAuth2 consent URL the admin should visit in a browser
+    to grant our app the youtube.upload scope. Once they authorize, Google
+    redirects back to /api/admin/youtube/callback with a `code` query param."""
+    cfg = await db.integration_state.find_one({"key": "youtube_config"}, {"_id": 0}) or {}
+    client_id = cfg.get("oauthClientId") or os.environ.get("YOUTUBE_OAUTH_CLIENT_ID", "")
+    if not client_id:
+        raise HTTPException(412, "Set Google OAuth Client ID in Admin → YouTube first.")
+    redirect_uri = f"{PUBLIC_BASE_URL}/api/admin/youtube/callback"
+    state = str(uuid.uuid4())
+    await db.integration_state.update_one({"key": "youtube_oauth_state"},
+                                          {"$set": {"key": "youtube_oauth_state", "state": state, "adminId": current["id"], "createdAt": _now_iso()}},
+                                          upsert=True)
+    params = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly",
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": state,
+        "include_granted_scopes": "true",
+    }
+    from urllib.parse import urlencode
+    url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
+    return {"url": url, "redirectUri": redirect_uri}
+
+
+@api.get("/admin/youtube/callback")
+async def admin_youtube_oauth_callback(code: Optional[str] = None, state: Optional[str] = None, error: Optional[str] = None):
+    """OAuth2 callback endpoint Google redirects to after user consents.
+    Exchanges the authorization code for a refresh_token and stores it."""
+    if error:
+        return HTMLResponse(f"<h2>YouTube connection failed</h2><p>{error}</p>", status_code=400)
+    if not code or not state:
+        return HTMLResponse("<h2>Missing code/state</h2>", status_code=400)
+    stored = await db.integration_state.find_one({"key": "youtube_oauth_state"}, {"_id": 0}) or {}
+    if stored.get("state") != state:
+        return HTMLResponse("<h2>OAuth state mismatch — try again</h2>", status_code=400)
+    cfg = await db.integration_state.find_one({"key": "youtube_config"}, {"_id": 0}) or {}
+    client_id = cfg.get("oauthClientId") or os.environ.get("YOUTUBE_OAUTH_CLIENT_ID", "")
+    client_secret = cfg.get("oauthClientSecret") or os.environ.get("YOUTUBE_OAUTH_CLIENT_SECRET", "")
+    if not client_id or not client_secret:
+        return HTMLResponse("<h2>OAuth client not configured</h2>", status_code=412)
+    redirect_uri = f"{PUBLIC_BASE_URL}/api/admin/youtube/callback"
+    try:
+        import httpx as _httpx
+        async with _httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.post("https://oauth2.googleapis.com/token", data={
+                "code": code,
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "redirect_uri": redirect_uri,
+                "grant_type": "authorization_code",
+            })
+    except Exception as e:
+        return HTMLResponse(f"<h2>Token exchange failed</h2><p>{e}</p>", status_code=502)
+    if r.is_error:
+        return HTMLResponse(f"<h2>Token exchange failed</h2><pre>{r.text}</pre>", status_code=502)
+    payload = r.json() or {}
+    refresh_token = payload.get("refresh_token")
+    if not refresh_token:
+        return HTMLResponse("<h2>Google did not return a refresh_token — revoke access in your Google Account then retry with 'consent' prompt.</h2>", status_code=502)
+    # Look up the channel details with the freshly-issued access_token
+    channel_name = None
+    channel_id = None
+    try:
+        access_token = payload.get("access_token")
+        async with _httpx.AsyncClient(timeout=15.0) as client:
+            cr = await client.get("https://www.googleapis.com/youtube/v3/channels", params={"part": "snippet", "mine": "true"}, headers={"Authorization": f"Bearer {access_token}"})
+        if cr.status_code == 200:
+            items = (cr.json() or {}).get("items") or []
+            if items:
+                channel_id = items[0].get("id")
+                channel_name = (items[0].get("snippet") or {}).get("title")
+    except Exception:
+        logger.exception("[youtube] channel lookup after OAuth failed")
+    await db.integration_state.update_one({"key": "youtube_config"},
+                                          {"$set": {"key": "youtube_config",
+                                                    "oauthRefreshToken": refresh_token,
+                                                    "channelName": channel_name,
+                                                    "channelId": channel_id,
+                                                    "connectedAt": _now_iso()}},
+                                          upsert=True)
+    return HTMLResponse(f"""
+<!doctype html><meta charset='utf-8'><title>YouTube connected</title>
+<style>body{{font-family:system-ui;background:#0f0f13;color:#fff;padding:40px;text-align:center}}
+h1{{color:#ff6600}}.card{{max-width:520px;margin:40px auto;padding:32px;border:1px solid #333;border-radius:12px;background:#1a1a1f}}</style>
+<div class='card'>
+  <h1>✅ YouTube Connected</h1>
+  <p><strong>Channel:</strong> {channel_name or 'unknown'}</p>
+  <p>You can close this tab and return to the BB FM admin panel. Live-show → Publish to YouTube is now available.</p>
+</div>
+""")
+
+
+# ---------- Admin recording upload (proxy to the video upload endpoint) ----------
+@api.post("/admin/live-shows/{show_id}/recording")
+async def admin_upload_recording(show_id: str, file: UploadFile = File(...), current = Depends(require_admin)):
+    """Convenience wrapper: upload a recording mp4/mov/etc directly to Emergent
+    Object Storage and attach it to the given live show. Kept private (never
+    exposed publicly until admin explicitly publishes it)."""
+    show = await db.live_shows.find_one({"id": show_id}, {"_id": 0})
+    if not show:
+        raise HTTPException(404, "Live show not found")
+    # Reuse admin_upload_video for the actual bytes → storage upload + validation.
+    result = await admin_upload_video(file=file, current=current)  # returns {url, storagePath, contentType, size}
+    await db.live_shows.update_one({"id": show_id}, {"$set": {
+        "recordingUrl": result["url"],
+        "recordingStoragePath": result["storagePath"],
+        "recordingContentType": result["contentType"],
+        "recordingSize": result["size"],
+        "status": "ended" if show.get("status") == "live" else show.get("status", "ended"),
+        "recordingUploadedAt": _now_iso(),
+        "updatedAt": _now_iso(),
+    }})
+    return result
 
 
 # ---------- Subscriptions & Payments ----------
@@ -1325,6 +1796,14 @@ async def momo_callback(request: Request):
                 "status": final_status_v, "besoftCallback": payload,
                 "updatedAt": datetime.now(timezone.utc).isoformat(),
             }})
+            if final_status_v == "success":
+                _show_doc = await db.shows.find_one({"id": vod.get("showId")}, {"_id": 0, "title": 1})
+                await _send_payment_receipt(
+                    user_id=vod.get("userId"), phone=vod.get("phone"),
+                    plan_label=f"VOD unlock — {(_show_doc or {}).get('title', 'Video')}",
+                    amount=vod.get("amount", VOD_PRICE_RWF), currency=vod.get("currency", "RWF"),
+                    provider="MTN MoMo", reference=vod["reference"],
+                )
             return {"ok": True, "status": final_status_v, "reference": vod["reference"], "kind": "vod"}
         return {"ok": True, "note": "no matching payment"}
 
@@ -1346,6 +1825,13 @@ async def momo_callback(request: Request):
             await db.users.update_one(
                 {"id": payment["userId"]},
                 {"$set": {"tier": p["tier"], "subscriptionExpiresAt": expires.isoformat(), "currentPlan": payment["plan"]}},
+            )
+            await _send_payment_receipt(
+                user_id=payment["userId"], phone=payment.get("phone"),
+                plan_label=p.get("label", payment["plan"]),
+                amount=p.get("amount", payment.get("amount")),
+                currency=p.get("currency", payment.get("currency", "RWF")),
+                provider="MTN MoMo", reference=payment["reference"],
             )
     return {"ok": True, "status": final_status, "reference": payment["reference"]}
 
@@ -1376,6 +1862,13 @@ async def momo_status(reference: str, user = Depends(get_current_user)):
                         if plan:
                             expires = datetime.now(timezone.utc) + timedelta(days=plan["days"])
                             await db.users.update_one({"id": user["id"]}, {"$set": {"tier": plan["tier"], "subscriptionExpiresAt": expires.isoformat(), "currentPlan": p["plan"]}})
+                            await _send_payment_receipt(
+                                user_id=user["id"], phone=p.get("phone") or user.get("phone"),
+                                plan_label=plan.get("label", p["plan"]),
+                                amount=plan.get("amount", p.get("amount")),
+                                currency=plan.get("currency", p.get("currency", "RWF")),
+                                provider="MTN MoMo", reference=p["reference"],
+                            )
         except httpx.RequestError as e:
             logger.warning("BeSoft status poll failed: %s", e)
 
@@ -1570,6 +2063,13 @@ async def paypal_verify(subscription_id: str, user = Depends(get_current_user)):
             {"id": user["id"]},
             {"$set": {"tier": pm["tier"], "subscriptionExpiresAt": expires.isoformat(), "currentPlan": payment["plan"]}},
         )
+        await _send_payment_receipt(
+            user_id=user["id"], phone=user.get("phone"),
+            plan_label=pm.get("label", payment["plan"]),
+            amount=payment.get("amount", pm.get("amount")),
+            currency=payment.get("currency", "EUR"),
+            provider="PayPal", reference=subscription_id,
+        )
     return {"status": final_status, "paypalStatus": status_raw, "subscriptionId": subscription_id}
 
 
@@ -1620,6 +2120,13 @@ async def paypal_webhook(request: Request):
         expires = datetime.now(timezone.utc) + timedelta(days=pm["days"])
         await db.payments.update_one({"reference": sub_id}, {"$set": {"status": "success", "providerPayload": payload, "updatedAt": datetime.now(timezone.utc).isoformat()}})
         await db.users.update_one({"id": payment["userId"]}, {"$set": {"tier": pm["tier"], "subscriptionExpiresAt": expires.isoformat(), "currentPlan": payment["plan"]}})
+        await _send_payment_receipt(
+            user_id=payment["userId"], phone=payment.get("phone"),
+            plan_label=pm.get("label", payment["plan"]),
+            amount=payment.get("amount", pm.get("amount")),
+            currency=payment.get("currency", "EUR"),
+            provider="PayPal", reference=sub_id,
+        )
     elif event_type in ("BILLING.SUBSCRIPTION.CANCELLED", "BILLING.SUBSCRIPTION.EXPIRED", "BILLING.SUBSCRIPTION.SUSPENDED"):
         await db.payments.update_one({"reference": sub_id}, {"$set": {"status": "failed", "providerPayload": payload, "updatedAt": datetime.now(timezone.utc).isoformat()}})
         await db.users.update_one({"id": payment["userId"]}, {"$set": {"tier": "free"}})
@@ -1726,6 +2233,14 @@ async def vod_purchase_capture(show_id: str, order_id: str, user = Depends(get_c
         {"orderId": order_id, "userId": user["id"], "showId": show_id},
         {"$set": {"status": final, "providerPayload": data, "updatedAt": datetime.now(timezone.utc).isoformat()}},
     )
+    if final == "success":
+        _sd = await db.shows.find_one({"id": show_id}, {"_id": 0, "title": 1})
+        await _send_payment_receipt(
+            user_id=user["id"], phone=user.get("phone"),
+            plan_label=f"VOD unlock — {(_sd or {}).get('title', 'Video')}",
+            amount=VOD_PRICE_EUR, currency="EUR",
+            provider="PayPal", reference=order_id,
+        )
     return {"status": final, "paypalStatus": status_raw, "showId": show_id}
 
 
@@ -1851,6 +2366,14 @@ async def vod_momo_status(show_id: str, reference: str, user = Depends(get_curre
                 if new_status != p["status"]:
                     await db.vod_purchases.update_one({"reference": reference}, {"$set": {"status": new_status, "besoftStatusPayload": data, "updatedAt": datetime.now(timezone.utc).isoformat()}})
                     p["status"] = new_status
+                    if new_status == "success":
+                        _sd = await db.shows.find_one({"id": p.get("showId")}, {"_id": 0, "title": 1})
+                        await _send_payment_receipt(
+                            user_id=p.get("userId"), phone=p.get("phone") or user.get("phone"),
+                            plan_label=f"VOD unlock — {(_sd or {}).get('title', 'Video')}",
+                            amount=p.get("amount", VOD_PRICE_RWF), currency=p.get("currency", "RWF"),
+                            provider="MTN MoMo", reference=reference,
+                        )
         except httpx.RequestError as e:
             logger.warning("BeSoft VOD status poll failed: %s", e)
     return {"reference": reference, "status": p["status"], "amount": p.get("amount"), "currency": p.get("currency")}
@@ -2870,6 +3393,10 @@ async def _stripe_grant_from_session(session_obj) -> None:
         return
     now = datetime.now(timezone.utc)
 
+    # Look up user's phone for the SMS receipt (once).
+    _u = await db.users.find_one({"id": user_id}, {"_id": 0, "phone": 1})
+    user_phone = (_u or {}).get("phone")
+
     if purchase_type == "subscription":
         plan_key = md.get("plan")
         plan = PLAN_CATALOG.get(plan_key)
@@ -2884,6 +3411,12 @@ async def _stripe_grant_from_session(session_obj) -> None:
                 "provider": "stripe",
                 "updatedAt": now.isoformat(),
             }},
+        )
+        await _send_payment_receipt(
+            user_id=user_id, phone=user_phone,
+            plan_label=plan.get("label", plan_key),
+            amount=plan.get("amount"), currency=plan.get("currency", "EUR"),
+            provider="Card (Stripe)", reference=getattr(session_obj, "id", None),
         )
     elif purchase_type == "vod":
         show_id = md.get("show_id")
@@ -2902,6 +3435,13 @@ async def _stripe_grant_from_session(session_obj) -> None:
                 "createdAt": now.isoformat(),
             }, "$set": {"status": "success"}},
             upsert=True,
+        )
+        show_doc = await db.shows.find_one({"id": show_id}, {"_id": 0, "title": 1})
+        await _send_payment_receipt(
+            user_id=user_id, phone=user_phone,
+            plan_label=f"VOD unlock — {(show_doc or {}).get('title', 'Video')}",
+            amount=VOD_PRICE_EUR, currency="EUR",
+            provider="Card (Stripe)", reference=getattr(session_obj, "id", None),
         )
 
     # Mark payment as success

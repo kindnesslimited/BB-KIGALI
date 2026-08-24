@@ -147,13 +147,17 @@ async def get_cached_or_refresh(db, handle: Optional[str] = None, max_age_sec: i
 
 
 async def periodic_live_loop(db):
-    """Background loop refreshing the live-now cache."""
+    """Background loop refreshing the live-now cache using the admin-configured
+    channel handle (from `integration_state.youtube_config`) when present,
+    otherwise the YOUTUBE_HANDLE env var."""
     interval = max(60, YOUTUBE_LIVE_POLL_SECONDS)
     # Slight startup delay so we don't hammer YouTube on cold boot.
     await asyncio.sleep(15)
     while True:
         try:
-            await refresh_and_store(db)
+            cfg = await db.integration_state.find_one({"key": "youtube_config"}, {"_id": 0}) or {}
+            handle = cfg.get("handle") or YOUTUBE_HANDLE
+            await refresh_and_store(db, handle)
         except Exception:
             logger.exception("[youtube-live] periodic loop crashed (will retry)")
         await asyncio.sleep(interval)

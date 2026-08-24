@@ -2,35 +2,49 @@
 
 Mobile + web platform for BB FM Kigali (Rwanda). Live radio + VOD + News + Subscriptions + Admin console.
 
-## Latest updates (iter 29 — App Store Readiness)
-1. **Apple 3.1.1 IAP compliance** ✅ — On iOS, ALL non-IAP payment methods are hidden:
-   - `/checkout` shows a clean **"PREMIUM COMING SOON ON iOS"** gate with a feature list of what's already free on iOS and a CONTINUE FREE button.
-   - `/video/[id]` locked-video modal shows a **"COMING SOON ON iOS"** gate instead of Stripe/PayPal/MoMo cards.
-   - Web and Android continue to show full payment options (PayPal, Stripe, MoMo).
-2. **Apple 5.1.1(v) — Sign in with Apple token revocation** ✅ — On account deletion, the backend now calls Apple's `/auth/revoke` endpoint. New helpers in `apple_auth.py`:
-   - `exchange_code_for_refresh_token()` — swaps the one-shot `authorizationCode` from `expo-apple-authentication` for a long-lived `refresh_token` stored on the user record.
-   - `revoke_apple_refresh_token()` — signs a client_secret JWT (ES256) and posts to Apple's revoke endpoint on delete.
-   - If `APPLE_TEAM_ID` / `APPLE_KEY_ID` / `APPLE_CLIENT_ID` / `APPLE_PRIVATE_KEY` env vars aren't provisioned yet (they're currently empty placeholders in `backend/.env`), Apple calls silently no-op and account deletion still completes locally.
-   - DELETE /api/auth/me now returns `{ok: true, appleRevoked: bool}`.
-3. **Over-declared iOS permissions cleaned up** ✅ — `NSMicrophoneUsageDescription` and `NSUserTrackingUsageDescription` removed from `app.json` (no mic recording or ATT tracking in the app).
-4. **"Coming soon" placeholder removed** — Airtel Money row deleted from checkout.
-5. **Root ErrorBoundary added** — new `/src/components/ErrorBoundary.tsx` wraps the entire app in `_layout.tsx` with a friendly Reload UI if the JS bundle crashes.
-6. **All 10 backend + all frontend flows passed the testing agent** — no regressions.
+## Latest updates (iter 31 — Live Shows CMS + Admin-managed YouTube Channel)
 
-## Env vars to provision before TestFlight goes live
-Add these to `backend/.env` once you have your Apple Developer credentials so token revocation actually reaches Apple's servers:
-```
-APPLE_TEAM_ID="10-char Team ID from Apple Developer"
-APPLE_KEY_ID="Key ID of your Sign in with Apple key"
-APPLE_CLIENT_ID="com.emergent.radiovodplatform.reybr3"
-APPLE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...contents of AuthKey_XXX.p8...\n-----END PRIVATE KEY-----"
-```
+### 1. Live Shows Admin CMS
+- **New collection `live_shows`** with lifecycle: `scheduled → live → ended → published`
+- **CRUD endpoints** — `GET/POST/PATCH/DELETE /api/admin/live-shows` + `/end`, `/attach-youtube-live`, `/recording` (upload), `/publish-to-youtube` actions
+- **Fields**: title, description, coverImage, scheduledAt, expectedDurationMin, status, tier, recordingUrl (private storage path), youtubeVideoId (attached live broadcast), youtubePublishedVideoId (after upload), publishToYoutube toggle
+- **Recording storage** — Emergent Object Storage, private by default. Reuses the hardened video-upload MIME/magic-byte validator from iter 27
+- **Public endpoint `GET /api/live-shows`** — subscribers see recordingUrl + youtubeEmbedUrl; non-subscribers see title/cover only + `requiresSubscription: true`
 
-## Prior updates
-- iter 28: YouTube LIVE auto-detection, Featured Schedule Slot, Program Reminders, GCP+TestFlight support ticket
-- iter 27: Video upload MIME/magic-byte fix; schedule cover image + status
-- iter 26: iOS privacy manifests; VOD dedicated checkout modal; News source fields; Web responsive layout
-- iter 25 and earlier: full app baseline
+### 2. Admin-Managed YouTube Channel Config
+- **New `integration_state.youtube_config` doc** holding handle, apiKey, oauthClientId, oauthClientSecret, oauthRefreshToken, channelName, channelId — admin can switch channels without touching code or env
+- **`GET/PUT /api/admin/youtube/config`** — read/write; GET never leaks secrets/refresh_token, only presence booleans
+- **`/api/admin/youtube/oauth-start` + `/callback`** — full OAuth2 authorization_code flow. Opens Google consent, receives code, exchanges for refresh_token, looks up channelName/ID, stores everything encrypted-at-rest in Mongo
+- **Periodic YouTube LIVE detection loop** now reads the admin-configured handle first (falls back to `YOUTUBE_HANDLE` env)
+
+### 3. Publish-to-YouTube (auto-upload)
+- **New backend module `youtube_publish.py`** — refreshes access_token from stored refresh_token, downloads the recording from our secure host, multipart-uploads to `youtube.upload` API (privacy default `unlisted`)
+- **`POST /api/admin/live-shows/{id}/publish-to-youtube`** — 400 if no recording, 412 if channel not connected, else uploads and stamps `youtubePublishedVideoId` + `publishedToYoutubeAt`
+
+### 4. Admin UI
+- **`/admin/live-shows`** — CRUD grid with cover thumbnails, colored status pills (LIVE red, ENDED yellow, PUBLISHED green), action buttons per state: ATTACH YOUTUBE LIVE / END LIVE / UPLOAD RECORDING / REPLACE RECORDING / PUBLISH TO YOUTUBE
+- **`/admin/youtube-config`** — connection status card (checkmarks for API Key / OAuth Client / Channel Authorized), channel handle input, API-key + OAuth Client ID/Secret fields (secure entry), one-tap "Connect Channel" button that opens Google consent
+- Two new tiles in the Admin Dashboard
+
+### 5. Verified by testing agent
+- **23/23 backend pytest tests passed** — API contracts, subscription gating, OAuth error branches, config secret-safety
+- Recording upload is admin-only + validated by the hardened multipart video validator
+
+## Env vars that unlock advanced features
+Existing:
+```
+YOUTUBE_API_KEY           # already set — used as fallback
+YOUTUBE_HANDLE            # already set — used as fallback when admin_config.handle absent
+```
+Optional fallbacks (admin can supply via /admin/youtube-config instead):
+```
+YOUTUBE_OAUTH_CLIENT_ID
+YOUTUBE_OAUTH_CLIENT_SECRET
+```
+Apple 5.1.1(v) revocation (still pending user's provisioning):
+```
+APPLE_TEAM_ID  APPLE_KEY_ID  APPLE_CLIENT_ID  APPLE_PRIVATE_KEY
+```
 
 ## Test credentials
 See `/app/memory/test_credentials.md`.

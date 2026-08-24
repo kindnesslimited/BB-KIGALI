@@ -1,0 +1,44 @@
+{
+  "summary": "Iter30 (subscription enforcement + SMS receipts + NaN fix + in-app YouTube live) PASSED end-to-end. Backend: 12/12 pytest tests green — GET /api/live/status never leaks watchUrl/embedUrl/videoId to unauth or free users; premium users (tier=premium + future subscriptionExpiresAt) receive all playback fields with requiresSubscription:false. GET /api/live/session returns 401 unauth, 402 for free & expired subs, and 200/404 for premium. GET /api/shows strips videoUrl/streamUrl/downloadUrl/sourceUrl/youtubeUrl/embedUrl/hlsUrl for non-premium and preserves for premium. `_send_payment_receipt` helper exists, is invoked at 9 upgrade sites (>=5 required), and writes to sms_deliveries collection on invocation (verified by direct helper call — before/after count). Frontend verified on live web preview at mobile viewport 390x844: (a) /checkout?plan=basic_monthly (no amount param) renders '1.00 EUR / ≈ 1,000 RWF via Mobile Money' — NO NaN; /checkout?plan=premium_yearly&amount=xyz (bogus) renders '30.00 EUR / ≈ 30,000 RWF via Mobile Money' — NO NaN; (b) Home LIVE banner shows 'LIVE NOW · YOUTUBE' pill + Kagame press-conf thumbnail + button text 'WATCH LIVE IN APP' (routes to /live not external URL); (c) Tapping banner as FREE user routes to /live, backend returns 402 on /api/live/session, and UI shows 'SUBSCRIPTION REQUIRED' gate with 'CHOOSE A PACKAGE' button + testID='live-gate-paywall' visible. (d) When the same user is promoted to premium in DB and taps the banner, /live renders the YouTube iframe (embed error 'Playback ID ...' shown is a YouTube-side embedding restriction on that specific press-conf video, NOT an app bug). Deprecated packages detected: NONE. SafeAreaView issues detected: NONE.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "Deep-link URL to /live via browser address bar", "issue": "Directly navigating to https://<host>/live via page.goto redirects to home (/) — /api/live/session is never called and the modal presentation route is not matched by Expo Router web static output. Tapping the WATCH LIVE IN APP button (router.push('/live')) works correctly. This affects only web-preview deep-links; native builds and in-app navigation are unaffected. LOW priority — the app never exposes /live as a shareable link.", "affected_testIDs": []}
+    ],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "props.pointerEvents deprecation", "issue": "Console warning on OTP screen: 'props.pointerEvents is deprecated. Use style.pointerEvents'. Persistent from prior iters, not iter30 code. Reference: /app/frontend/app/auth/otp.tsx (indirect via react-native-otp-entry or InputAccessoryView)."},
+      {"component": "expo-notifications on web", "issue": "Console warning: '[expo-notifications] Listening to push token changes is not yet fully supported on web'. Cosmetic; native builds unaffected."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter30_sub_gating_and_sms_receipt.py",
+    "/app/test_reports/pytest/pytest_iter30.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: If /live must be reachable via a shareable web URL (marketing link / QR), investigate why Expo Router's static web output does not serve app/live.tsx directly and instead falls through to (tabs). Likely a `presentation: fullScreenModal` interaction with static export. Native builds are unaffected.",
+    "OPTIONAL: The current YouTube LIVE broadcast (Kagame press conference) has embedding disabled by the broadcaster, so premium users see the YouTube 'Playback ID' error in the in-app iframe. Consider surfacing a friendlier fallback link 'Open in YouTube' when the iframe reports a playback error (postMessage / onError).",
+    "OPTIONAL: Add pytest-asyncio to requirements.txt (needed for iter30 test file). Currently installed manually via pip."
+  ],
+  "critical_code_review_comments": [
+    "server.py L271-297 — _has_active_paid_sub / _has_premium correctly gate on both tier AND expiry. datetime.fromisoformat is wrapped in try/except so a malformed subscriptionExpiresAt string does not accidentally grant access. Good.",
+    "server.py L861-893 — _sanitize_live_for_public + live_status stripping is idempotent: even when the broadcast is not live, protected fields are stripped defensively. Excellent belt-and-suspenders.",
+    "server.py L896-913 — /live/session returns HTTP 402 (Payment Required) which is semantically correct; frontend live.tsx matches on this to show the paywall gate.",
+    "server.py L497-527 — _send_payment_receipt swallows ALL exceptions so a SMS provider outage never blocks payment success. Correct 'best effort' pattern. sms_deliveries collection captures every attempt (per _send_sms).",
+    "live.tsx correctly uses <iframe> on web (Platform.OS==='web') and <WebView> on native. Both branches load session.embedUrl, which is only obtainable via the auth-gated /live/session endpoint — the raw YouTube URL is NEVER exposed to non-subscribers via any client code path.",
+    "checkout.tsx L214-227 — safeRwfAmount/safeEurAmount fallback prevents NaN entirely and canonically maps back to the PLAN_CATALOG price. Verified live for both missing and non-numeric `amount` params."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter30_sub_gating_and_sms_receipt.py (NEW)"
+  ],
+  "success_rate": {"backend": "100% (12/12)", "frontend": "100% (all iter30 acceptance criteria verified on live web preview)"},
+  "seed_data_creation": "Used admin phones from ADMIN_PHONES: 250794230137 (promoted to premium in DB via test fixture, restored to free on teardown) and 250788316999 (kept as tier=free). No net data change; all created OTP challenges are consumed on verify.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "test_iter30_sub_gating_and_sms_receipt.py is reusable — run with `pytest tests/test_iter30_sub_gating_and_sms_receipt.py -n 0 -p asyncio`. The -n 0 override is REQUIRED to bypass pytest-xdist parallelization because both fixtures rely on the same OTP challenge collection state per phone. Do NOT use non-admin phones for auth in this env — the WhatsApp SMS provider actually sends OTPs and dev testCode is not returned. Only use phones from ADMIN_PHONES for automated tests. If DB tier state gets stuck between iters, reset with the tiny script in test_reports/iteration_30 notes: db.users.update_many({phone: /250794230137/}, {\\$set: {tier: 'free', subscriptionExpiresAt: null}}).",
+  "rca_of_issue": "N/A — no application bug encountered. The only observed anomaly (direct URL /live redirecting to home in web preview) is an Expo Router static-export limitation and does not affect the in-app user flow (banner tap → router.push('/live') works). The YouTube iframe playback error is external (broadcaster disabled embedding on the current LIVE video)."
+}

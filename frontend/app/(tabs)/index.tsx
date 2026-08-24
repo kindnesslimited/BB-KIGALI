@@ -61,8 +61,9 @@ export default function Home() {
   });
 
   const openYouTubeLive = () => {
-    if (!liveStatus.watchUrl) return;
-    Linking.openURL(liveStatus.watchUrl).catch(() => {});
+    // Keep playback inside the app — subscription-gated /live route
+    if (!liveStatus.isLive) return;
+    router.push("/live");
   };
 
   const toggleReminder = async (slot: Sched) => {
@@ -119,7 +120,7 @@ export default function Home() {
       )}
 
       {/* YouTube LIVE detection banner — appears automatically when @bbkigalifm is live */}
-      {liveStatus.isLive && liveStatus.videoId && (
+      {liveStatus.isLive && (
         <Pressable onPress={openYouTubeLive} style={styles.ytLiveBanner} testID="home-yt-live-banner">
           <Image source={{ uri: liveStatus.thumbnail }} style={StyleSheet.absoluteFill} contentFit="cover" />
           <LinearGradient colors={["rgba(15,15,19,0.05)", "rgba(15,15,19,0.55)", "rgba(15,15,19,0.9)"]} locations={[0, 0.55, 1]} style={StyleSheet.absoluteFill} />
@@ -130,8 +131,8 @@ export default function Home() {
             </View>
             <Text numberOfLines={2} style={styles.ytLiveTitle}>{liveStatus.title || "BB Kigali FM is LIVE"}</Text>
             <View style={styles.ytLiveBtn}>
-              <Ionicons name="logo-youtube" size={16} color="#fff" />
-              <Text style={styles.ytLiveBtnText}>WATCH ON YOUTUBE</Text>
+              <Ionicons name="play-circle" size={16} color="#fff" />
+              <Text style={styles.ytLiveBtnText}>WATCH LIVE IN APP</Text>
             </View>
           </View>
         </Pressable>

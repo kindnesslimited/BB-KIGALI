@@ -208,16 +208,23 @@ export default function Checkout() {
   const eurPrice: Record<string, string> = {
     basic_monthly: "1.00", basic_yearly: "10.00", premium_monthly: "3.00", premium_yearly: "30.00",
   };
+  const rwfPrice: Record<string, number> = {
+    basic_monthly: 1000, basic_yearly: 10000, premium_monthly: 3000, premium_yearly: 30000,
+  };
+  // Fallback resolves NaN when amount route param is missing or non-numeric.
+  const parsedAmount = Number(amount);
+  const safeRwfAmount = Number.isFinite(parsedAmount) && parsedAmount > 0
+    ? parsedAmount
+    : (rwfPrice[String(plan)] || 0);
+  const safeEurAmount = eurPrice[String(plan)] || "0.00";
   const isCardMethod = method === "paypal" || method === "stripe";
   const isPayPal = method === "paypal";
   const displayCurrency = isCardMethod ? "EUR" : "RWF";
-  const displayAmount = isCardMethod
-    ? eurPrice[String(plan)] || "0.00"
-    : Number(amount).toLocaleString();
+  const displayAmount = isCardMethod ? safeEurAmount : safeRwfAmount.toLocaleString();
   // Parallel: always show both
   const parallelText = isCardMethod
-    ? `≈ ${Number(amount).toLocaleString()} RWF via Mobile Money`
-    : `≈ ${eurPrice[String(plan)] || "0"} EUR via Card / PayPal`;
+    ? `≈ ${safeRwfAmount.toLocaleString()} RWF via Mobile Money`
+    : `≈ ${safeEurAmount} EUR via Card / PayPal`;
 
   return (
     <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1, backgroundColor: colors.surface }}>

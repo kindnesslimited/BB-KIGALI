@@ -1,0 +1,40 @@
+{
+  "summary": "Iter 31 backend-only testing: Live Shows CMS + admin-managed YouTube channel connection + recording/publish pipeline. Wrote 23 pytest cases in /app/backend/tests/test_iter31_live_shows.py covering full admin CRUD on /api/admin/live-shows, lifecycle actions (/end, /attach-youtube-live, /publish-to-youtube with 400 no-recording + 412 no-refresh-token branches), public /api/live-shows subscription gating (strips recordingUrl/recordingStoragePath/youtubeVideoId for unauth, exposes recordingUrl + youtubeEmbedUrl for premium), admin YouTube config GET/PUT (never leaks clientSecret/refreshToken, PUT empty payload -> 400), oauth-start (412 without clientId, else Google consent URL + persisted state), oauth callback input validation branches (missing code, mismatched state -> HTML 400), and youtube_live.periodic_live_loop resolves handle from db.integration_state.youtube_config first then falls back to env YOUTUBE_HANDLE. All 23 tests PASS on 2 consecutive runs with the enforced xdist parallel config (-n 2 --dist loadscope).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/live-shows", "issue": "Public payload also exposes youtubePublishedVideoId + youtubeChannelHandle fields (not on the strip list). Not a security issue for public/published shows but if a show is 'ended' and admin has already published it, the videoId is discoverable via youtubePublishedVideoId even for non-subscribers. Consider adding to the strip list or intentionally keep since 'published' YouTube videos are public by nature."},
+      {"endpoint": "POST /api/admin/live-shows/{id}/recording", "issue": "Not exercised by tests — needs a real multipart video upload. Manual verification recommended (test file iter22/iter27 uploads validators are reused so likely OK)."},
+      {"endpoint": "GET /api/admin/youtube/config", "issue": "apiKey field is masked to '***' + last-4 chars, which is fine, but this partial-masking is not documented in the review request (which said 'never returns raw clientSecret / refreshToken'). Both clientSecret and refreshToken are correctly withheld — no bug, just a doc note."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter31_live_shows.py",
+    "/app/test_reports/pytest/pytest_iter31.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: consider stripping youtubePublishedVideoId / youtubeChannelHandle from public /api/live-shows payload when caller is not subscribed, for consistency with the youtubeVideoId strip rule.",
+    "Live-show recording upload endpoint (POST /admin/live-shows/{id}/recording) is not covered by automated tests — do a manual multipart upload smoke test before shipping."
+  ],
+  "critical_code_review_comments": [
+    "youtube_publish.upload_recording_to_youtube uses in-memory buffering (async _download_recording -> bytes). Fine up to ~500 MB per the docstring, but for larger recordings switch to resumable upload streaming — noted in the code comment.",
+    "OAuth state is stored under a SINGLE integration_state doc key='youtube_oauth_state' — concurrent admin OAuth attempts will overwrite each other. Low priority (only one admin per install), but consider keying by adminId if that changes.",
+    "admin/live-shows GET is limited to 200 items and public/live-shows to 50 — reasonable, but no pagination endpoint. If catalog grows beyond that, admins will silently lose visibility of older shows."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter31_live_shows.py (new)",
+    "/app/test_reports/pytest/pytest_iter31.xml (new)"
+  ],
+  "success_rate": {"backend": "100% (23/23)", "frontend": "not tested (backend-only per request)"},
+  "seed_data_creation": "Test suite creates & deletes throwaway live shows (title prefix TEST_iter31_*) per test. Also writes/updates db.integration_state.youtube_config (handle, oauthClientId, oauthClientSecret) — those remain in the DB after the run; harmless test values. Admin phone users are promoted to premium during the session and reverted to free on module teardown.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The default pytest.ini enforces `-n 2 --dist loadscope`. All admin-auth tests share OTP challenges keyed by phone — parallel workers using the SAME admin phone will race on /api/auth/otp/start (each start upserts the same otp_challenges doc; the first verify deletes it). This suite works around that by (a) picking a DIFFERENT admin phone per xdist worker inside the admin_headers fixture and (b) a retry loop in _otp_login. Copy this pattern for future iter tests that need admin auth. Also note: /api/admin/youtube/oauth-start returns a stable Google URL; do NOT test the real code-exchange in /callback (only the 400 validation branches were covered here). /admin/live-shows/{id}/attach-youtube-live may return 200 (channel actually live) or 409 (not live) depending on real BB FM YouTube state; both are accepted as valid.",
+  "rca_of_issue": "N/A — no bugs found. One transient test-suite flakiness was traced to xdist workers OTP-racing on the same admin phone; fixed by per-worker admin phone selection and a retry-with-backoff in the OTP helper."
+}

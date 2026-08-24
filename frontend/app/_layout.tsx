@@ -92,6 +92,9 @@ export default function RootLayout() {
                   <Stack.Screen name="admin/sms" />
                   <Stack.Screen name="admin/payments" />
                   <Stack.Screen name="admin/schedule" />
+                <Stack.Screen name="admin/live-shows" />
+                <Stack.Screen name="admin/youtube-config" />
+                <Stack.Screen name="live" options={{ presentation: "fullScreenModal" }} />
                   <Stack.Screen name="live-news" options={{ presentation: "modal" }} />
                   <Stack.Screen name="program/[id]" />
                 </Stack>
