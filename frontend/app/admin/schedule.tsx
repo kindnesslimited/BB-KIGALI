@@ -18,9 +18,11 @@ type Sched = {
   order?: number;
   coverImage?: string;
   status?: string;
+  featured?: boolean;
+  description?: string;
 };
 
-const EMPTY: Partial<Sched> = { time: "", showTitle: "", djName: "", days: [], isLive: false, order: 0, coverImage: "", status: "upcoming" };
+const EMPTY: Partial<Sched> = { time: "", showTitle: "", djName: "", days: [], isLive: false, order: 0, coverImage: "", status: "upcoming", featured: false, description: "" };
 const STATUS_OPTS = [
   { key: "on-air", label: "ON AIR" },
   { key: "upcoming", label: "UPCOMING" },
@@ -55,7 +57,7 @@ export default function AdminSchedule() {
   useEffect(() => { void load(); }, []);
 
   const startEdit = (s: Sched) => {
-    setForm({ time: s.time, showTitle: s.showTitle, djName: s.djName, days: s.days || [], isLive: !!s.isLive, order: s.order || 0, coverImage: s.coverImage || "", status: s.status || (s.isLive ? "on-air" : "upcoming") });
+    setForm({ time: s.time, showTitle: s.showTitle, djName: s.djName, days: s.days || [], isLive: !!s.isLive, order: s.order || 0, coverImage: s.coverImage || "", status: s.status || (s.isLive ? "on-air" : "upcoming"), featured: !!s.featured, description: s.description || "" });
     setEditingId(s.id);
     setCreating(true);
   };
@@ -84,6 +86,8 @@ export default function AdminSchedule() {
         order: Number(form.order) || 0,
         coverImage: form.coverImage || "",
         status: form.status || (form.isLive ? "on-air" : "upcoming"),
+        featured: !!form.featured,
+        description: form.description || "",
       };
       if (editingId) {
         await api(`/admin/schedule/${editingId}`, { method: "PATCH", auth: true, body: payload });
@@ -148,6 +152,23 @@ export default function AdminSchedule() {
               <Text style={styles.liveLabel}>Live now?</Text>
               <Switch value={!!form.isLive} onValueChange={(v) => setForm({ ...form, isLive: v, status: v ? "on-air" : (form.status === "on-air" ? "upcoming" : form.status) })} thumbColor={form.isLive ? colors.brandPrimary : "#eee"} testID="sched-live" />
             </View>
+            <View style={styles.liveRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.liveLabel}>Feature at top of Home</Text>
+                <Text style={type.caption}>Pins this slot as the &ldquo;coming next&rdquo; card when no program is live.</Text>
+              </View>
+              <Switch value={!!form.featured} onValueChange={(v) => setForm({ ...form, featured: v })} thumbColor={form.featured ? colors.brandPrimary : "#eee"} testID="sched-featured" />
+            </View>
+
+            <TextInput
+              value={form.description || ""}
+              onChangeText={(v) => setForm({ ...form, description: v })}
+              placeholder="Short description (optional)"
+              placeholderTextColor={colors.onSurfaceSecondary}
+              style={[styles.input, { marginTop: spacing.sm, height: 80 }]}
+              multiline
+              testID="sched-description"
+            />
 
             <Text style={[styles.sectionLabel, { marginTop: spacing.md, marginBottom: 6 }]}>STATUS</Text>
             <View style={styles.dayRow}>
@@ -201,8 +222,15 @@ export default function AdminSchedule() {
               <View style={{ flex: 1 }}>
                 <Text numberOfLines={2} style={styles.rowTitle}>{s.showTitle}</Text>
                 {s.djName ? <Text numberOfLines={1} style={styles.rowSub}>with {s.djName}</Text> : null}
-                {s.days && s.days.length > 0 && (
-                  <Text style={styles.rowDays}>{s.days.map((d) => d.toUpperCase()).join(" · ")}</Text>
+                {(s.featured || (s.days && s.days.length > 0)) && (
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4, flexWrap: "wrap" }}>
+                    {s.featured && (
+                      <View style={styles.featuredBadge}><Ionicons name="star" size={9} color="#000" /><Text style={styles.featuredBadgeText}>FEATURED</Text></View>
+                    )}
+                    {s.days && s.days.length > 0 && (
+                      <Text style={styles.rowDays}>{s.days.map((d) => d.toUpperCase()).join(" · ")}</Text>
+                    )}
+                  </View>
                 )}
               </View>
               <View style={{ gap: 6 }}>
@@ -248,4 +276,6 @@ const styles = StyleSheet.create({
   rowTitle: { ...type.h2, fontSize: 14, lineHeight: 18 },
   rowSub: { ...type.caption, marginTop: 3 },
   rowDays: { ...type.caption, marginTop: 4, color: colors.brandPrimary, fontSize: 10, letterSpacing: 0.8 },
+  featuredBadge: { flexDirection: "row", alignItems: "center", gap: 3, backgroundColor: colors.brandPrimary, paddingHorizontal: 6, paddingVertical: 2, borderRadius: radius.pill },
+  featuredBadgeText: { color: "#000", fontFamily: "BarlowCondensed-Bold", fontSize: 9, letterSpacing: 1 },
 });

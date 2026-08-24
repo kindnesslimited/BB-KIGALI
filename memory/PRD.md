@@ -2,25 +2,16 @@
 
 Mobile + web platform for BB FM Kigali (Rwanda). Live radio + VOD + News + Subscriptions + Admin console.
 
-## Latest updates (iter 27)
-1. **Direct Video Upload — FIXED**. Backend `/api/admin/uploads/video` now:
-   - Accepts extensions: mp4, m4v, mov, qt, webm, mkv, avi, 3gp, 3g2, hevc
-   - Accepts MIME types: video/mp4, video/quicktime (iOS!), video/webm, video/x-matroska, video/x-msvideo, video/3gpp, video/mpeg, video/x-m4v, application/octet-stream (Android fallback)
-   - Server-side **magic-byte sniffing** (ftyp/EBML/RIFF-AVI) → validates real file type regardless of what the client claims
-   - Returns clear error message with the filename + received MIME when unsupported
-   - Prefers sniffed content type over client-declared type for the final storage record
-2. **Schedule on Home + richer admin schedule**
-   - Backend `ScheduleIn` extended with `coverImage` + `status` ("on-air" | "upcoming" | "off-air")
-   - Admin `/admin/schedule` page adds cover image picker + status chip selector; list rows show thumbnail
-   - Home page TODAY'S SCHEDULE renders admin-managed items with image background + gradient + **LIVE NOW** badge; admins see a "Manage" link; empty state message when no slots
-3. Google Cloud hosting/backup and Apple TestFlight questions routed to Emergent support (see support_agent response inline in chat).
+## Latest updates (iter 28)
+1. **YouTube LIVE Auto-Detection** 🔴 — Backend polls `@bbkigalifm` every 10 min and caches the answer for 60 s. New endpoint `GET /api/live/status` returns `{ isLive, videoId, title, thumbnail, watchUrl, embedUrl }`. Home page shows a red "LIVE NOW · YOUTUBE" banner with WATCH ON YOUTUBE button automatically when a broadcast is on-air. Verified in production traffic during test — banner appeared with real live stream #BBSPORTSTALK.
+2. **Featured Schedule Slot** ⭐ — Admin `/admin/schedule` has a "Feature at top of Home" switch (only one featured slot at a time, enforced backend-side). Home sort priority: LIVE slot → featured slot → normal order. Featured non-live slot gets an "UP NEXT · FEATURED" pill. Admin schedule list rows show a FEATURED badge.
+3. **Program Reminders** 🔔 — Every non-live schedule card on Home shows a REMIND ME button. Uses `expo-notifications` to schedule a local notification 15 min before slot start; state stored in AsyncStorage. Tapping REMIND ME shows "we'll ping you 15 min before" and toggling again cancels. Works on real device builds (Expo Go on iOS has SDK-53+ limitations — see below).
+4. **GCP hosting + TestFlight** — Ready-to-send support ticket drafted at `/app/memory/support_ticket_gcp_and_testflight.md` — customer only has to fill in `[YOUR_JOB_ID]` and email it to support@emergent.sh.
 
-## Prior updates (iter 26)
-- iOS Store readiness (privacy manifests)
-- Dedicated full-screen VOD checkout modal
-- News: external source (publication + URL) + coverUrl↔thumbnail mirroring
-- Admin Schedule CRUD created
-- Web/Desktop responsive layout (maxWidth 1200) + How Our App Works / Need Help sections
+## Prior updates
+- iter 27: Video upload MIME/magic-byte fix; schedule cover image + status; TODAY'S SCHEDULE on Home
+- iter 26: iOS privacy manifests; VOD dedicated checkout modal; News source fields; Web/Desktop maxWidth 1200 + how-app-works + contact
+- iter 25 and earlier: full app baseline (auth, live radio, VOD, YouTube sync, Stripe, PayPal, MoMo, admin console, reports).
 
 ## Test credentials
 See `/app/memory/test_credentials.md`.

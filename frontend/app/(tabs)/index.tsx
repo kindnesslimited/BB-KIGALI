@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, RefreshControl, Linking } from "react-native";
+import { View, Text, StyleSheet, ScrollView, Pressable, RefreshControl, Linking, Platform, Alert } from "react-native";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -9,11 +9,13 @@ import { colors, spacing, type, radius } from "@/src/theme";
 import { api } from "@/src/api";
 import { useAuth } from "@/src/context/auth";
 import { usePlayer } from "@/src/context/player";
+import { scheduleReminder, cancelReminder, getReminder } from "@/src/utils/reminders";
 
-type Sched = { id: string; time: string; showTitle: string; djName: string; isLive: boolean; coverImage?: string; status?: string };
+type Sched = { id: string; time: string; showTitle: string; djName: string; isLive: boolean; coverImage?: string; status?: string; featured?: boolean; description?: string };
 type News = { id: string; title: string; excerpt?: string; summary?: string; thumbnail?: string; coverUrl?: string; publishedAt: string };
 type Program = { id: string; name: string; description?: string; coverImage?: string; order: number };
 type Settings = { stationName?: string; stationTagline?: string; frequency?: string; logoUrl?: string };
+type LiveStatus = { isLive: boolean; videoId?: string; title?: string; thumbnail?: string; watchUrl?: string; embedUrl?: string; channelTitle?: string };
 
 export default function Home() {
   const insets = useSafeAreaInsets();
@@ -25,20 +27,64 @@ export default function Home() {
   const [programs, setPrograms] = useState<Program[]>([]);
   const [settings, setSettings] = useState<Settings>({});
   const [refreshing, setRefreshing] = useState(false);
+  const [liveStatus, setLiveStatus] = useState<LiveStatus>({ isLive: false });
+  const [reminders, setReminders] = useState<Record<string, boolean>>({});
 
   const load = async () => {
     try {
-      const [s, n, p, st] = await Promise.all([
+      const [s, n, p, st, live] = await Promise.all([
         api<Sched[]>("/radio/schedule"),
         api<News[]>("/news"),
         api<Program[]>("/programs"),
         api<Settings>("/settings"),
+        api<LiveStatus>("/live/status").catch(() => ({ isLive: false } as LiveStatus)),
       ]);
-      setSchedule(s); setNews(n.slice(0, 5)); setPrograms(p); setSettings(st);
+      setSchedule(s); setNews(n.slice(0, 5)); setPrograms(p); setSettings(st); setLiveStatus(live);
+      // Load which slots already have local reminders scheduled.
+      if (Platform.OS !== "web") {
+        const active: Record<string, boolean> = {};
+        for (const slot of s) { if ((await getReminder(slot.id))) active[slot.id] = true; }
+        setReminders(active);
+      }
     } catch (e) { console.log("home load", e); }
   };
   useEffect(() => { load(); }, []);
   const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
+
+  // Priority sort: LIVE first, then FEATURED, then order.
+  const sortedSchedule = [...schedule].sort((a, b) => {
+    if (a.isLive && !b.isLive) return -1;
+    if (!a.isLive && b.isLive) return 1;
+    if (a.featured && !b.featured) return -1;
+    if (!a.featured && b.featured) return 1;
+    return 0;
+  });
+
+  const openYouTubeLive = () => {
+    if (!liveStatus.watchUrl) return;
+    Linking.openURL(liveStatus.watchUrl).catch(() => {});
+  };
+
+  const toggleReminder = async (slot: Sched) => {
+    if (Platform.OS === "web") {
+      Alert.alert("Reminders", "Reminders work on the mobile app (iOS/Android). Open in the BB FM app to set one.");
+      return;
+    }
+    const already = reminders[slot.id];
+    if (already) {
+      await cancelReminder(slot.id);
+      setReminders({ ...reminders, [slot.id]: false });
+      Alert.alert("Reminder cancelled", `You won't be reminded about "${slot.showTitle}".`);
+      return;
+    }
+    const ok = await scheduleReminder(slot);
+    if (!ok) {
+      Alert.alert("Reminder not set", "Please enable notifications for BB FM Kigali in your device settings, or pick an upcoming (future) slot.");
+      return;
+    }
+    setReminders({ ...reminders, [slot.id]: true });
+    Alert.alert("Reminder set", `We'll ping you 15 minutes before "${slot.showTitle}" starts.`);
+  };
 
   return (
     <ScrollView
@@ -70,6 +116,25 @@ export default function Home() {
       </View>
       {settings.logoUrl && (
         <Text style={styles.taglineOnly}>Muraho{user?.displayName ? `, ${user.displayName}` : ""} · {settings.stationTagline || "#MuriSiporonIgitego"}</Text>
+      )}
+
+      {/* YouTube LIVE detection banner — appears automatically when @bbkigalifm is live */}
+      {liveStatus.isLive && liveStatus.videoId && (
+        <Pressable onPress={openYouTubeLive} style={styles.ytLiveBanner} testID="home-yt-live-banner">
+          <Image source={{ uri: liveStatus.thumbnail }} style={StyleSheet.absoluteFill} contentFit="cover" />
+          <LinearGradient colors={["rgba(15,15,19,0.05)", "rgba(15,15,19,0.55)", "rgba(15,15,19,0.9)"]} locations={[0, 0.55, 1]} style={StyleSheet.absoluteFill} />
+          <View style={styles.ytLiveInner}>
+            <View style={styles.ytLivePill}>
+              <View style={styles.ytLivePulse} />
+              <Text style={styles.ytLivePillText}>LIVE NOW · YOUTUBE</Text>
+            </View>
+            <Text numberOfLines={2} style={styles.ytLiveTitle}>{liveStatus.title || "BB Kigali FM is LIVE"}</Text>
+            <View style={styles.ytLiveBtn}>
+              <Ionicons name="logo-youtube" size={16} color="#fff" />
+              <Text style={styles.ytLiveBtnText}>WATCH ON YOUTUBE</Text>
+            </View>
+          </View>
+        </Pressable>
       )}
 
       {/* Quick Actions row */}
@@ -167,49 +232,76 @@ export default function Home() {
           )}
         </View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: spacing.lg, gap: spacing.md }}>
-          {schedule.length === 0 && (
+          {sortedSchedule.length === 0 && (
             <View style={[styles.schedCard, { justifyContent: "center", alignItems: "center", minWidth: 200 }]}>
               <Text style={type.bodyMuted}>No slots scheduled yet.</Text>
             </View>
           )}
-          {schedule.map((s) => (
-            <Pressable
-              key={s.id}
-              onPress={() => { if (s.isLive) router.push("/player"); }}
-              style={[styles.schedCard, s.isLive && styles.schedCardLive, s.coverImage && { padding: 0, overflow: "hidden" }]}
-              testID={`sched-${s.id}`}
-            >
-              {s.coverImage ? (
-                <>
-                  <Image source={{ uri: s.coverImage }} style={StyleSheet.absoluteFill} contentFit="cover" />
-                  <LinearGradient colors={["rgba(15,15,19,0.1)", "rgba(15,15,19,0.85)"]} style={StyleSheet.absoluteFill} />
-                  <View style={{ padding: spacing.md, flex: 1, justifyContent: "flex-end" }}>
-                    {s.isLive && (
-                      <View style={styles.schedLive}>
-                        <View style={styles.liveDot} />
-                        <Text style={styles.schedLiveText}>LIVE NOW</Text>
+          {sortedSchedule.map((s) => {
+            const showFeatured = !!s.featured && !s.isLive;
+            const hasReminder = !!reminders[s.id];
+            return (
+              <View key={s.id} style={[styles.schedCard, s.isLive && styles.schedCardLive, showFeatured && styles.schedCardFeatured, s.coverImage && { padding: 0, overflow: "hidden" }]}>
+                <Pressable
+                  onPress={() => { if (s.isLive) router.push("/player"); }}
+                  style={{ flex: 1 }}
+                  testID={`sched-${s.id}`}
+                >
+                  {s.coverImage ? (
+                    <>
+                      <Image source={{ uri: s.coverImage }} style={StyleSheet.absoluteFill} contentFit="cover" />
+                      <LinearGradient colors={["rgba(15,15,19,0.05)", "rgba(15,15,19,0.9)"]} style={StyleSheet.absoluteFill} />
+                      <View style={{ padding: spacing.md, flex: 1, justifyContent: "flex-end" }}>
+                        {s.isLive && (
+                          <View style={styles.schedLive}>
+                            <View style={styles.liveDot} />
+                            <Text style={styles.schedLiveText}>LIVE NOW</Text>
+                          </View>
+                        )}
+                        {showFeatured && (
+                          <View style={styles.featuredPill}>
+                            <Ionicons name="star" size={9} color="#000" />
+                            <Text style={styles.featuredPillText}>UP NEXT · FEATURED</Text>
+                          </View>
+                        )}
+                        <Text style={[styles.schedTime, { color: "#fff", opacity: 0.85 }]}>{s.time}</Text>
+                        <Text style={[styles.schedTitle, { color: "#fff" }]} numberOfLines={2}>{s.showTitle}</Text>
+                        {!!s.djName && <Text style={[styles.schedDj, { color: "rgba(255,255,255,0.75)" }]}>{s.djName}</Text>}
                       </View>
-                    )}
-                    <Text style={[styles.schedTime, { color: "#fff", opacity: 0.85 }]}>{s.time}</Text>
-                    <Text style={[styles.schedTitle, { color: "#fff" }]} numberOfLines={2}>{s.showTitle}</Text>
-                    {!!s.djName && <Text style={[styles.schedDj, { color: "rgba(255,255,255,0.75)" }]}>{s.djName}</Text>}
-                  </View>
-                </>
-              ) : (
-                <>
-                  {s.isLive && (
-                    <View style={styles.schedLive}>
-                      <View style={styles.liveDot} />
-                      <Text style={styles.schedLiveText}>LIVE NOW</Text>
+                    </>
+                  ) : (
+                    <View style={{ padding: spacing.md, flex: 1 }}>
+                      {s.isLive && (
+                        <View style={styles.schedLive}>
+                          <View style={styles.liveDot} />
+                          <Text style={styles.schedLiveText}>LIVE NOW</Text>
+                        </View>
+                      )}
+                      {showFeatured && (
+                        <View style={styles.featuredPill}>
+                          <Ionicons name="star" size={9} color="#000" />
+                          <Text style={styles.featuredPillText}>UP NEXT · FEATURED</Text>
+                        </View>
+                      )}
+                      <Text style={styles.schedTime}>{s.time}</Text>
+                      <Text style={styles.schedTitle} numberOfLines={2}>{s.showTitle}</Text>
+                      {!!s.djName && <Text style={styles.schedDj}>{s.djName}</Text>}
                     </View>
                   )}
-                  <Text style={styles.schedTime}>{s.time}</Text>
-                  <Text style={styles.schedTitle} numberOfLines={2}>{s.showTitle}</Text>
-                  {!!s.djName && <Text style={styles.schedDj}>{s.djName}</Text>}
-                </>
-              )}
-            </Pressable>
-          ))}
+                </Pressable>
+                {!s.isLive && (
+                  <Pressable
+                    onPress={() => toggleReminder(s)}
+                    style={[styles.remindBtn, hasReminder && styles.remindBtnOn]}
+                    testID={`sched-remind-${s.id}`}
+                  >
+                    <Ionicons name={hasReminder ? "notifications" : "notifications-outline"} size={14} color={hasReminder ? "#000" : colors.brandPrimary} />
+                    <Text style={[styles.remindBtnText, hasReminder && { color: "#000" }]}>{hasReminder ? "REMINDER ON" : "REMIND ME"}</Text>
+                  </Pressable>
+                )}
+              </View>
+            );
+          })}
         </ScrollView>
       </View>
 
@@ -350,13 +442,28 @@ const styles = StyleSheet.create({
   sectionHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: spacing.lg, marginBottom: spacing.md },
   sectionTitle: { ...type.label, letterSpacing: 1.5, color: colors.onSurfaceSecondary, fontSize: 12 },
   seeAll: { color: colors.brandPrimary, fontFamily: "System", fontSize: 13 },
-  schedCard: { width: 200, height: 140, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.md, borderWidth: 1, borderColor: colors.border },
+  schedCard: { width: 200, height: 180, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.md, borderWidth: 1, borderColor: colors.border, overflow: "hidden" },
   schedCardLive: { borderColor: colors.brandPrimary, backgroundColor: colors.brandTertiary },
+  schedCardFeatured: { borderColor: colors.brandPrimary },
   schedLive: { flexDirection: "row", alignItems: "center", gap: 4, marginBottom: spacing.sm },
   schedLiveText: { ...type.label, color: colors.brandPrimary, fontSize: 10 },
   schedTime: { ...type.caption, marginBottom: 4, color: colors.onSurfaceSecondary },
   schedTitle: { ...type.h2, marginBottom: 2 },
   schedDj: { ...type.caption },
+  featuredPill: { flexDirection: "row", alignItems: "center", gap: 3, alignSelf: "flex-start", backgroundColor: colors.brandPrimary, paddingHorizontal: 6, paddingVertical: 2, borderRadius: radius.pill, marginBottom: spacing.sm },
+  featuredPillText: { color: "#000", fontFamily: "BarlowCondensed-Bold", fontSize: 9, letterSpacing: 1 },
+  remindBtn: { position: "absolute", top: 8, right: 8, flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: radius.pill, backgroundColor: "rgba(0,0,0,0.5)", borderWidth: 1, borderColor: colors.brandPrimary },
+  remindBtnOn: { backgroundColor: colors.brandPrimary, borderColor: colors.brandPrimary },
+  remindBtnText: { color: colors.brandPrimary, fontFamily: "BarlowCondensed-Bold", fontSize: 9, letterSpacing: 0.8 },
+  // YouTube LIVE banner
+  ytLiveBanner: { height: 200, marginHorizontal: spacing.lg, borderRadius: radius.lg, overflow: "hidden", marginBottom: spacing.xl, borderWidth: 2, borderColor: "#ff0000", backgroundColor: "#0a0a0a" },
+  ytLiveInner: { position: "absolute", left: 0, right: 0, bottom: 0, padding: spacing.lg },
+  ytLivePill: { flexDirection: "row", alignItems: "center", gap: 6, alignSelf: "flex-start", backgroundColor: "#ff0000", paddingHorizontal: spacing.md, paddingVertical: 6, borderRadius: radius.pill, marginBottom: spacing.sm },
+  ytLivePulse: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#fff" },
+  ytLivePillText: { color: "#fff", fontFamily: "BarlowCondensed-Bold", fontSize: 11, letterSpacing: 1.5 },
+  ytLiveTitle: { fontFamily: "BarlowCondensed-Bold", fontSize: 22, color: "#fff", lineHeight: 24, marginBottom: spacing.md },
+  ytLiveBtn: { flexDirection: "row", alignItems: "center", gap: 8, alignSelf: "flex-start", backgroundColor: "#ff0000", paddingHorizontal: spacing.lg, paddingVertical: 10, borderRadius: radius.pill },
+  ytLiveBtnText: { color: "#fff", fontFamily: "BarlowCondensed-Bold", fontSize: 13, letterSpacing: 1.5 },
   upsell: { flexDirection: "row", alignItems: "center", marginHorizontal: spacing.lg, backgroundColor: colors.brandTertiary, borderRadius: radius.md, padding: spacing.lg, marginBottom: spacing.xl, borderWidth: 1, borderColor: colors.brandPrimary },
   upsellLabel: { ...type.label, color: colors.brandPrimary, letterSpacing: 2 },
   upsellTitle: { ...type.displayMd, marginTop: 4 },

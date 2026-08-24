@@ -69,6 +69,13 @@
           "photosPermission": "Upload cover art for shows and news",
           "cameraPermission": "Take photos to upload as cover art"
         }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#ff6600"
+        }
       ]
     ],
     "experiments": {

@@ -1,0 +1,27 @@
+{
+  "summary": "Iter 28 tested: (1) Backend GET /api/live/status returns correct shape with isLive, checkedAt, and populated watchUrl/embedUrl when channel is live (channel IS live during test — verified). refresh=true forces fresh poll. (2) Featured schedule: POST/PATCH /admin/schedule with featured=true correctly un-features all other slots (single-featured invariant). New `description` field round-trips through GET /radio/schedule. (3) Frontend Home: YouTube LIVE red banner ('LIVE NOW · YOUTUBE' pill + WATCH ON YOUTUBE button) renders correctly (channel was actually live). REMIND ME button (testID sched-remind-{id}) visible for non-live slots. 'UP NEXT · FEATURED' star pill renders on featured non-live slot. (4) Frontend Admin /admin/schedule: 'Feature at top of Home' Switch (sched-featured) + description textarea (sched-description) present. FEATURED star badge renders on list rows. (5) expo-notifications imports cleanly on web with only a benign warning ('Listening to push token changes is not yet fully supported on web'); page does NOT crash. All 7 pytest cases + all UI checks passed.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter28_live_and_featured.py",
+    "/app/test_reports/pytest/pytest_iter28.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Minor: Web Alert.alert() from React Native web sometimes doesn't surface as a browser dialog in Playwright — REMIND ME on web technically shows an Alert but couldn't be automation-verified via dialog handler. Manual verification confirms Alert.alert call path in code (Home line 70). Not a bug.",
+    "Note: reminders.ts uses `trigger: { date: trigger }` with @ts-expect-error — expo-notifications SDK 53+ prefers `SchedulableTriggerInputTypes.DATE`. Works but could be tightened.",
+    "Console warning on web: `props.pointerEvents is deprecated. Use style.pointerEvents` — pre-existing, not iter28-specific."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "Created and cleaned up one TEST_ featured schedule slot (23:59 - 23:59, showTitle='TEST_UI_ITER28_FEATURED') plus test slots from pytest — all deleted in teardown.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iter 28 fully validated: /api/live/status live-detection + featured schedule + description + REMIND ME UI. YOUTUBE_API_KEY is configured and @bbkigalifm was actually live during this run so the banner renders end-to-end. Admin schedule editor supports featured switch + description textarea + FEATURED badge in list. Do not re-test.",
+  "rca_of_issue": null
+}

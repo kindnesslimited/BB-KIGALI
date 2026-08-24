@@ -25,6 +25,11 @@ from youtube_sync import (
     sync_all_channels as _yt_sync_all,
     periodic_sync_loop as _yt_periodic_loop,
 )  # noqa: E402
+from youtube_live import (
+    get_cached_or_refresh as _yt_live_get_cached,
+    refresh_and_store as _yt_live_refresh,
+    periodic_live_loop as _yt_live_periodic_loop,
+)  # noqa: E402
 from apple_auth import verify_apple_identity_token  # noqa: E402
 from object_storage import upload_image_bytes, read_object  # noqa: E402
 from subscription_reminders import (
@@ -749,6 +754,26 @@ async def schedule():
     return items
 
 
+# ---------- YouTube LIVE auto-detection ----------
+@api.get("/live/status")
+async def live_status(refresh: bool = False):
+    """Returns the current YouTube-live status of the primary channel (@bbkigalifm).
+
+    Result is cached for ~60 s server-side so listening this doesn't hammer the
+    YouTube API. Pass `?refresh=true` to force a live probe (admin diagnostics).
+    """
+    if refresh:
+        result = await _yt_live_refresh(db)
+    else:
+        result = await _yt_live_get_cached(db)
+    # Add a click-through link the client can open.
+    if result.get("isLive") and result.get("videoId"):
+        vid = result["videoId"]
+        result["watchUrl"] = f"https://www.youtube.com/watch?v={vid}"
+        result["embedUrl"] = f"https://www.youtube.com/embed/{vid}?autoplay=1&playsinline=1&rel=0"
+    return result
+
+
 # ---------- Shows / VOD / Podcasts ----------
 @api.get("/shows")
 async def list_shows(category: Optional[str] = None):
@@ -896,6 +921,8 @@ class ScheduleIn(BaseModel):
     order: int = 0
     coverImage: Optional[str] = None
     status: Optional[str] = None  # "on-air" | "upcoming" | "off-air"
+    featured: bool = False  # Only one slot can be featured at a time
+    description: Optional[str] = None
 
 
 @api.post("/admin/schedule")
@@ -910,8 +937,13 @@ async def admin_create_schedule(body: ScheduleIn, current = Depends(require_admi
         "order": body.order,
         "coverImage": body.coverImage or "",
         "status": body.status or ("on-air" if body.isLive else "upcoming"),
+        "featured": bool(body.featured),
+        "description": body.description or "",
         "createdAt": datetime.now(timezone.utc).isoformat(),
     }
+    # Enforce single-featured
+    if body.featured:
+        await db.schedule.update_many({"featured": True}, {"$set": {"featured": False}})
     await db.schedule.insert_one(doc.copy())
     await audit_log.record(db, **audit_log.actor_from_user(current),
                            action="schedule.create", target_type="schedule", target_id=doc["id"],
@@ -923,6 +955,9 @@ async def admin_create_schedule(body: ScheduleIn, current = Depends(require_admi
 async def admin_update_schedule(item_id: str, body: ScheduleIn, current = Depends(require_admin)):
     updates = body.dict(exclude_unset=True)
     updates["updatedAt"] = datetime.now(timezone.utc).isoformat()
+    # Enforce single-featured — if this slot becomes featured, un-feature all others first.
+    if updates.get("featured") is True:
+        await db.schedule.update_many({"id": {"$ne": item_id}, "featured": True}, {"$set": {"featured": False}})
     r = await db.schedule.update_one({"id": item_id}, {"$set": updates})
     if r.matched_count == 0:
         raise HTTPException(404, "Schedule item not found")
@@ -3292,6 +3327,8 @@ async def on_startup():
     if os.environ.get("YOUTUBE_API_KEY"):
         app.state._yt_task = asyncio.create_task(_yt_periodic_loop(db))
         logger.info("YouTube periodic sync started")
+        app.state._yt_live_task = asyncio.create_task(_yt_live_periodic_loop(db))
+        logger.info("YouTube live-detection loop started")
     # Background subscription-expiry reminders (every 12h).
     app.state._sub_task = asyncio.create_task(_sub_reminder_loop(db, _send_sms))
     logger.info("Subscription reminder loop started")
@@ -3299,7 +3336,7 @@ async def on_startup():
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    for attr in ("_yt_task", "_sub_task"):
+    for attr in ("_yt_task", "_yt_live_task", "_sub_task"):
         task = getattr(app.state, attr, None)
         if task:
             task.cancel()
