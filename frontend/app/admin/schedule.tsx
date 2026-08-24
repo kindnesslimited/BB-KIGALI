@@ -3,8 +3,10 @@ import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndic
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
+import { Image } from "expo-image";
 import { colors, spacing, type, radius } from "@/src/theme";
 import { api } from "@/src/api";
+import { CoverImagePicker } from "@/src/components/CoverImagePicker";
 
 type Sched = {
   id: string;
@@ -14,9 +16,16 @@ type Sched = {
   days?: string[];
   isLive?: boolean;
   order?: number;
+  coverImage?: string;
+  status?: string;
 };
 
-const EMPTY: Partial<Sched> = { time: "", showTitle: "", djName: "", days: [], isLive: false, order: 0 };
+const EMPTY: Partial<Sched> = { time: "", showTitle: "", djName: "", days: [], isLive: false, order: 0, coverImage: "", status: "upcoming" };
+const STATUS_OPTS = [
+  { key: "on-air", label: "ON AIR" },
+  { key: "upcoming", label: "UPCOMING" },
+  { key: "off-air", label: "OFF AIR" },
+];
 const ALL_DAYS = [
   { key: "mon", label: "MON" },
   { key: "tue", label: "TUE" },
@@ -46,7 +55,7 @@ export default function AdminSchedule() {
   useEffect(() => { void load(); }, []);
 
   const startEdit = (s: Sched) => {
-    setForm({ time: s.time, showTitle: s.showTitle, djName: s.djName, days: s.days || [], isLive: !!s.isLive, order: s.order || 0 });
+    setForm({ time: s.time, showTitle: s.showTitle, djName: s.djName, days: s.days || [], isLive: !!s.isLive, order: s.order || 0, coverImage: s.coverImage || "", status: s.status || (s.isLive ? "on-air" : "upcoming") });
     setEditingId(s.id);
     setCreating(true);
   };
@@ -73,6 +82,8 @@ export default function AdminSchedule() {
         days: form.days || [],
         isLive: !!form.isLive,
         order: Number(form.order) || 0,
+        coverImage: form.coverImage || "",
+        status: form.status || (form.isLive ? "on-air" : "upcoming"),
       };
       if (editingId) {
         await api(`/admin/schedule/${editingId}`, { method: "PATCH", auth: true, body: payload });
@@ -135,7 +146,28 @@ export default function AdminSchedule() {
 
             <View style={styles.liveRow}>
               <Text style={styles.liveLabel}>Live now?</Text>
-              <Switch value={!!form.isLive} onValueChange={(v) => setForm({ ...form, isLive: v })} thumbColor={form.isLive ? colors.brandPrimary : "#eee"} testID="sched-live" />
+              <Switch value={!!form.isLive} onValueChange={(v) => setForm({ ...form, isLive: v, status: v ? "on-air" : (form.status === "on-air" ? "upcoming" : form.status) })} thumbColor={form.isLive ? colors.brandPrimary : "#eee"} testID="sched-live" />
+            </View>
+
+            <Text style={[styles.sectionLabel, { marginTop: spacing.md, marginBottom: 6 }]}>STATUS</Text>
+            <View style={styles.dayRow}>
+              {STATUS_OPTS.map((s) => {
+                const on = (form.status || (form.isLive ? "on-air" : "upcoming")) === s.key;
+                return (
+                  <Pressable key={s.key} onPress={() => setForm({ ...form, status: s.key, isLive: s.key === "on-air" })} style={[styles.dayChip, on && styles.dayChipOn]} testID={`sched-status-${s.key}`}>
+                    <Text style={[styles.dayChipText, on && styles.dayChipTextOn]}>{s.label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            <View style={{ marginTop: spacing.md }}>
+              <CoverImagePicker
+                value={form.coverImage}
+                onChange={(url) => setForm({ ...form, coverImage: url })}
+                label="Program image (optional)"
+                testID="sched-cover"
+              />
             </View>
 
             <View style={{ flexDirection: "row", gap: spacing.sm, marginTop: spacing.md }}>
@@ -155,6 +187,13 @@ export default function AdminSchedule() {
         <View style={{ gap: spacing.md, marginTop: spacing.md }}>
           {items.map((s) => (
             <View key={s.id} style={styles.row}>
+              {s.coverImage ? (
+                <Image source={{ uri: s.coverImage }} style={styles.rowThumb} contentFit="cover" />
+              ) : (
+                <View style={[styles.rowThumb, styles.rowThumbFallback]}>
+                  <Ionicons name="calendar-outline" size={20} color={colors.onSurfaceSecondary} />
+                </View>
+              )}
               <View style={styles.timeBox}>
                 <Text style={styles.timeText}>{s.time}</Text>
                 {s.isLive && <View style={styles.liveBadge}><Text style={styles.liveText}>LIVE</Text></View>}
@@ -200,6 +239,8 @@ const styles = StyleSheet.create({
   btnGhost: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
   btnGhostText: { color: colors.onSurface, fontFamily: "BarlowCondensed-Bold", letterSpacing: 1.5, fontSize: 13 },
   row: { flexDirection: "row", alignItems: "center", gap: spacing.md, padding: spacing.md, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border },
+  rowThumb: { width: 60, height: 60, borderRadius: radius.sm, backgroundColor: colors.surface },
+  rowThumbFallback: { alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.border },
   timeBox: { alignItems: "center", minWidth: 84, gap: 4 },
   timeText: { color: colors.brandPrimary, fontFamily: "BarlowCondensed-Bold", fontSize: 13, letterSpacing: 0.5 },
   liveBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: radius.pill, backgroundColor: colors.brandPrimary },

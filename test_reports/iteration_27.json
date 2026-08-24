@@ -1,0 +1,41 @@
+{
+  "summary": "Iter 27 full-stack test — BACKEND 7/7 PASS, FRONTEND all critical flows PASS. Verified /api/admin/uploads/video validator now accepts iOS MOV (contentType=video/quicktime + ftyp+qt magic bytes -> 200, returns contentType='video/quicktime'), Android/generic MP4 (contentType=application/octet-stream + ftyp+mp42 magic -> 200, returns contentType='video/mp4'), WebM (EBML magic 1A45DFA3 -> 200, returns contentType='video/webm'), rejects plain-text file with HTTP 400 and 'Unsupported video format' message, and requires admin auth (401 without token). All three real uploads reached Object Storage successfully — verified in follow-up run: returned public /api/uploads/... URLs plus size/contentType. ScheduleIn schema extension verified — POST /api/admin/schedule accepts coverImage + status fields; PATCH updates them via partial body.dict(exclude_unset=True); public GET /api/radio/schedule reflects both fields. Default status='upcoming' when omitted and isLive=false. FRONTEND: (a) Home /(tabs) TODAY'S SCHEDULE row renders seeded schedule slot with cover image background + LinearGradient overlay + LIVE NOW badge (LIVE dot + text), (b) admin user sees 'Manage' link next to TODAY'S SCHEDULE that routes to /admin/schedule, (c) empty-state text 'No slots scheduled yet.' is wired in code (lines 170-173 of (tabs)/index.tsx), (d) /admin/schedule form (opened via sched-add-btn) exposes sched-status-on-air / sched-status-upcoming / sched-status-off-air chips, sched-cover image picker (Ionic image icon + PICK FROM DEVICE / PASTE URL / CHOOSE IMAGE), and existing slots list shows coverImage thumbnail next to each row (verified visually — TEST_ITER27 Live Now Show row displays its 800px pexels cover thumbnail on the left column). No red-screen or console errors during any flow (only 1 known deprecation warning: pointerEvents prop — non-blocking).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter27_video_upload_and_schedule.py",
+    "/app/test_reports/pytest/pytest_iter27.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py:2131 _sniff_video_mime — correctly handles ISO base-media ftyp brand detection (qt vs mp4 family), EBML for webm, RIFF/AVI, MPEG-PS. Solid magic-byte coverage for the 5 major container families.",
+    "server.py:2180-2187 validator — Accept-if-EITHER logic (sniffed OR ext OR mime allowlist) is the correct fallback strategy for the iOS Photos picker case where contentType=application/octet-stream is normal. Good.",
+    "server.py:2190 final_ct precedence prefers sniffed > client-declared > 'video/mp4' fallback — this correctly rewrites ambiguous octet-stream uploads to the sniffed real container type before persisting to Mongo/uploads collection. Downstream video players will now get the correct MIME.",
+    "server.py:890-898 ScheduleIn — coverImage and status are Optional[str] with no Literal enum for status; consider Literal['on-air','upcoming','off-air'] to reject typos at the API layer. Not blocking; frontend already restricts via chips.",
+    "server.py:912 default status logic — 'on-air' when isLive else 'upcoming' is sane. Good.",
+    "server.py:924 PATCH uses body.dict(exclude_unset=True) — supports true partial updates for coverImage/status without wiping other fields.",
+    "app/admin/schedule.tsx:149 Switch onValueChange auto-syncs status field when isLive toggles (status='on-air' when live=true, resets 'on-air'->'upcoming' when live=false) — nice UX consistency between the two controls.",
+    "app/(tabs)/index.tsx:179-197 conditional rendering — when s.coverImage is set, padding is stripped and a full-bleed Image + LinearGradient (top 0.1 -> bottom 0.85 alpha) is rendered with LIVE NOW badge; when no coverImage, fallback to text-only card. Clean pattern, no layout jumps.",
+    "app/(tabs)/index.tsx:164 admin-gated 'Manage' link uses user?.role === 'admin' check — matches backend role field. Confirmed rendered in-browser after admin OTP verify."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter27_video_upload_and_schedule.py (NEW)"
+  ],
+  "success_rate": {
+    "backend": "100% (7/7)",
+    "frontend": "100% of critical flows (home LIVE NOW badge + cover image + admin Manage link, admin schedule form with status chips + cover picker + list thumbnails)"
+  },
+  "seed_data_creation": "Backend tests create+delete throwaway schedule slots prefixed 'TEST_ITER27' (all cleaned in same test). Frontend UI test seeded one 'TEST_ITER27 Live Now Show' slot via admin API and deleted it at end of run. Three ~20-byte fake video files with valid magic bytes were uploaded to Object Storage under /bb-fm-kigali/videos/{admin_id}/ during backend tests — these are the only residuals but they are gated behind admin auth and take ~90 bytes total; not worth cleaning up.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "For future iters, note the pytest xdist race: /app/backend/pytest.ini forces `-n auto --dist loadscope` which parallelizes across workers. If a module-scoped fixture calls /api/auth/otp/start followed by verify, running it in two workers will invalidate the first worker's OTP challenge (server-side single-use). Run with `-n 0` to force serial when your test needs a single admin session — this is what iter27 used. Test credentials unchanged: admin phone +250794230137 returns testCode 123456 (SMS_DEV_RETURN_CODE=true). ScheduleIn now supports coverImage (str URL) + status (str: 'on-air'|'upcoming'|'off-air'). Video upload endpoint /api/admin/uploads/video accepts multipart/form-data with `file` field; validator uses BOTH client-declared mime/ext AND magic-byte sniff (first 64 bytes). Video mime map: ftyp+qt->quicktime, ftyp+other->mp4, EBML 1A45DFA3->webm, RIFF+AVI->avi, 0000_01BA->mpeg. Testing tiny (20-byte) payloads with valid magic bytes is enough to exercise all branches; Object Storage accepts them without errors.",
+  "rca_of_issue": "N/A — no bugs found in iter 27 code changes. All 4 requested items (video validator accept branches, video validator reject branch, admin auth gate, schedule cover+status persistence + UI rendering) verified working end-to-end."
+}

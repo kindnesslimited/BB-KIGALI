@@ -10,7 +10,7 @@ import { api } from "@/src/api";
 import { useAuth } from "@/src/context/auth";
 import { usePlayer } from "@/src/context/player";
 
-type Sched = { id: string; time: string; showTitle: string; djName: string; isLive: boolean };
+type Sched = { id: string; time: string; showTitle: string; djName: string; isLive: boolean; coverImage?: string; status?: string };
 type News = { id: string; title: string; excerpt?: string; summary?: string; thumbnail?: string; coverUrl?: string; publishedAt: string };
 type Program = { id: string; name: string; description?: string; coverImage?: string; order: number };
 type Settings = { stationName?: string; stationTagline?: string; frequency?: string; logoUrl?: string };
@@ -160,20 +160,55 @@ export default function Home() {
       <View style={styles.section}>
         <View style={styles.sectionHead}>
           <Text style={styles.sectionTitle}>TODAY&apos;S SCHEDULE</Text>
+          {user?.role === "admin" && (
+            <Pressable onPress={() => router.push("/admin/schedule")}>
+              <Text style={styles.seeAll}>Manage</Text>
+            </Pressable>
+          )}
         </View>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: spacing.lg, gap: spacing.md }}>
-          {schedule.map((s) => (
-            <View key={s.id} style={[styles.schedCard, s.isLive && styles.schedCardLive]} testID={`sched-${s.id}`}>
-              {s.isLive && (
-                <View style={styles.schedLive}>
-                  <View style={styles.liveDot} />
-                  <Text style={styles.schedLiveText}>LIVE</Text>
-                </View>
-              )}
-              <Text style={styles.schedTime}>{s.time}</Text>
-              <Text style={styles.schedTitle} numberOfLines={2}>{s.showTitle}</Text>
-              <Text style={styles.schedDj}>{s.djName}</Text>
+          {schedule.length === 0 && (
+            <View style={[styles.schedCard, { justifyContent: "center", alignItems: "center", minWidth: 200 }]}>
+              <Text style={type.bodyMuted}>No slots scheduled yet.</Text>
             </View>
+          )}
+          {schedule.map((s) => (
+            <Pressable
+              key={s.id}
+              onPress={() => { if (s.isLive) router.push("/player"); }}
+              style={[styles.schedCard, s.isLive && styles.schedCardLive, s.coverImage && { padding: 0, overflow: "hidden" }]}
+              testID={`sched-${s.id}`}
+            >
+              {s.coverImage ? (
+                <>
+                  <Image source={{ uri: s.coverImage }} style={StyleSheet.absoluteFill} contentFit="cover" />
+                  <LinearGradient colors={["rgba(15,15,19,0.1)", "rgba(15,15,19,0.85)"]} style={StyleSheet.absoluteFill} />
+                  <View style={{ padding: spacing.md, flex: 1, justifyContent: "flex-end" }}>
+                    {s.isLive && (
+                      <View style={styles.schedLive}>
+                        <View style={styles.liveDot} />
+                        <Text style={styles.schedLiveText}>LIVE NOW</Text>
+                      </View>
+                    )}
+                    <Text style={[styles.schedTime, { color: "#fff", opacity: 0.85 }]}>{s.time}</Text>
+                    <Text style={[styles.schedTitle, { color: "#fff" }]} numberOfLines={2}>{s.showTitle}</Text>
+                    {!!s.djName && <Text style={[styles.schedDj, { color: "rgba(255,255,255,0.75)" }]}>{s.djName}</Text>}
+                  </View>
+                </>
+              ) : (
+                <>
+                  {s.isLive && (
+                    <View style={styles.schedLive}>
+                      <View style={styles.liveDot} />
+                      <Text style={styles.schedLiveText}>LIVE NOW</Text>
+                    </View>
+                  )}
+                  <Text style={styles.schedTime}>{s.time}</Text>
+                  <Text style={styles.schedTitle} numberOfLines={2}>{s.showTitle}</Text>
+                  {!!s.djName && <Text style={styles.schedDj}>{s.djName}</Text>}
+                </>
+              )}
+            </Pressable>
           ))}
         </ScrollView>
       </View>
@@ -315,7 +350,7 @@ const styles = StyleSheet.create({
   sectionHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: spacing.lg, marginBottom: spacing.md },
   sectionTitle: { ...type.label, letterSpacing: 1.5, color: colors.onSurfaceSecondary, fontSize: 12 },
   seeAll: { color: colors.brandPrimary, fontFamily: "System", fontSize: 13 },
-  schedCard: { width: 180, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.md, borderWidth: 1, borderColor: colors.border },
+  schedCard: { width: 200, height: 140, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.md, borderWidth: 1, borderColor: colors.border },
   schedCardLive: { borderColor: colors.brandPrimary, backgroundColor: colors.brandTertiary },
   schedLive: { flexDirection: "row", alignItems: "center", gap: 4, marginBottom: spacing.sm },
   schedLiveText: { ...type.label, color: colors.brandPrimary, fontSize: 10 },

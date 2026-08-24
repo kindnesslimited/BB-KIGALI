@@ -894,6 +894,8 @@ class ScheduleIn(BaseModel):
     days: Optional[List[str]] = None  # ["mon","tue",...]
     isLive: bool = False
     order: int = 0
+    coverImage: Optional[str] = None
+    status: Optional[str] = None  # "on-air" | "upcoming" | "off-air"
 
 
 @api.post("/admin/schedule")
@@ -906,6 +908,8 @@ async def admin_create_schedule(body: ScheduleIn, current = Depends(require_admi
         "days": body.days or [],
         "isLive": body.isLive,
         "order": body.order,
+        "coverImage": body.coverImage or "",
+        "status": body.status or ("on-air" if body.isLive else "upcoming"),
         "createdAt": datetime.now(timezone.utc).isoformat(),
     }
     await db.schedule.insert_one(doc.copy())
@@ -2113,26 +2117,93 @@ async def read_upload(full_path: str):
 
 
 # ---------- Admin video file upload (for VOD without YouTube) ----------
+ALLOWED_VIDEO_EXTS = {"mp4", "m4v", "mov", "qt", "webm", "mkv", "avi", "3gp", "3g2", "hevc"}
+ALLOWED_VIDEO_MIMES = {
+    "video/mp4", "video/quicktime", "video/x-quicktime",
+    "video/webm", "video/x-matroska",
+    "video/x-msvideo", "video/avi", "video/msvideo",
+    "video/3gpp", "video/3gpp2",
+    "video/mpeg", "video/x-m4v",
+    "application/octet-stream",  # some pickers (iOS Photos) send generic — we still magic-byte check below
+}
+
+
+def _sniff_video_mime(head: bytes) -> Optional[str]:
+    """Return a concrete video mime if the file bytes match a known container, else None.
+    We only look at the first 32 bytes / ftyp box which is enough for mp4/mov/webm/matroska/avi."""
+    if not head:
+        return None
+    # ISO base media: bytes 4..8 == 'ftyp'
+    if len(head) >= 12 and head[4:8] == b"ftyp":
+        brand = head[8:12].lower()
+        if brand in (b"qt  ", b"qt\x20\x20"):
+            return "video/quicktime"
+        # iso/mp4 family (mp41, mp42, isom, avc1, dash, msnv, m4v, iso2, mmp4)
+        if b"qt" in head[8:16]:
+            return "video/quicktime"
+        return "video/mp4"
+    # WebM / Matroska EBML header: 0x1A 0x45 0xDF 0xA3
+    if head[:4] == b"\x1a\x45\xdf\xa3":
+        return "video/webm"
+    # AVI: 'RIFF' ... 'AVI '
+    if head[:4] == b"RIFF" and len(head) >= 12 and head[8:12] == b"AVI ":
+        return "video/x-msvideo"
+    # MPEG-PS/TS: TS starts with 0x47 at offset 0 and every 188 bytes; PS starts with 0x000001BA
+    if head[:4] == b"\x00\x00\x01\xba":
+        return "video/mpeg"
+    return None
+
+
 @api.post("/admin/uploads/video")
 async def admin_upload_video(file: UploadFile = File(...), current = Depends(require_admin)):
-    """Upload a video file (mp4/webm/mov) to Emergent Object Storage. Returns { url, storagePath, contentType, size }."""
+    """Upload a video file to Emergent Object Storage.
+    Accepts common mobile/web containers (mp4, mov/quicktime, webm, mkv, avi, 3gp).
+    We validate BOTH the MIME/extension and the first bytes of the file (magic bytes)
+    so iPhone/Android pickers that send `video/quicktime` or `application/octet-stream`
+    are correctly identified rather than rejected. Returns { url, storagePath, contentType, size }.
+    """
     contents = await file.read()
+    if not contents:
+        raise HTTPException(400, "Empty file")
+    if len(contents) > 500 * 1024 * 1024:
+        raise HTTPException(400, "Video is too large (max 500 MB)")
+
     ext = ""
     if file.filename and "." in file.filename:
         ext = file.filename.rsplit(".", 1)[-1].lower()[:6]
-    ct = (file.content_type or "").lower()
-    if ext not in {"mp4", "webm", "mov", "m4v"} and not ct.startswith("video/"):
-        raise HTTPException(400, "Only mp4/webm/mov video files are accepted")
-    if len(contents) > 500 * 1024 * 1024:
-        raise HTTPException(400, "Video is too large (max 500 MB)")
-    if not ct or not ct.startswith("video/"):
-        ct = "video/mp4"
+    ct_client = (file.content_type or "").lower().strip()
+
+    sniffed = _sniff_video_mime(contents[:64])
+
+    # Accept if EITHER (a) the sniffed magic bytes look like a real video container,
+    # OR (b) the client-declared mime/ext is in our allowlist.
+    is_ext_ok = ext in ALLOWED_VIDEO_EXTS
+    is_mime_ok = ct_client in ALLOWED_VIDEO_MIMES or ct_client.startswith("video/")
+    if not sniffed and not (is_ext_ok or is_mime_ok):
+        raise HTTPException(
+            400,
+            "Unsupported video format. Accepted: MP4, MOV/QuickTime, WebM, MKV, AVI, 3GP. "
+            f"Received filename='{file.filename or ''}' contentType='{ct_client or ''}'.",
+        )
+
+    # Prefer the sniffed content type when we have it (more reliable than client claims).
+    final_ct = sniffed or (ct_client if ct_client.startswith("video/") else None) or "video/mp4"
+    # Choose a sensible extension. If iOS sent 'application/octet-stream' with a .MOV file,
+    # we want .mov, not .mp4.
+    final_ext = ext if is_ext_ok else {
+        "video/quicktime": "mov",
+        "video/webm": "webm",
+        "video/x-matroska": "mkv",
+        "video/x-msvideo": "avi",
+        "video/3gpp": "3gp",
+        "video/mpeg": "mpg",
+    }.get(final_ct, "mp4")
+
     obj_id = uuid.uuid4().hex
-    ext_final = ext or "mp4"
-    path = f"bb-fm-kigali/videos/{current['id']}/{obj_id}.{ext_final}"
+    path = f"bb-fm-kigali/videos/{current['id']}/{obj_id}.{final_ext}"
     try:
         from object_storage import _put  # type: ignore
-        await run_in_threadpool(_put, path, contents, ct)
+        await run_in_threadpool(_put, path, contents, final_ct)
     except Exception as e:
         logger.exception("[video-upload] failed")
         raise HTTPException(502, f"Upload failed: {e}")
@@ -2140,7 +2211,7 @@ async def admin_upload_video(file: UploadFile = File(...), current = Depends(req
         "id": str(uuid.uuid4()),
         "userId": current["id"],
         "storagePath": path,
-        "contentType": ct,
+        "contentType": final_ct,
         "size": len(contents),
         "filename": file.filename,
         "kind": "video",
@@ -2149,8 +2220,8 @@ async def admin_upload_video(file: UploadFile = File(...), current = Depends(req
     public_url = f"{PUBLIC_BASE_URL}/api/uploads/{path}"
     await audit_log.record(db, **audit_log.actor_from_user(current),
                            action="upload.video", target_type="upload", target_id=obj_id,
-                           summary=file.filename, metadata={"size": len(contents), "contentType": ct})
-    return {"url": public_url, "storagePath": path, "contentType": ct, "size": len(contents)}
+                           summary=file.filename, metadata={"size": len(contents), "contentType": final_ct, "sniffed": bool(sniffed)})
+    return {"url": public_url, "storagePath": path, "contentType": final_ct, "size": len(contents)}
 
 
 # ---------- Admin Users management ----------
