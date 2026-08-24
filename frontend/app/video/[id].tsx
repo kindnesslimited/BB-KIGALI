@@ -45,6 +45,7 @@ export default function VideoPlayerScreen() {
   const [showMomo, setShowMomo] = useState(false);
   const [momoStatus, setMomoStatus] = useState<string | null>(null);
   const [suggestStripe, setSuggestStripe] = useState(false);
+  const [checkoutOpen, setCheckoutOpen] = useState(false);
   const isIOS = Platform.OS === "ios";
 
   const loadShow = async () => {
@@ -106,6 +107,7 @@ export default function VideoPlayerScreen() {
             const fresh = await api<any>(`/shows/${id}`, { auth: true });
             if (fresh && fresh.locked === false) {
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+              setCheckoutOpen(false);
               await loadShow();
               return;
             }
@@ -142,7 +144,7 @@ export default function VideoPlayerScreen() {
         try {
           const p = await api<{ status: string }>(`/billing/vod/${id}/momo/${r.reference}`, { auth: true });
           setMomoStatus(p.status);
-          if (p.status === "success") { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {}); await loadShow(); setShowMomo(false); return; }
+          if (p.status === "success") { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {}); await loadShow(); setShowMomo(false); setCheckoutOpen(false); return; }
           if (p.status === "failed") { setErr("Payment was declined on the phone."); return; }
         } catch { /* keep polling */ }
         await new Promise((res) => setTimeout(res, 3000));
@@ -160,6 +162,7 @@ export default function VideoPlayerScreen() {
       try {
         await api(`/billing/vod/${id}/capture/${orderId}`, { method: "POST", auth: true });
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+        setCheckoutOpen(false);
         await loadShow();
       } catch (e: any) { setErr(e.message); }
       finally { setBuying(false); }
@@ -262,73 +265,17 @@ export default function VideoPlayerScreen() {
               <Ionicons name="lock-closed" size={32} color={colors.brandPrimary} />
               <Text style={styles.lockedTitle}>UNLOCK THIS VIDEO</Text>
               <Text style={styles.lockedSub}>{price} EUR / {Number(priceRwf).toLocaleString()} RWF — or go Premium for all VOD free.</Text>
-
-              {!showMomo ? (
-                <View style={styles.lockedActionsCol}>
-                  {!isIOS && (
-                    <Pressable onPress={buyVodStripe} disabled={buying} style={[styles.buyBtnFull, buying && { opacity: 0.6 }]} testID="buy-vod-stripe-btn">
-                      {buying ? <ActivityIndicator color="#000" /> : (
-                        <>
-                          <Ionicons name="card" size={16} color="#000" />
-                          <Text style={styles.buyBtnText}>PAY {price}€ WITH CARD</Text>
-                        </>
-                      )}
-                    </Pressable>
-                  )}
-                  <Pressable onPress={buyVod} disabled={buying} style={[styles.buyBtnOutlineFull, buying && { opacity: 0.6 }]} testID="buy-vod-btn">
-                    <Ionicons name="logo-paypal" size={14} color={colors.brandPrimary} />
-                    <Text style={styles.momoBtnText}>PAY WITH PAYPAL</Text>
-                  </Pressable>
-                  <Pressable onPress={() => { setErr(null); setShowMomo(true); }} disabled={buying} style={styles.buyBtnOutlineFull} testID="buy-vod-momo-btn">
-                    <Ionicons name="phone-portrait" size={14} color={colors.brandPrimary} />
-                    <Text style={styles.momoBtnText}>{Number(priceRwf).toLocaleString()} RWF (MOMO)</Text>
-                  </Pressable>
-                </View>
-              ) : (
-                <View style={{ width: "100%", gap: 8 }}>
-                  <TextInput
-                    value={momoPhone}
-                    onChangeText={setMomoPhone}
-                    keyboardType="phone-pad"
-                    placeholder="+250 78x xxx xxx"
-                    placeholderTextColor={colors.onSurfaceSecondary}
-                    style={styles.momoInput}
-                    testID="vod-momo-phone"
-                  />
-                  <Pressable onPress={buyVodMomo} disabled={buying} style={[styles.buyBtn, buying && { opacity: 0.6 }]} testID="vod-momo-confirm">
-                    {buying ? <ActivityIndicator color="#000" /> : (
-                      <Text style={styles.buyBtnText}>{err ? "RETRY MOMO REQUEST" : "SEND MOMO REQUEST"}</Text>
-                    )}
-                  </Pressable>
-                  {momoStatus && buying && (
-                    <Text style={styles.momoStatus}>Waiting on your phone… ({momoStatus})</Text>
-                  )}
-                  <Pressable onPress={() => setShowMomo(false)} style={{ alignItems: "center", paddingTop: 4 }}>
-                    <Text style={styles.momoBack}>← use card instead</Text>
-                  </Pressable>
-                </View>
-              )}
-
+              <Pressable
+                onPress={() => { setErr(null); setSuggestStripe(false); setCheckoutOpen(true); }}
+                style={styles.buyBtnFull}
+                testID="open-vod-checkout-btn"
+              >
+                <Ionicons name="lock-open" size={16} color="#000" />
+                <Text style={styles.buyBtnText}>UNLOCK NOW</Text>
+              </Pressable>
               <Pressable onPress={() => router.push("/paywall")} style={{ paddingTop: spacing.sm }} testID="go-premium-btn">
                 <Text style={styles.premInline}>OR GO PREMIUM →</Text>
               </Pressable>
-              {err && <Text style={styles.err}>{err}</Text>}
-              {err && showMomo && !buying && (
-                <Pressable onPress={buyVodMomo} style={styles.retryBanner} testID="momo-retry-btn">
-                  <Ionicons name="refresh" size={18} color="#000" />
-                  <Text style={styles.retryText}>RETRY MOMO PAYMENT</Text>
-                </Pressable>
-              )}
-              {suggestStripe && !isIOS && (
-                <Pressable
-                  onPress={() => { setShowMomo(false); setErr(null); setSuggestStripe(false); void buyVodStripe(); }}
-                  style={styles.fallbackBanner}
-                  testID="vod-fallback-stripe"
-                >
-                  <Ionicons name="card" size={16} color={colors.brandPrimary} />
-                  <Text style={styles.fallbackText}>Try Card (Stripe) instead →</Text>
-                </Pressable>
-              )}
             </View>
           </View>
         ) : embedUrl ? (
@@ -372,6 +319,110 @@ export default function VideoPlayerScreen() {
         <Text style={styles.title}>{show.title}</Text>
         <Text style={styles.desc}>{show.description}</Text>
       </ScrollView>
+
+      {/* Dedicated full-screen checkout modal — clean, no video details */}
+      <Modal visible={checkoutOpen} animationType="slide" onRequestClose={() => setCheckoutOpen(false)} presentationStyle="fullScreen">
+        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1, backgroundColor: colors.surface }}>
+          <View style={[styles.checkoutTop, { paddingTop: insets.top + spacing.md }]}>
+            <Pressable onPress={() => setCheckoutOpen(false)} hitSlop={12} testID="checkout-close">
+              <Ionicons name="close" size={26} color={colors.onSurface} />
+            </Pressable>
+            <Text style={styles.checkoutTopTitle}>CHECKOUT</Text>
+            <View style={{ width: 26 }} />
+          </View>
+          <ScrollView contentContainerStyle={styles.checkoutBody} keyboardShouldPersistTaps="handled">
+            <View style={styles.checkoutHero}>
+              <Ionicons name="lock-open" size={40} color={colors.brandPrimary} />
+              <Text style={styles.checkoutTitle}>UNLOCK VIDEO</Text>
+              <Text style={styles.checkoutPrice}>{price} {currency}</Text>
+              <Text style={styles.checkoutOr}>· or {Number(priceRwf).toLocaleString()} RWF ·</Text>
+            </View>
+
+            <Text style={styles.checkoutSectionLabel}>CHOOSE PAYMENT METHOD</Text>
+
+            {!showMomo ? (
+              <View style={styles.methodList}>
+                {!isIOS && (
+                  <Pressable onPress={buyVodStripe} disabled={buying} style={[styles.method, styles.methodPrimary, buying && { opacity: 0.6 }]} testID="checkout-stripe">
+                    <View style={[styles.methodIcon, { backgroundColor: "#635bff" }]}>
+                      <Ionicons name="card" size={20} color="#fff" />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.methodTitle}>Card (Stripe)</Text>
+                      <Text style={styles.methodSub}>Visa, Mastercard, Apple Pay</Text>
+                    </View>
+                    {buying ? <ActivityIndicator color={colors.brandPrimary} /> : <Ionicons name="chevron-forward" size={22} color={colors.brandPrimary} />}
+                  </Pressable>
+                )}
+                <Pressable onPress={buyVod} disabled={buying} style={[styles.method, buying && { opacity: 0.6 }]} testID="checkout-paypal">
+                  <View style={[styles.methodIcon, { backgroundColor: "#003087" }]}>
+                    <Ionicons name="logo-paypal" size={20} color="#fff" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.methodTitle}>PayPal</Text>
+                    <Text style={styles.methodSub}>Login to PayPal to pay</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={22} color={colors.brandPrimary} />
+                </Pressable>
+                <Pressable onPress={() => { setErr(null); setShowMomo(true); }} disabled={buying} style={styles.method} testID="checkout-momo">
+                  <View style={[styles.methodIcon, { backgroundColor: "#ffcc00" }]}>
+                    <Ionicons name="phone-portrait" size={20} color="#000" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.methodTitle}>MTN MoMo</Text>
+                    <Text style={styles.methodSub}>{Number(priceRwf).toLocaleString()} RWF · Rwanda only</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={22} color={colors.brandPrimary} />
+                </Pressable>
+              </View>
+            ) : (
+              <View style={styles.momoPanel}>
+                <Text style={styles.momoPanelLabel}>ENTER YOUR MTN MOMO PHONE</Text>
+                <TextInput
+                  value={momoPhone}
+                  onChangeText={setMomoPhone}
+                  keyboardType="phone-pad"
+                  placeholder="+250 78x xxx xxx"
+                  placeholderTextColor={colors.onSurfaceSecondary}
+                  style={styles.momoInput}
+                  testID="checkout-momo-phone"
+                />
+                <Pressable onPress={buyVodMomo} disabled={buying} style={[styles.buyBtnFull, buying && { opacity: 0.6 }, { marginTop: spacing.md }]} testID="checkout-momo-confirm">
+                  {buying ? <ActivityIndicator color="#000" /> : (
+                    <Text style={styles.buyBtnText}>{err ? "RETRY MOMO REQUEST" : "SEND MOMO REQUEST"}</Text>
+                  )}
+                </Pressable>
+                {momoStatus && buying && <Text style={styles.momoStatus}>Waiting on your phone… ({momoStatus})</Text>}
+                <Pressable onPress={() => setShowMomo(false)} style={{ alignItems: "center", paddingTop: spacing.md }}>
+                  <Text style={styles.momoBack}>← choose a different method</Text>
+                </Pressable>
+              </View>
+            )}
+
+            {err && <Text style={styles.err}>{err}</Text>}
+            {suggestStripe && !isIOS && (
+              <Pressable
+                onPress={() => { setShowMomo(false); setErr(null); setSuggestStripe(false); void buyVodStripe(); }}
+                style={styles.fallbackBanner}
+                testID="checkout-fallback-stripe"
+              >
+                <Ionicons name="card" size={16} color={colors.brandPrimary} />
+                <Text style={styles.fallbackText}>Try Card (Stripe) instead →</Text>
+              </Pressable>
+            )}
+
+            <Pressable onPress={() => { setCheckoutOpen(false); router.push("/paywall"); }} style={styles.premiumUpsell} testID="checkout-premium">
+              <Ionicons name="star" size={16} color={colors.brandPrimary} />
+              <Text style={styles.premiumUpsellText}>Or go Premium — unlock ALL VOD from 1,000 RWF/mo →</Text>
+            </Pressable>
+
+            <View style={styles.trustRow}>
+              <Ionicons name="shield-checkmark" size={14} color={colors.success} />
+              <Text style={styles.trustText}>Encrypted payment · no card details stored</Text>
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </Modal>
     </View>
   );
 }
@@ -423,4 +474,25 @@ const styles = StyleSheet.create({
   dur: { ...type.caption, marginLeft: "auto" },
   title: { ...type.displayLg, fontSize: 24, marginBottom: spacing.md, lineHeight: 28 },
   desc: { ...type.bodyMuted, lineHeight: 22, fontSize: 14 },
+  // Checkout modal styles
+  checkoutTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: spacing.lg, paddingBottom: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.border, backgroundColor: colors.surface },
+  checkoutTopTitle: { ...type.h2, letterSpacing: 2, fontSize: 15 },
+  checkoutBody: { padding: spacing.lg, paddingBottom: 80, gap: spacing.lg, maxWidth: 560, width: "100%", alignSelf: "center" },
+  checkoutHero: { alignItems: "center", padding: spacing.lg, gap: 4, backgroundColor: colors.surfaceSecondary, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border },
+  checkoutTitle: { ...type.h1, color: colors.brandPrimary, letterSpacing: 1.2, marginTop: spacing.sm, fontSize: 22 },
+  checkoutPrice: { fontFamily: "BarlowCondensed-Bold", fontSize: 40, color: colors.onSurface, letterSpacing: 0.5, marginTop: 4 },
+  checkoutOr: { ...type.bodyMuted, fontSize: 12, marginTop: 2 },
+  checkoutSectionLabel: { ...type.label, letterSpacing: 1.5, fontSize: 12, color: colors.onSurfaceSecondary },
+  methodList: { gap: spacing.sm },
+  method: { flexDirection: "row", alignItems: "center", gap: spacing.md, backgroundColor: colors.surfaceSecondary, padding: spacing.md, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border },
+  methodPrimary: { borderColor: colors.brandPrimary },
+  methodIcon: { width: 44, height: 44, borderRadius: radius.sm, alignItems: "center", justifyContent: "center" },
+  methodTitle: { ...type.h2, fontSize: 15 },
+  methodSub: { ...type.caption, marginTop: 2 },
+  momoPanel: { padding: spacing.md, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, borderWidth: 1, borderColor: colors.brandPrimary },
+  momoPanelLabel: { ...type.label, letterSpacing: 1.5, fontSize: 11, marginBottom: spacing.sm, color: colors.onSurfaceSecondary },
+  premiumUpsell: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: spacing.md, paddingHorizontal: spacing.md, borderRadius: radius.md, backgroundColor: colors.brandTertiary, borderWidth: 1, borderColor: colors.brandPrimary, justifyContent: "center" },
+  premiumUpsellText: { color: colors.brandPrimary, fontFamily: "BarlowCondensed-Bold", fontSize: 12, letterSpacing: 0.5, textAlign: "center" },
+  trustRow: { flexDirection: "row", alignItems: "center", gap: 6, justifyContent: "center", paddingTop: spacing.sm },
+  trustText: { ...type.caption, fontSize: 11, color: colors.onSurfaceSecondary },
 });

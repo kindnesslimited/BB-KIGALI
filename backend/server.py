@@ -780,10 +780,26 @@ async def get_show(show_id: str, user = Depends(get_optional_user)):
 
 
 # ---------- News ----------
+def _normalize_news(item: dict) -> dict:
+    """Keep both legacy (thumbnail/excerpt) and new (coverUrl/summary) field names
+    so the customer feed & admin CRUD stay backwards-compatible."""
+    if not item:
+        return item
+    cover = item.get("coverUrl") or item.get("thumbnail")
+    summary = item.get("summary") or item.get("excerpt")
+    if cover:
+        item["coverUrl"] = cover
+        item["thumbnail"] = cover
+    if summary:
+        item["summary"] = summary
+        item["excerpt"] = summary
+    return item
+
+
 @api.get("/news")
 async def list_news():
     items = await db.news.find({}, {"_id": 0}).sort("publishedAt", -1).to_list(100)
-    return items
+    return [_normalize_news(i) for i in items]
 
 
 @api.get("/news/{news_id}")
@@ -791,7 +807,7 @@ async def get_news(news_id: str):
     item = await db.news.find_one({"id": news_id}, {"_id": 0})
     if not item:
         raise HTTPException(404, "News not found")
-    return item
+    return _normalize_news(item)
 
 
 # ---------- Admin News CRUD ----------
@@ -802,20 +818,28 @@ class NewsIn(BaseModel):
     coverUrl: Optional[str] = None
     category: Optional[str] = None
     url: Optional[str] = None
+    sourceName: Optional[str] = None
+    sourceUrl: Optional[str] = None
     published: bool = True
 
 
 @api.post("/admin/news")
 async def admin_create_news(body: NewsIn, current = Depends(require_admin)):
     now_iso = datetime.now(timezone.utc).isoformat()
+    cover = body.coverUrl
+    summary = body.summary
     doc = {
         "id": str(uuid.uuid4()),
         "title": body.title,
-        "summary": body.summary,
+        "summary": summary,
+        "excerpt": summary,  # legacy alias for customer feed
         "body": body.body,
-        "coverUrl": body.coverUrl,
+        "coverUrl": cover,
+        "thumbnail": cover,  # legacy alias
         "category": body.category or "news",
         "url": body.url,
+        "sourceName": body.sourceName,
+        "sourceUrl": body.sourceUrl,
         "published": body.published,
         "publishedAt": now_iso,
         "createdAt": now_iso,
@@ -831,6 +855,11 @@ async def admin_create_news(body: NewsIn, current = Depends(require_admin)):
 @api.patch("/admin/news/{news_id}")
 async def admin_update_news(news_id: str, body: NewsIn, current = Depends(require_admin)):
     updates = {k: v for k, v in body.dict().items() if v is not None}
+    # Mirror legacy fields so customer feed keeps showing image + summary correctly.
+    if "coverUrl" in updates:
+        updates["thumbnail"] = updates["coverUrl"]
+    if "summary" in updates:
+        updates["excerpt"] = updates["summary"]
     updates["updatedAt"] = datetime.now(timezone.utc).isoformat()
     r = await db.news.update_one({"id": news_id}, {"$set": updates})
     if r.matched_count == 0:
@@ -851,6 +880,64 @@ async def admin_delete_news(news_id: str, current = Depends(require_admin)):
     await audit_log.record(db, **audit_log.actor_from_user(current),
                            action="news.delete", target_type="news", target_id=news_id,
                            summary=(doc or {}).get("title"))
+    return {"ok": True}
+
+
+# ---------- Admin Schedule CRUD ----------
+DAY_LABELS = {"mon": "Mon", "tue": "Tue", "wed": "Wed", "thu": "Thu", "fri": "Fri", "sat": "Sat", "sun": "Sun"}
+
+
+class ScheduleIn(BaseModel):
+    time: str  # e.g. "07:00 - 09:00"
+    showTitle: str
+    djName: Optional[str] = None
+    days: Optional[List[str]] = None  # ["mon","tue",...]
+    isLive: bool = False
+    order: int = 0
+
+
+@api.post("/admin/schedule")
+async def admin_create_schedule(body: ScheduleIn, current = Depends(require_admin)):
+    doc = {
+        "id": str(uuid.uuid4()),
+        "time": body.time,
+        "showTitle": body.showTitle,
+        "djName": body.djName or "",
+        "days": body.days or [],
+        "isLive": body.isLive,
+        "order": body.order,
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.schedule.insert_one(doc.copy())
+    await audit_log.record(db, **audit_log.actor_from_user(current),
+                           action="schedule.create", target_type="schedule", target_id=doc["id"],
+                           summary=body.showTitle)
+    return doc
+
+
+@api.patch("/admin/schedule/{item_id}")
+async def admin_update_schedule(item_id: str, body: ScheduleIn, current = Depends(require_admin)):
+    updates = body.dict(exclude_unset=True)
+    updates["updatedAt"] = datetime.now(timezone.utc).isoformat()
+    r = await db.schedule.update_one({"id": item_id}, {"$set": updates})
+    if r.matched_count == 0:
+        raise HTTPException(404, "Schedule item not found")
+    doc = await db.schedule.find_one({"id": item_id}, {"_id": 0})
+    await audit_log.record(db, **audit_log.actor_from_user(current),
+                           action="schedule.update", target_type="schedule", target_id=item_id,
+                           summary=(doc or {}).get("showTitle"))
+    return doc
+
+
+@api.delete("/admin/schedule/{item_id}")
+async def admin_delete_schedule(item_id: str, current = Depends(require_admin)):
+    doc = await db.schedule.find_one({"id": item_id}, {"_id": 0, "showTitle": 1})
+    r = await db.schedule.delete_one({"id": item_id})
+    if r.deleted_count == 0:
+        raise HTTPException(404, "Schedule item not found")
+    await audit_log.record(db, **audit_log.actor_from_user(current),
+                           action="schedule.delete", target_type="schedule", target_id=item_id,
+                           summary=(doc or {}).get("showTitle"))
     return {"ok": True}
 
 

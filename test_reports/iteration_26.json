@@ -1,0 +1,41 @@
+{
+  "summary": "Iter 26 full-stack test — BACKEND 9/9 PASS, FRONTEND all critical flows PASS. Verified new news source fields (sourceName/sourceUrl accepted on POST /api/admin/news and PATCH /api/admin/news/{id}), coverUrl↔thumbnail + summary↔excerpt mirroring on both public GET /api/news normalization and admin write endpoints, and the brand-new admin Schedule CRUD (POST/PATCH/DELETE /api/admin/schedule with 401/403 without admin, 404 on unknown id, and successful create→visible-in-public-GET /api/radio/schedule→update→delete round-trip). ScheduleIn payload {time,showTitle,djName,days,isLive,order} accepted correctly. FRONTEND: (a) Mobile home screen loads without crash, HOW OUR APP WORKS section renders 4 guide cards (LISTEN LIVE / WATCH VOD / GO PREMIUM / PAY YOUR WAY) and NEED HELP? section renders contact card with WhatsApp/Call/Email pressables + phone/email/address meta. (b) Desktop viewport (1440x900): inner content container measured width=1200px with x=120px offset — maxWidth:1200 constraint confirmed. (c) Admin /admin/schedule page renders with add form containing time slot + program name + host + day-of-week chips (mon..sun) + Live-now switch + Add Slot button and lists existing slots with edit/delete icons. (d) Admin /admin/news page renders 'ORIGINAL SOURCE (OPTIONAL)' section with Publication name + Source URL inputs (testIDs news-source-name / news-source-url), plus cover image PICK FROM DEVICE / PASTE URL controls and PUBLISH button. (e) VOD checkout: /video/{id} on a locked show shows compact 'UNLOCK NOW' button (open-vod-checkout-btn); tapping opens a full-screen modal with a big padlock icon, 'UNLOCK VIDEO' title, '1.00 EUR · or 1,000 RWF' price, 'CHECKOUT' header, and payment method cards Card(Stripe)/PayPal/MTN MoMo — each with its own testID (checkout-stripe/checkout-paypal/checkout-momo). Tapping MoMo reveals checkout-momo-phone input inline. Modal has a close button, premium-upsell footer, and 'Encrypted payment' safety note. Video details block is hidden while the modal is open. No red-screen or console errors during any flow (only 1 deprecation warning: pointerEvents prop — non-blocking).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Home (desktop 1440px)", "issues": ["The ON AIR NOW hero image only fills the left portion of the 1200-max container; the right ~50% is a grey placeholder because the YouTube live thumbnail's contentFit=cover renders at native aspect. Cosmetic only — not requested by user."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter26_news_schedule.py",
+    "/app/test_reports/pytest/pytest_iter26.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py:857 admin_update_news — uses `body.dict()` (deprecated in Pydantic v2, should be `body.model_dump()`) and only strips None values, so a client sending sourceName='' cannot clear a previously-set source. Not blocking for this iteration but consider `exclude_unset=True` semantics like the schedule PATCH.",
+    "server.py:920 admin_update_schedule — correctly uses `body.dict(exclude_unset=True)` so partial updates only patch supplied fields (great).",
+    "server.py:783 _normalize_news mutates the dict returned from mongo in-place — since projection excludes _id and we never write it back, this is safe.",
+    "app/(tabs)/_layout.tsx:48-49 — the double-View wrapper with maxWidth:1200 + alignSelf:center is the right pattern for constraining web layout without breaking native. Tab bar sits inside the constrained container which is what user asked for.",
+    "app/video/[id].tsx — Modal uses presentationStyle='fullScreen' + animationType='slide' — correct RN idiom for a full-screen checkout sheet. testIDs for every payment method + close + premium upsell are complete.",
+    "app/admin/schedule.tsx & app/admin/news.tsx — every interactive input has a testID; day-of-week chips are correctly wired as sched-day-{key}.",
+    "app.json:15-29 — NSPhotoLibraryUsageDescription and privacyManifests (4 API-type reason codes) are present — this addresses the iOS App Store submission blocker."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter26_news_schedule.py (NEW)"
+  ],
+  "success_rate": {
+    "backend": "100% (9/9)",
+    "frontend": "100% of critical flows (home guide+contact sections, desktop 1200 max-width, admin schedule form + list, admin news source fields, VOD checkout full-screen modal with all 3 payment methods)"
+  },
+  "seed_data_creation": "Tests create+delete throwaway news items (title prefix TEST_ITER26 *) and schedule slots (showTitle prefix TEST_ITER26 Morning Show *). All are self-cleaned within the same test. No production data modified.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Admin phone +250794230137 always returns testCode 123456 via /api/auth/otp/start (SMS_DEV_RETURN_CODE=true). Auth JWT is returned under key `accessToken`, stored via AsyncStorage-web (keys are prefixed by @RCTAsyncStorage or similar) so injecting into localStorage.bbfm.token does NOT work — use the actual UI login flow (fill phone → CONTINUE WITH PHONE → keyboard.type('123456') on OTP screen with auto-advance inputs → VERIFY & CONTINUE). ScheduleIn payload keys: time (str), showTitle (str), djName (str, optional), days (list[str] like ['mon','tue']), isLive (bool), order (int). NewsIn now accepts sourceName + sourceUrl (both optional str). Public GET /api/news is normalized so items always expose BOTH coverUrl AND thumbnail, and BOTH summary AND excerpt when either is present — assert both for backward compatibility. VOD checkout modal testIDs: open-vod-checkout-btn (trigger), checkout-close, checkout-stripe, checkout-paypal, checkout-momo, checkout-momo-phone (after tapping momo), checkout-momo-confirm, checkout-premium, and checkout-fallback-stripe when Stripe is disabled on iOS. The verify-continue button is only pressable AFTER all 6 OTP digits are typed — the button attaches later; use page.keyboard.type with delay to auto-advance boxes.",
+  "rca_of_issue": "N/A — no bugs. All requested features verified working end-to-end on both backend and frontend."
+}

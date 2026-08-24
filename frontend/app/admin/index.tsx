@@ -25,6 +25,7 @@ const CARDS: { key: string; label: string; sub: string; icon: any; route: any }[
   { key: "sms", label: "SMS Providers", sub: "Route Mobile + WhatsApp — analytics + delivery", icon: "chatbubbles-outline", route: "/admin/sms" },
   { key: "categories", label: "Categories", sub: "Manage show/news categories", icon: "pricetags-outline", route: "/admin/categories" },
   { key: "programs", label: "Programs", sub: "BBSPORTSTALK, B&B SPORTS BAR, IMPUMEKOYIWACU", icon: "list-outline", route: "/admin/programs" },
+  { key: "schedule", label: "Schedule", sub: "Daily & weekly on-air program slots", icon: "calendar-outline", route: "/admin/schedule" },
   { key: "shows", label: "VOD & Podcasts", sub: "Sync @bbkigalifm + @BBSPORTSBAR YouTube", icon: "videocam-outline", route: "/admin/shows" },
   { key: "news", label: "News", sub: "Create, edit and delete news posts", icon: "newspaper-outline", route: "/admin/news" },
 ];

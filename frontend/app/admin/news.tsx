@@ -16,11 +16,13 @@ type News = {
   coverUrl?: string;
   category?: string;
   url?: string;
+  sourceName?: string;
+  sourceUrl?: string;
   published?: boolean;
   publishedAt?: string;
 };
 
-const EMPTY: Partial<News> = { title: "", summary: "", body: "", coverUrl: "", category: "news", url: "", published: true };
+const EMPTY: Partial<News> = { title: "", summary: "", body: "", coverUrl: "", category: "news", url: "", sourceName: "", sourceUrl: "", published: true };
 
 export default function AdminNews() {
   const insets = useSafeAreaInsets();
@@ -40,7 +42,7 @@ export default function AdminNews() {
   useEffect(() => { void load(); }, []);
 
   const startEdit = (n: News) => {
-    setForm({ title: n.title, summary: n.summary, body: n.body, coverUrl: n.coverUrl, category: n.category, url: n.url, published: n.published !== false });
+    setForm({ title: n.title, summary: n.summary, body: n.body, coverUrl: n.coverUrl, category: n.category, url: n.url, sourceName: n.sourceName, sourceUrl: n.sourceUrl, published: n.published !== false });
     setEditingId(n.id);
     setCreating(true);
   };
@@ -88,6 +90,11 @@ export default function AdminNews() {
             <TextInput value={form.summary || ""} onChangeText={(v) => setForm({ ...form, summary: v })} placeholder="Short summary (1–2 lines)" placeholderTextColor={colors.onSurfaceSecondary} style={[styles.input, { marginTop: spacing.sm }]} testID="news-summary" />
             <TextInput value={form.body || ""} onChangeText={(v) => setForm({ ...form, body: v })} placeholder="Full story…" placeholderTextColor={colors.onSurfaceSecondary} style={[styles.input, { marginTop: spacing.sm, height: 120 }]} multiline testID="news-body" />
             <TextInput value={form.url || ""} onChangeText={(v) => setForm({ ...form, url: v })} placeholder="Optional link (https://…)" placeholderTextColor={colors.onSurfaceSecondary} style={[styles.input, { marginTop: spacing.sm }]} autoCapitalize="none" testID="news-url" />
+
+            <Text style={[styles.sectionLabel, { marginTop: spacing.md, marginBottom: 6 }]}>ORIGINAL SOURCE (OPTIONAL)</Text>
+            <TextInput value={form.sourceName || ""} onChangeText={(v) => setForm({ ...form, sourceName: v })} placeholder="Publication name (e.g. Kigali Today)" placeholderTextColor={colors.onSurfaceSecondary} style={styles.input} testID="news-source-name" />
+            <TextInput value={form.sourceUrl || ""} onChangeText={(v) => setForm({ ...form, sourceUrl: v })} placeholder="Source URL (https://…)" placeholderTextColor={colors.onSurfaceSecondary} style={[styles.input, { marginTop: spacing.sm }]} autoCapitalize="none" testID="news-source-url" />
+
             <View style={{ marginTop: spacing.md }}>
               <CoverImagePicker
                 value={form.coverUrl}

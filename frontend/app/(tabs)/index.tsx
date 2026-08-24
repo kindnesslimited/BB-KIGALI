@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, RefreshControl } from "react-native";
+import { View, Text, StyleSheet, ScrollView, Pressable, RefreshControl, Linking } from "react-native";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -11,7 +11,7 @@ import { useAuth } from "@/src/context/auth";
 import { usePlayer } from "@/src/context/player";
 
 type Sched = { id: string; time: string; showTitle: string; djName: string; isLive: boolean };
-type News = { id: string; title: string; excerpt: string; thumbnail: string; publishedAt: string };
+type News = { id: string; title: string; excerpt?: string; summary?: string; thumbnail?: string; coverUrl?: string; publishedAt: string };
 type Program = { id: string; name: string; description?: string; coverImage?: string; order: number };
 type Settings = { stationName?: string; stationTagline?: string; frequency?: string; logoUrl?: string };
 
@@ -199,13 +199,81 @@ export default function Home() {
         <View style={{ paddingHorizontal: spacing.lg, gap: spacing.md }}>
           {news.map((n) => (
             <Pressable key={n.id} style={styles.newsCard} testID={`news-${n.id}`} onPress={() => router.push("/(tabs)/news")}>
-              <Image source={{ uri: n.thumbnail }} style={styles.newsThumb} contentFit="cover" />
+              <Image source={{ uri: n.coverUrl || n.thumbnail }} style={styles.newsThumb} contentFit="cover" />
               <View style={{ flex: 1 }}>
                 <Text numberOfLines={2} style={styles.newsTitle}>{n.title}</Text>
-                <Text numberOfLines={2} style={styles.newsExcerpt}>{n.excerpt}</Text>
+                <Text numberOfLines={2} style={styles.newsExcerpt}>{n.excerpt || n.summary || ""}</Text>
               </View>
             </Pressable>
           ))}
+        </View>
+      </View>
+
+      {/* How the app works — guidance + contact */}
+      <View style={styles.section}>
+        <View style={styles.sectionHead}>
+          <Text style={styles.sectionTitle}>HOW OUR APP WORKS</Text>
+        </View>
+        <View style={styles.guideGrid}>
+          <View style={styles.guideCard}>
+            <View style={styles.guideIcon}><Ionicons name="radio-outline" size={22} color={colors.brandPrimary} /></View>
+            <Text style={styles.guideTitle}>LISTEN LIVE</Text>
+            <Text style={styles.guideDesc}>Stream BB FM 89.7 free — anytime, anywhere in the world.</Text>
+          </View>
+          <View style={styles.guideCard}>
+            <View style={styles.guideIcon}><Ionicons name="videocam-outline" size={22} color={colors.brandPrimary} /></View>
+            <Text style={styles.guideTitle}>WATCH VOD</Text>
+            <Text style={styles.guideDesc}>Buy a single show for 1€ / 1,000 RWF, or go Premium.</Text>
+          </View>
+          <View style={styles.guideCard}>
+            <View style={styles.guideIcon}><Ionicons name="star-outline" size={22} color={colors.brandPrimary} /></View>
+            <Text style={styles.guideTitle}>GO PREMIUM</Text>
+            <Text style={styles.guideDesc}>Unlock every show, ad-free, from 1,000 RWF / month.</Text>
+          </View>
+          <View style={styles.guideCard}>
+            <View style={styles.guideIcon}><Ionicons name="card-outline" size={22} color={colors.brandPrimary} /></View>
+            <Text style={styles.guideTitle}>PAY YOUR WAY</Text>
+            <Text style={styles.guideDesc}>Card (Stripe), PayPal, or MTN MoMo — pick what suits.</Text>
+          </View>
+        </View>
+      </View>
+
+      {/* Contact card */}
+      <View style={styles.section}>
+        <View style={styles.sectionHead}>
+          <Text style={styles.sectionTitle}>NEED HELP?</Text>
+        </View>
+        <View style={styles.contactCard}>
+          <Text style={styles.contactHeadline}>We&apos;re just a message away.</Text>
+          <Text style={styles.contactSub}>Our team replies in Kinyarwanda, English & French, Mon–Sat 9:00–20:00 CAT.</Text>
+          <View style={styles.contactRow}>
+            <Pressable
+              onPress={() => Linking.openURL("https://wa.me/250791446979").catch(() => {})}
+              style={[styles.contactBtn, { borderColor: "#25D366" }]}
+              testID="home-contact-whatsapp"
+            >
+              <Ionicons name="logo-whatsapp" size={18} color="#25D366" />
+              <Text style={styles.contactBtnText}>WHATSAPP</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => Linking.openURL("tel:+250791446979").catch(() => {})}
+              style={styles.contactBtn}
+              testID="home-contact-call"
+            >
+              <Ionicons name="call-outline" size={18} color={colors.brandPrimary} />
+              <Text style={styles.contactBtnText}>CALL</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => Linking.openURL("mailto:info@besoft.info?subject=BB%20FM%20Kigali%20Support").catch(() => {})}
+              style={styles.contactBtn}
+              testID="home-contact-email"
+            >
+              <Ionicons name="mail-outline" size={18} color={colors.brandPrimary} />
+              <Text style={styles.contactBtnText}>EMAIL</Text>
+            </Pressable>
+          </View>
+          <Text style={styles.contactMeta}>+250 791 446 979 · info@besoft.info</Text>
+          <Text style={styles.contactMeta}>BB FM Kigali · KG 123 St, Kigali, Rwanda</Text>
         </View>
       </View>
     </ScrollView>
@@ -262,4 +330,17 @@ const styles = StyleSheet.create({
   newsThumb: { width: 90, height: 70, borderRadius: radius.sm },
   newsTitle: { ...type.h2, fontSize: 14, lineHeight: 18 },
   newsExcerpt: { ...type.caption, marginTop: 4, lineHeight: 16 },
+  // Guide + Contact
+  guideGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.md, paddingHorizontal: spacing.lg },
+  guideCard: { flexBasis: "47%", flexGrow: 1, minWidth: 140, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, padding: spacing.md, gap: 6 },
+  guideIcon: { width: 40, height: 40, borderRadius: radius.sm, backgroundColor: colors.brandTertiary, alignItems: "center", justifyContent: "center", marginBottom: 4 },
+  guideTitle: { ...type.h2, fontSize: 13, letterSpacing: 1 },
+  guideDesc: { ...type.bodyMuted, fontSize: 12, lineHeight: 16 },
+  contactCard: { marginHorizontal: spacing.lg, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.lg, borderWidth: 1, borderColor: colors.border, gap: spacing.sm },
+  contactHeadline: { ...type.h1, fontSize: 18 },
+  contactSub: { ...type.bodyMuted, fontSize: 12, lineHeight: 16 },
+  contactRow: { flexDirection: "row", gap: spacing.sm, flexWrap: "wrap", marginTop: spacing.sm },
+  contactBtn: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: spacing.md, paddingVertical: 10, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.brandPrimary, backgroundColor: colors.brandTertiary, flexGrow: 1, justifyContent: "center" },
+  contactBtnText: { color: colors.brandPrimary, fontFamily: "BarlowCondensed-Bold", fontSize: 12, letterSpacing: 1 },
+  contactMeta: { ...type.caption, fontSize: 11 },
 });

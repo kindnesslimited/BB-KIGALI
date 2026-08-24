@@ -42,9 +42,11 @@ function MiniPlayer() {
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
   const barHeight = 64 + insets.bottom;
+  const isWeb = Platform.OS === "web";
 
   return (
-    <View style={{ flex: 1, backgroundColor: colors.surface }}>
+    <View style={{ flex: 1, backgroundColor: colors.surface, alignItems: isWeb ? "center" : "stretch" }}>
+      <View style={{ flex: 1, width: "100%", maxWidth: isWeb ? 1200 : undefined, alignSelf: "center" }}>
       <Tabs
         screenOptions={{
           headerShown: false,
@@ -85,6 +87,7 @@ export default function TabsLayout() {
       </Tabs>
       <View pointerEvents="box-none" style={[styles.mpWrap, { bottom: barHeight + spacing.xs }]}>
         <MiniPlayer />
+      </View>
       </View>
     </View>
   );
