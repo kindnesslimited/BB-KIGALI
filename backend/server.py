@@ -1547,7 +1547,7 @@ async def admin_youtube_oauth_callback(code: Optional[str] = None, state: Option
     return HTMLResponse(f"""
 <!doctype html><meta charset='utf-8'><title>YouTube connected</title>
 <style>body{{font-family:system-ui;background:#0f0f13;color:#fff;padding:40px;text-align:center}}
-h1{{color:#ff6600}}.card{{max-width:520px;margin:40px auto;padding:32px;border:1px solid #333;border-radius:12px;background:#1a1a1f}}</style>
+h1{{color:#E10600}}.card{{max-width:520px;margin:40px auto;padding:32px;border:1px solid #333;border-radius:12px;background:#1a1a1f}}</style>
 <div class='card'>
   <h1>✅ YouTube Connected</h1>
   <p><strong>Channel:</strong> {channel_name or 'unknown'}</p>
@@ -3636,7 +3636,7 @@ async def stripe_return(session_id: str):
         content=f"""<!doctype html><html><head><meta charset=utf-8>
         <title>Payment received — BB FM Kigali</title>
         <style>body{{background:#0F0F13;color:#fff;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;margin:0;height:100vh;display:flex;align-items:center;justify-content:center;padding:2rem;text-align:center}}
-        .box{{max-width:420px}}h1{{color:#FF6B00;letter-spacing:1px;font-size:20px;margin:0 0 8px}}p{{color:rgba(255,255,255,0.7);line-height:1.5;font-size:14px}}
+        .box{{max-width:420px}}h1{{color:#E10600;letter-spacing:1px;font-size:20px;margin:0 0 8px}}p{{color:rgba(255,255,255,0.7);line-height:1.5;font-size:14px}}
         .id{{font-family:ui-monospace,monospace;font-size:11px;color:rgba(255,255,255,0.4);word-break:break-all;margin-top:1rem}}</style></head>
         <body><div class=box><h1>PAYMENT RECEIVED</h1>
         <p>Thanks for supporting B&amp;B Kigali 89.7 FM. Your subscription or unlock will activate automatically. Returning to the app…</p>
@@ -3650,7 +3650,7 @@ async def stripe_cancel():
     return HTMLResponse(
         content="""<!doctype html><html><head><meta charset=utf-8><title>Payment cancelled</title>
         <style>body{background:#0F0F13;color:#fff;font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:0;height:100vh;display:flex;align-items:center;justify-content:center;text-align:center;padding:2rem}</style></head>
-        <body><div><h1 style="color:#FF6B00">Payment cancelled</h1><p style="color:rgba(255,255,255,0.7)">You can retry anytime from the BB FM Kigali app.</p></div></body></html>""",
+        <body><div><h1 style="color:#E10600">Payment cancelled</h1><p style="color:rgba(255,255,255,0.7)">You can retry anytime from the BB FM Kigali app.</p></div></body></html>""",
         status_code=200,
     )
 

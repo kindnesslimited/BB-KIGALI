@@ -77,10 +77,10 @@ export default function AdminHome() {
         ) : (
           <>
             <View style={styles.kpiGrid}>
-              <Kpi label="Active subs" value={fmt(data?.subscriptions?.active)} icon="ribbon" accent="#22c55e" />
-              <Kpi label="Expired subs" value={fmt(data?.subscriptions?.expired)} icon="alert-circle" accent="#f97316" />
+              <Kpi label="Active subs" value={fmt(data?.subscriptions?.active)} icon="ribbon" accent="#1E5FB4" />
+              <Kpi label="Expired subs" value={fmt(data?.subscriptions?.expired)} icon="alert-circle" accent="#E10600" />
               <Kpi label="Total customers" value={fmt(data?.users?.total)} icon="people" accent={colors.brandPrimary} />
-              <Kpi label="New this week" value={fmt(data?.users?.newThisWeek)} icon="trending-up" accent="#3b82f6" />
+              <Kpi label="New this week" value={fmt(data?.users?.newThisWeek)} icon="trending-up" accent="#1E5FB4" />
             </View>
 
             <View style={styles.revBox}>
@@ -103,13 +103,13 @@ export default function AdminHome() {
             </View>
 
             <View style={styles.txRow}>
-              <View style={[styles.txCard, { backgroundColor: "#0f2415", borderColor: "#16a34a" }]}>
-                <Ionicons name="checkmark-circle" size={22} color="#22c55e" />
+              <View style={[styles.txCard, { backgroundColor: "#0B2B57", borderColor: "#1E5FB4" }]}>
+                <Ionicons name="checkmark-circle" size={22} color="#1E5FB4" />
                 <Text style={styles.txCount}>{fmt(data?.transactions?.successThisMonth)}</Text>
                 <Text style={styles.txLabel}>Paid (30d)</Text>
               </View>
-              <View style={[styles.txCard, { backgroundColor: "#2a1f0a", borderColor: "#f59e0b" }]}>
-                <Ionicons name="time" size={22} color="#f59e0b" />
+              <View style={[styles.txCard, { backgroundColor: "#2A0505", borderColor: "#E10600" }]}>
+                <Ionicons name="time" size={22} color="#E10600" />
                 <Text style={styles.txCount}>{fmt(data?.transactions?.pending)}</Text>
                 <Text style={styles.txLabel}>Pending</Text>
               </View>

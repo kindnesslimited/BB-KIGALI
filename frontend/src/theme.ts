@@ -1,6 +1,6 @@
 // Design tokens — BB FM Kigali brand palette
-// Brand rule (customer request iter 32): ONLY red, blue, black, white.
-// Orange has been fully removed; success/warning semantic colors reuse blue/red.
+// Brand rule: ONLY red, blue, black, white (per customer directive).
+// Semantic states (success/warning) reuse the brand red + blue.
 export const colors = {
   // Neutrals — the black/white part of the brand
   surface: "#0F0F13",
@@ -24,7 +24,7 @@ export const colors = {
 
   // Semantic states — kept within brand palette
   success: "#1E5FB4",   // BLUE (used to be green)
-  warning: "#E10600",   // RED (used to be gold/orange)
+  warning: "#E10600",   // RED (semantic warning uses brand red)
   error: "#D9381E",     // slightly brighter red for destructive actions
 
   // Structural

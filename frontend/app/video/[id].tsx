@@ -378,8 +378,8 @@ export default function VideoPlayerScreen() {
                   <Ionicons name="chevron-forward" size={22} color={colors.brandPrimary} />
                 </Pressable>
                 <Pressable onPress={() => { setErr(null); setShowMomo(true); }} disabled={buying} style={styles.method} testID="checkout-momo">
-                  <View style={[styles.methodIcon, { backgroundColor: "#ffcc00" }]}>
-                    <Ionicons name="phone-portrait" size={20} color="#000" />
+                  <View style={[styles.methodIcon, { backgroundColor: colors.brandPrimary }]}>
+                    <Ionicons name="phone-portrait" size={20} color="#fff" />
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.methodTitle}>MTN MoMo</Text>

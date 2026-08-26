@@ -134,7 +134,7 @@ async def revenue_series(db, granularity: str = "day", days: int = 30) -> list[d
 
 
 # ---------- PDF receipt ----------
-BRAND = pdf_colors.HexColor("#FF6B00")
+BRAND = pdf_colors.HexColor("#E10600")
 
 
 def render_receipt_pdf(user: dict, payments: list[dict], month_label: str) -> bytes:

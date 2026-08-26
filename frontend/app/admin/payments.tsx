@@ -43,14 +43,14 @@ type Payment = {
 const METHOD_META: Record<string, { label: string; icon: any; color: string }> = {
   paypal: { label: "PayPal", icon: "logo-paypal", color: "#00457C" },
   stripe: { label: "Card", icon: "card", color: "#635bff" },
-  mtn_momo: { label: "MTN MoMo", icon: "phone-portrait", color: "#FFCC00" },
+  mtn_momo: { label: "MTN MoMo", icon: "phone-portrait", color: "#E10600" },
   airtel: { label: "Airtel", icon: "phone-portrait", color: "#E60000" },
 };
 
 const STATUS_COLORS: Record<string, string> = {
-  success: "#22c55e",
-  pending: "#f59e0b",
-  failed: "#ef4444",
+  success: "#1E5FB4",   // BLUE
+  pending: "#E10600",   // RED (was orange amber)
+  failed: "#D9381E",    // RED (error variant)
 };
 
 const WINDOWS = [

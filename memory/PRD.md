@@ -2,38 +2,28 @@
 
 Mobile + web platform for BB FM Kigali (Rwanda). Live radio + VOD + News + Subscriptions + Admin console.
 
-## Latest updates (iter 32)
+## Latest updates (iter 33 — Complete Orange Removal Audit)
 
-### 1. Brand palette — RED / BLUE / BLACK / WHITE only
-- `theme.ts` refactored: `brandPrimary` now `#E10600` (BB Kigali red), plus `accent`/`accentSoft` blue tokens
-- All orange (`#FF6B00`, `#CC5500`, `#40220A`, `#FFB885`) and gold (`#DAA520`) removed
-- `success` is now blue (`#1E5FB4`), `warning` is red, `error` unchanged red — no yellow/orange anywhere
-- `app.json` notification color updated
-- Verified visually: no orange left on Home, Shows, News, Profile, mini-player, tab bar, live badges
+Customer flagged that iter 32 missed orange in some parts of the system. Full programmatic audit + fix:
 
-### 2. Cloudflare Stream integration (private live streaming + secure recording)
-- **New endpoints**:
-  - `GET /api/admin/cloudflare-stream/config` — status, never leaks apiToken
-  - `PUT /api/admin/cloudflare-stream/config` — save credentials
-  - `POST /api/admin/cloudflare-stream/live-input` — creates a new CF Stream live_input (RTMPS URL + stream key + HLS playback)
-  - `GET /api/admin/cloudflare-stream/videos` — list uploaded videos
-- **New admin UI** `/admin/cloudflare-stream` — status card, credentials form, one-tap create-live-input, copy-to-clipboard RTMP url & stream key
-- Admin can now go live from OBS/mobile with private RTMP ingest; recording is automatic; playback via signed HLS
-- Live Show recordings can point to CF Stream HLS URL
+- **Programmatic HSL detection** ran across every .ts/.tsx/.py/.html/.json/.md file in frontend, backend, and landing folders. Any hex code whose HSL hue falls in 10°-45° (orange band) was flagged and swapped.
+- **Fixed 7 additional orange sites** that iter 32 missed:
+  1. `frontend/app/admin/payments.tsx` — MTN MoMo brand color `#FFCC00` → `#E10600` and status `#f59e0b` pending → red
+  2. `frontend/app/video/[id].tsx` — MTN MoMo icon background `#ffcc00` → brand red
+  3. `frontend/app/admin/index.tsx` — 4 admin dashboard KPI/tx accents (`#22c55e` green, `#f97316` orange, `#3b82f6` blue, `#f59e0b` amber) → brand red + brand blue
+  4. `backend/server.py` — YouTube OAuth callback HTML `#ff6600` → red
+  5. `backend/server.py` — Stripe cancel/success HTML `#FF6B00` → red (×2)
+  6. `backend/admin_analytics.py` — PDF report BRAND color `#FF6B00` → red
+  7. `landing/index.html`, `landing/terms.html`, `landing/privacy.html` — all `--brand:#FF6B00` → red
+- **Green also removed** from admin dashboard KPIs and status cards (not in the allowed BLUE/RED/BLACK/WHITE palette). Success indicators are now blue, pending is red.
+- **Verified**: automated HSL sweep now returns `✅ ZERO orange-hue hex codes remain in frontend/app, frontend/src, backend, or landing`.
+- Manual visual verification via screenshots (Home, Shows, Auth, mini-player, tab bar, admin) confirms no orange remains anywhere.
 
-### 3. Support ticket — Contabo VDS migration
-- Draft at `/app/memory/support_ticket_contabo_migration.md` — cut-over plan, third-party webhook updates, backup/DR requirements, and a security note about the leaked password
-- Customer must send to support@emergent.sh with their Job ID; SSH access will be granted via SSH keys only, never chat
-
-### 4. Verified
-- 10/10 iter-32 backend pytest tests passed
-- YouTube LIVE regression check still green (subscription gating intact)
-- Full test suite from prior iters still green
-
-## Env vars / creds still expected from customer
-- `APPLE_TEAM_ID`, `APPLE_KEY_ID`, `APPLE_CLIENT_ID`, `APPLE_PRIVATE_KEY` — for TestFlight token revocation
-- Cloudflare account ID + API token — enter in `/admin/cloudflare-stream`
-- (Contabo cut-over will be handled through Emergent support)
+## Prior iters
+- iter 32: brand refactor kickoff, Cloudflare Stream integration, Contabo migration ticket
+- iter 31: Live Shows CMS + admin-managed YouTube channel
+- iter 30: subscription enforcement, SMS receipts, in-app YouTube live, NaN fix
+- iters 26-29: iOS App Store readiness, News source fields, Schedule management, etc.
 
 ## Test credentials
 See `/app/memory/test_credentials.md`.
