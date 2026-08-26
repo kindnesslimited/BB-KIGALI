@@ -1333,6 +1333,96 @@ class YouTubeConfigIn(BaseModel):
     channelId: Optional[str] = None
 
 
+# ---------- Cloudflare Stream (private video hosting) ----------
+class CloudflareStreamConfigIn(BaseModel):
+    accountId: Optional[str] = None
+    apiToken: Optional[str] = None
+    customerSubdomain: Optional[str] = None  # e.g. customer-xxx.cloudflarestream.com
+
+
+@api.get("/admin/cloudflare-stream/config")
+async def admin_get_cf_stream_config(current = Depends(require_admin)):
+    cfg = await db.integration_state.find_one({"key": "cloudflare_stream_config"}, {"_id": 0}) or {}
+    return {
+        "accountId": cfg.get("accountId") or "",
+        "customerSubdomain": cfg.get("customerSubdomain") or "",
+        "hasApiToken": bool(cfg.get("apiToken")),
+        "connected": bool(cfg.get("accountId") and cfg.get("apiToken")),
+        "connectedAt": cfg.get("connectedAt"),
+    }
+
+
+@api.put("/admin/cloudflare-stream/config")
+async def admin_put_cf_stream_config(body: CloudflareStreamConfigIn, current = Depends(require_admin)):
+    updates = {k: v for k, v in body.dict().items() if v is not None}
+    if not updates:
+        raise HTTPException(400, "No fields to update")
+    updates["updatedAt"] = _now_iso()
+    updates["updatedBy"] = current["id"]
+    if updates.get("apiToken"):
+        updates["connectedAt"] = _now_iso()
+    await db.integration_state.update_one(
+        {"key": "cloudflare_stream_config"},
+        {"$set": {"key": "cloudflare_stream_config", **updates}},
+        upsert=True,
+    )
+    await audit_log.record(db, **audit_log.actor_from_user(current),
+                           action="cloudflare-stream.config.update", target_type="integration",
+                           target_id="cloudflare_stream_config")
+    return {"ok": True}
+
+
+@api.post("/admin/cloudflare-stream/live-input")
+async def admin_create_cf_live_input(current = Depends(require_admin)):
+    """Create a new Cloudflare Stream live input (RTMP ingest URL + stream key)
+    so the admin can go live from OBS/mobile. Recording is automatic on CF Stream."""
+    cfg = await db.integration_state.find_one({"key": "cloudflare_stream_config"}, {"_id": 0}) or {}
+    if not (cfg.get("accountId") and cfg.get("apiToken")):
+        raise HTTPException(412, "Cloudflare Stream not configured — go to Admin → Cloudflare Stream first.")
+    try:
+        import httpx as _httpx
+        async with _httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(
+                f"https://api.cloudflare.com/client/v4/accounts/{cfg['accountId']}/stream/live_inputs",
+                headers={"Authorization": f"Bearer {cfg['apiToken']}", "Content-Type": "application/json"},
+                json={
+                    "meta": {"name": f"BB FM Live {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}"},
+                    "recording": {"mode": "automatic", "requireSignedURLs": True, "allowedOrigins": []},
+                    "defaultCreator": "bbfm",
+                },
+            )
+    except Exception as e:
+        raise HTTPException(502, f"Cloudflare API error: {e}")
+    if r.is_error:
+        raise HTTPException(502, f"Cloudflare returned {r.status_code}: {r.text[:300]}")
+    result = (r.json() or {}).get("result") or {}
+    return {
+        "uid": result.get("uid"),
+        "rtmpsUrl": (result.get("rtmps") or {}).get("url"),
+        "streamKey": (result.get("rtmps") or {}).get("streamKey"),
+        "webrtcUrl": (result.get("webRTC") or {}).get("url"),
+        "playbackHls": ((result.get("playback") or {}).get("hls")),
+        "playbackDash": ((result.get("playback") or {}).get("dash")),
+        "raw": result,
+    }
+
+
+@api.get("/admin/cloudflare-stream/videos")
+async def admin_list_cf_videos(current = Depends(require_admin)):
+    cfg = await db.integration_state.find_one({"key": "cloudflare_stream_config"}, {"_id": 0}) or {}
+    if not (cfg.get("accountId") and cfg.get("apiToken")):
+        raise HTTPException(412, "Cloudflare Stream not configured.")
+    import httpx as _httpx
+    async with _httpx.AsyncClient(timeout=15.0) as client:
+        r = await client.get(
+            f"https://api.cloudflare.com/client/v4/accounts/{cfg['accountId']}/stream",
+            headers={"Authorization": f"Bearer {cfg['apiToken']}"},
+        )
+    if r.is_error:
+        raise HTTPException(502, f"Cloudflare returned {r.status_code}: {r.text[:300]}")
+    return (r.json() or {}).get("result") or []
+
+
 @api.get("/admin/youtube/config")
 async def admin_get_youtube_config(current = Depends(require_admin)):
     cfg = await db.integration_state.find_one({"key": "youtube_config"}, {"_id": 0}) or {}

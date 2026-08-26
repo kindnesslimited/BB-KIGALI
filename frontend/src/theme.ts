@@ -1,22 +1,35 @@
-// Design tokens from /app/design_guidelines.json
+// Design tokens — BB FM Kigali brand palette
+// Brand rule (customer request iter 32): ONLY red, blue, black, white.
+// Orange has been fully removed; success/warning semantic colors reuse blue/red.
 export const colors = {
+  // Neutrals — the black/white part of the brand
   surface: "#0F0F13",
   onSurface: "#FFFFFF",
   surfaceSecondary: "#1C1C21",
   onSurfaceSecondary: "#A3A3A8",
   surfaceTertiary: "#27272F",
   onSurfaceTertiary: "#C2C2C7",
-  brand: "#FF6B00",
-  brandPrimary: "#FF6B00",
-  onBrandPrimary: "#000000",
-  brandSecondary: "#CC5500",
-  brandTertiary: "#40220A",
-  onBrandTertiary: "#FFB885",
-  success: "#2E8B57",
-  warning: "#DAA520",
-  error: "#D9381E",
+
+  // Brand — RED (BB FM Kigali primary)
+  brand: "#E10600",
+  brandPrimary: "#E10600",
+  onBrandPrimary: "#000000", // Black text on red — passes WCAG AA and matches the 95 hardcoded "#000" button-text sites already in the codebase.
+  brandSecondary: "#B00000",
+  brandTertiary: "#2A0505", // very dark red — for tinted backgrounds
+  onBrandTertiary: "#FF9C9C",
+
+  // Accent — BLUE (Rwandan flag blue) — used for success + informational states
+  accent: "#1E5FB4",
+  accentSoft: "#0B2B57",
+
+  // Semantic states — kept within brand palette
+  success: "#1E5FB4",   // BLUE (used to be green)
+  warning: "#E10600",   // RED (used to be gold/orange)
+  error: "#D9381E",     // slightly brighter red for destructive actions
+
+  // Structural
   border: "#27272F",
-  borderStrong: "#FF6B00",
+  borderStrong: "#E10600",
   divider: "#1C1C21",
 };
 

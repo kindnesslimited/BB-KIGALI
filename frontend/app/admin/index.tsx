@@ -28,6 +28,7 @@ const CARDS: { key: string; label: string; sub: string; icon: any; route: any }[
   { key: "schedule", label: "Schedule", sub: "Daily & weekly on-air program slots", icon: "calendar-outline", route: "/admin/schedule" },
   { key: "live-shows", label: "Live Shows", sub: "Create shows, save private recordings, publish to YouTube", icon: "videocam-outline", route: "/admin/live-shows" },
   { key: "youtube-config", label: "YouTube Channel", sub: "Connect / switch the channel used for LIVE + auto-upload", icon: "logo-youtube", route: "/admin/youtube-config" },
+  { key: "cloudflare-stream", label: "Cloudflare Stream", sub: "Private RTMP live-streaming + secure recording (bring your own)", icon: "cloud-outline", route: "/admin/cloudflare-stream" },
   { key: "shows", label: "VOD & Podcasts", sub: "Sync @bbkigalifm + @BBSPORTSBAR YouTube", icon: "videocam-outline", route: "/admin/shows" },
   { key: "news", label: "News", sub: "Create, edit and delete news posts", icon: "newspaper-outline", route: "/admin/news" },
 ];

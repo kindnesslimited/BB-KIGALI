@@ -2,49 +2,38 @@
 
 Mobile + web platform for BB FM Kigali (Rwanda). Live radio + VOD + News + Subscriptions + Admin console.
 
-## Latest updates (iter 31 — Live Shows CMS + Admin-managed YouTube Channel)
+## Latest updates (iter 32)
 
-### 1. Live Shows Admin CMS
-- **New collection `live_shows`** with lifecycle: `scheduled → live → ended → published`
-- **CRUD endpoints** — `GET/POST/PATCH/DELETE /api/admin/live-shows` + `/end`, `/attach-youtube-live`, `/recording` (upload), `/publish-to-youtube` actions
-- **Fields**: title, description, coverImage, scheduledAt, expectedDurationMin, status, tier, recordingUrl (private storage path), youtubeVideoId (attached live broadcast), youtubePublishedVideoId (after upload), publishToYoutube toggle
-- **Recording storage** — Emergent Object Storage, private by default. Reuses the hardened video-upload MIME/magic-byte validator from iter 27
-- **Public endpoint `GET /api/live-shows`** — subscribers see recordingUrl + youtubeEmbedUrl; non-subscribers see title/cover only + `requiresSubscription: true`
+### 1. Brand palette — RED / BLUE / BLACK / WHITE only
+- `theme.ts` refactored: `brandPrimary` now `#E10600` (BB Kigali red), plus `accent`/`accentSoft` blue tokens
+- All orange (`#FF6B00`, `#CC5500`, `#40220A`, `#FFB885`) and gold (`#DAA520`) removed
+- `success` is now blue (`#1E5FB4`), `warning` is red, `error` unchanged red — no yellow/orange anywhere
+- `app.json` notification color updated
+- Verified visually: no orange left on Home, Shows, News, Profile, mini-player, tab bar, live badges
 
-### 2. Admin-Managed YouTube Channel Config
-- **New `integration_state.youtube_config` doc** holding handle, apiKey, oauthClientId, oauthClientSecret, oauthRefreshToken, channelName, channelId — admin can switch channels without touching code or env
-- **`GET/PUT /api/admin/youtube/config`** — read/write; GET never leaks secrets/refresh_token, only presence booleans
-- **`/api/admin/youtube/oauth-start` + `/callback`** — full OAuth2 authorization_code flow. Opens Google consent, receives code, exchanges for refresh_token, looks up channelName/ID, stores everything encrypted-at-rest in Mongo
-- **Periodic YouTube LIVE detection loop** now reads the admin-configured handle first (falls back to `YOUTUBE_HANDLE` env)
+### 2. Cloudflare Stream integration (private live streaming + secure recording)
+- **New endpoints**:
+  - `GET /api/admin/cloudflare-stream/config` — status, never leaks apiToken
+  - `PUT /api/admin/cloudflare-stream/config` — save credentials
+  - `POST /api/admin/cloudflare-stream/live-input` — creates a new CF Stream live_input (RTMPS URL + stream key + HLS playback)
+  - `GET /api/admin/cloudflare-stream/videos` — list uploaded videos
+- **New admin UI** `/admin/cloudflare-stream` — status card, credentials form, one-tap create-live-input, copy-to-clipboard RTMP url & stream key
+- Admin can now go live from OBS/mobile with private RTMP ingest; recording is automatic; playback via signed HLS
+- Live Show recordings can point to CF Stream HLS URL
 
-### 3. Publish-to-YouTube (auto-upload)
-- **New backend module `youtube_publish.py`** — refreshes access_token from stored refresh_token, downloads the recording from our secure host, multipart-uploads to `youtube.upload` API (privacy default `unlisted`)
-- **`POST /api/admin/live-shows/{id}/publish-to-youtube`** — 400 if no recording, 412 if channel not connected, else uploads and stamps `youtubePublishedVideoId` + `publishedToYoutubeAt`
+### 3. Support ticket — Contabo VDS migration
+- Draft at `/app/memory/support_ticket_contabo_migration.md` — cut-over plan, third-party webhook updates, backup/DR requirements, and a security note about the leaked password
+- Customer must send to support@emergent.sh with their Job ID; SSH access will be granted via SSH keys only, never chat
 
-### 4. Admin UI
-- **`/admin/live-shows`** — CRUD grid with cover thumbnails, colored status pills (LIVE red, ENDED yellow, PUBLISHED green), action buttons per state: ATTACH YOUTUBE LIVE / END LIVE / UPLOAD RECORDING / REPLACE RECORDING / PUBLISH TO YOUTUBE
-- **`/admin/youtube-config`** — connection status card (checkmarks for API Key / OAuth Client / Channel Authorized), channel handle input, API-key + OAuth Client ID/Secret fields (secure entry), one-tap "Connect Channel" button that opens Google consent
-- Two new tiles in the Admin Dashboard
+### 4. Verified
+- 10/10 iter-32 backend pytest tests passed
+- YouTube LIVE regression check still green (subscription gating intact)
+- Full test suite from prior iters still green
 
-### 5. Verified by testing agent
-- **23/23 backend pytest tests passed** — API contracts, subscription gating, OAuth error branches, config secret-safety
-- Recording upload is admin-only + validated by the hardened multipart video validator
-
-## Env vars that unlock advanced features
-Existing:
-```
-YOUTUBE_API_KEY           # already set — used as fallback
-YOUTUBE_HANDLE            # already set — used as fallback when admin_config.handle absent
-```
-Optional fallbacks (admin can supply via /admin/youtube-config instead):
-```
-YOUTUBE_OAUTH_CLIENT_ID
-YOUTUBE_OAUTH_CLIENT_SECRET
-```
-Apple 5.1.1(v) revocation (still pending user's provisioning):
-```
-APPLE_TEAM_ID  APPLE_KEY_ID  APPLE_CLIENT_ID  APPLE_PRIVATE_KEY
-```
+## Env vars / creds still expected from customer
+- `APPLE_TEAM_ID`, `APPLE_KEY_ID`, `APPLE_CLIENT_ID`, `APPLE_PRIVATE_KEY` — for TestFlight token revocation
+- Cloudflare account ID + API token — enter in `/admin/cloudflare-stream`
+- (Contabo cut-over will be handled through Emergent support)
 
 ## Test credentials
 See `/app/memory/test_credentials.md`.
