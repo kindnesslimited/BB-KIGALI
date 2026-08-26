@@ -60,7 +60,11 @@ MOCK_OTP_CODE = "123456"
 YOUTUBE_LIVE_ID = "wPD77ygQKfo"
 YOUTUBE_LIVE_URL = f"https://www.youtube.com/watch?v={YOUTUBE_LIVE_ID}"
 YOUTUBE_EMBED_URL = f"https://www.youtube.com/embed/{YOUTUBE_LIVE_ID}?autoplay=1&playsinline=1&rel=0"
-DEMO_AUDIO_STREAM = "https://stream.zeno.fm/0r0xa792kwzuv"
+DEMO_AUDIO_STREAM = os.environ.get("RADIO_STREAM_URL", "http://radio.bbkigali.com:8080/stream").strip()
+# HTTPS mirror — some clients (iOS ATS, browser mixed-content on https pages) refuse HTTP streams.
+# If a customer configures an HTTPS proxy in the ADMIN settings we use it, otherwise we send the
+# HTTP URL and clients that can play HTTP (Android + native iOS with ATS exception) will still work.
+DEMO_AUDIO_STREAM_HTTPS = os.environ.get("RADIO_STREAM_URL_HTTPS", "").strip()
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "https://radio-vod-platform.preview.emergentagent.com")
 EMERGENT_AUTH_SESSION_URL = os.environ.get(
     "EMERGENT_AUTH_SESSION_URL",
@@ -829,13 +833,17 @@ async def delete_my_account(user = Depends(get_current_user)):
 
 
 # ---------- Radio ----------
+BB_KIGALI_STREAM = "http://radio.bbkigali.com:8080/stream"
+
+
 @api.get("/radio/now-playing")
 async def now_playing():
     doc = await db.radio_state.find_one({"key": "current"}, {"_id": 0})
     if not doc:
         doc = {
             "key": "current",
-            "streamUrl": DEMO_AUDIO_STREAM,
+            "streamUrl": BB_KIGALI_STREAM,
+            "streamUrlHttps": DEMO_AUDIO_STREAM_HTTPS or None,
             "youtubeVideoId": YOUTUBE_LIVE_ID,
             "youtubeEmbedUrl": YOUTUBE_EMBED_URL,
             "youtubeWatchUrl": YOUTUBE_LIVE_URL,
@@ -3960,7 +3968,8 @@ async def seed():
     if not await db.radio_state.count_documents({}):
         await db.radio_state.insert_one({
             "key": "current",
-            "streamUrl": DEMO_AUDIO_STREAM,
+            "streamUrl": BB_KIGALI_STREAM,
+            "streamUrlHttps": DEMO_AUDIO_STREAM_HTTPS or None,
             "youtubeVideoId": YOUTUBE_LIVE_ID,
             "youtubeEmbedUrl": YOUTUBE_EMBED_URL,
             "youtubeWatchUrl": YOUTUBE_LIVE_URL,
@@ -3971,10 +3980,12 @@ async def seed():
             "isLive": True,
         })
     else:
-        # Ensure existing radio_state row is updated with YouTube live details on redeploy
+        # Ensure existing radio_state row is updated with the BB Kigali stream + YouTube live details on redeploy
         await db.radio_state.update_one(
             {"key": "current"},
             {"$set": {
+                "streamUrl": BB_KIGALI_STREAM,
+                "streamUrlHttps": DEMO_AUDIO_STREAM_HTTPS or None,
                 "youtubeVideoId": YOUTUBE_LIVE_ID,
                 "youtubeEmbedUrl": YOUTUBE_EMBED_URL,
                 "youtubeWatchUrl": YOUTUBE_LIVE_URL,

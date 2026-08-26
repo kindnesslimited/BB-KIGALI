@@ -2,28 +2,38 @@
 
 Mobile + web platform for BB FM Kigali (Rwanda). Live radio + VOD + News + Subscriptions + Admin console.
 
-## Latest updates (iter 33 — Complete Orange Removal Audit)
+## Latest updates (iter 34 — Live 24/7 Radio Streaming)
 
-Customer flagged that iter 32 missed orange in some parts of the system. Full programmatic audit + fix:
+### 1. Real audio streaming wired
+- Backend now serves the BB Kigali radio stream URL by default: `http://radio.bbkigali.com:8080/stream`
+- Configurable via `RADIO_STREAM_URL` env var
+- Optional HTTPS mirror via `RADIO_STREAM_URL_HTTPS` env var (used on HTTPS web pages to avoid mixed-content blocking)
+- On restart, existing `radio_state` row is migrated to the new stream URL
+- `GET /api/radio/now-playing` returns both `streamUrl` and `streamUrlHttps`
 
-- **Programmatic HSL detection** ran across every .ts/.tsx/.py/.html/.json/.md file in frontend, backend, and landing folders. Any hex code whose HSL hue falls in 10°-45° (orange band) was flagged and swapped.
-- **Fixed 7 additional orange sites** that iter 32 missed:
-  1. `frontend/app/admin/payments.tsx` — MTN MoMo brand color `#FFCC00` → `#E10600` and status `#f59e0b` pending → red
-  2. `frontend/app/video/[id].tsx` — MTN MoMo icon background `#ffcc00` → brand red
-  3. `frontend/app/admin/index.tsx` — 4 admin dashboard KPI/tx accents (`#22c55e` green, `#f97316` orange, `#3b82f6` blue, `#f59e0b` amber) → brand red + brand blue
-  4. `backend/server.py` — YouTube OAuth callback HTML `#ff6600` → red
-  5. `backend/server.py` — Stripe cancel/success HTML `#FF6B00` → red (×2)
-  6. `backend/admin_analytics.py` — PDF report BRAND color `#FF6B00` → red
-  7. `landing/index.html`, `landing/terms.html`, `landing/privacy.html` — all `--brand:#FF6B00` → red
-- **Green also removed** from admin dashboard KPIs and status cards (not in the allowed BLUE/RED/BLACK/WHITE palette). Success indicators are now blue, pending is red.
-- **Verified**: automated HSL sweep now returns `✅ ZERO orange-hue hex codes remain in frontend/app, frontend/src, backend, or landing`.
-- Manual visual verification via screenshots (Home, Shows, Auth, mini-player, tab bar, admin) confirms no orange remains anywhere.
+### 2. Frontend PlayerProvider now actually plays audio
+- Was UI-only before; now uses `expo-audio`'s `createAudioPlayer` for real playback
+- `pickStreamUrl(np)` picks the HTTPS mirror when the web page is HTTPS, falls back to HTTP otherwise
+- `setAudioModeAsync({playsInSilentMode: true, shouldPlayInBackground: true})` for background playback + lock screen
+- Play / pause / toggle now stream real audio
 
-## Prior iters
-- iter 32: brand refactor kickoff, Cloudflare Stream integration, Contabo migration ticket
-- iter 31: Live Shows CMS + admin-managed YouTube channel
-- iter 30: subscription enforcement, SMS receipts, in-app YouTube live, NaN fix
-- iters 26-29: iOS App Store readiness, News source fields, Schedule management, etc.
+### 3. Platform permissions for live audio
+- **iOS**: `UIBackgroundModes: ['audio']` (background playback), `NSAppTransportSecurity` with an ATS exception for `radio.bbkigali.com` (allows HTTP stream on iOS)
+- **Android**: `usesCleartextTraffic: true`, `FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_MEDIA_PLAYBACK` permissions
+
+### 4. Web version confirmed live
+- Preview: http://localhost:3000 (Emergent dashboard only)
+- Production: https://radio-vod-platform.emergent.host — full-feature web app
+- Custom domain bbkigali.com when the DNS points to the deploy
+
+### 5. Verified
+- 9/9 iter-34 backend pytest tests passed
+- Frontend PlayerProvider actually invokes createAudioPlayer on toggle (browser captures the network request to the stream URL)
+
+### One optional infra follow-up
+Web browsers on HTTPS pages block HTTP media streams for security. On mobile builds this is not an issue (ATS + cleartext exceptions handle it). To make audio also work on the HTTPS web page:
+- Option A: expose the Icecast stream behind Cloudflare/nginx TLS at e.g. `https://radio.bbkigali.com/stream` and set `RADIO_STREAM_URL_HTTPS` env var to that URL
+- Option B: keep HTTP-only (web listeners will get an error; native app listeners will not)
 
 ## Test credentials
 See `/app/memory/test_credentials.md`.

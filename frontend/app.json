@@ -15,7 +15,18 @@
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSPhotoLibraryUsageDescription": "Upload cover art for shows and news",
-        "NSCameraUsageDescription": "Take photos to upload as cover art"
+        "NSCameraUsageDescription": "Take photos to upload as cover art",
+        "UIBackgroundModes": ["audio"],
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoadsInMedia": true,
+          "NSExceptionDomains": {
+            "radio.bbkigali.com": {
+              "NSExceptionAllowsInsecureHTTPLoads": true,
+              "NSIncludesSubdomains": true,
+              "NSExceptionMinimumTLSVersion": "TLSv1.0"
+            }
+          }
+        }
       },
       "privacyManifests": {
         "NSPrivacyAccessedAPITypes": [
@@ -34,8 +45,11 @@
       "edgeToEdgeEnabled": true,
       "softwareKeyboardLayoutMode": "pan",
       "package": "com.emergent.radiovodplatform.reybr3",
+      "usesCleartextTraffic": true,
       "permissions": [
         "android.permission.INTERNET",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
         "android.permission.READ_MEDIA_IMAGES",
         "android.permission.READ_MEDIA_VIDEO"
       ]
