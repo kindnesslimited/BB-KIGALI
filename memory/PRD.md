@@ -37,3 +37,11 @@ Web browsers on HTTPS pages block HTTP media streams for security. On mobile bui
 
 ## Test credentials
 See `/app/memory/test_credentials.md`.
+
+## 2026-08-27 — HTTPS radio + Apple revocation wired
+- `RADIO_STREAM_URL_HTTPS=https://stream.bbkigali.com/stream/1/` set in backend/.env → `GET /api/radio/now-playing` now returns `streamUrlHttps`.
+- Admin CMS: `AdminSettingsIn.radioStreamUrlHttps` added so ops can change it without shell access.
+- Web player (`src/context/player.tsx`) now ALWAYS prefers `streamUrlHttps` on web (no more mixed-content on HTTPS pages).
+- Apple Sign-in revocation is now READY: `APPLE_TEAM_ID`, `APPLE_KEY_ID`, `APPLE_PRIVATE_KEY` all set. `apple_revocation_ready()` returns True. `DELETE /api/auth/me` will now hit Apple `/auth/revoke` for users who signed in with Apple.
+- ⚠️ Apple `AuthKey` private key was pasted in chat — user asked to rotate it and re-send. Once rotated, the new key must be placed in `APPLE_PRIVATE_KEY` env var (use \n escapes for newlines).
+- Backend smoke: iteration_33.json — 12/12 pass.

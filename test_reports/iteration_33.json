@@ -1,0 +1,38 @@
+{
+  "summary": "Backend smoke test for BB FM Kigali config changes (RADIO_STREAM_URL_HTTPS + Apple revocation env). 12/12 tests passed. streamUrlHttps=https://stream.bbkigali.com/stream/1/ correctly appears in /api/radio/now-playing (both from env default and after admin PUT round-trip). apple_revocation_ready() returns True and _make_apple_client_secret() produces a valid ES256 JWT (alg=ES256, kid=6HU52UN74X, iss=34P5MTCXZY, aud=https://appleid.apple.com, sub=com.emergent.radiovodplatform.reybr3). Admin OTP dev-bypass login works with phone 250794230137 code 123456. Admin PUT /api/admin/settings set→clear→restore of radioStreamUrlHttps all reflect correctly in /api/radio/now-playing. Regression: /api/live/status hides watchUrl/embedUrl/videoId for unauthenticated users; /api/radio/schedule and /api/shows (public VOD list) both return 200.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/vod/videos", "issue": "Endpoint mentioned in review request does not exist (404). Actual public VOD list endpoint is /api/shows. Non-blocking — treat as a typo in the review request. Test file documents both."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_radio_and_apple_config.py",
+    "/app/test_reports/pytest/pytest_iter33.xml"
+  ],
+  "action_items": [
+    "No fixes required for this iteration — all requested checks pass.",
+    "Optional: expose a lightweight GET /api/auth/apple/revocation-status endpoint that returns {\"ready\": apple_revocation_ready()} so ops can verify Apple key wiring without shelling into the pod (review request suggested it but told us not to create it; noting for future).",
+    "Optional: consider aliasing GET /api/vod/videos → GET /api/shows or updating docs so future testers/scripts don't hit the 404."
+  ],
+  "critical_code_review_comments": [
+    "apple_auth.py: _make_apple_client_secret uses os.environ[...] (KeyError) instead of os.environ.get inside a helper gated by apple_revocation_ready(). Fine at runtime (server loads .env via load_dotenv before importing apple_auth), but a bare `python -c 'from apple_auth import _make_apple_client_secret; ...'` from a shell without .env loaded will crash. Not a bug — just a note for reviewers running the one-liner from the review request; they must load dotenv first.",
+    "server.py admin_put_settings correctly treats radioStreamUrlHttps='' as an explicit clear (writes null into radio_state) while None (field absent) leaves the value untouched — verified end-to-end.",
+    "server.py is 4070 lines — well over the 700-line guideline. Consider splitting into routers (radio, admin, billing, auth) in a future refactor. Not blocking."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_radio_and_apple_config.py (new)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "not tested (per request)"},
+  "seed_data_creation": "None. Admin OTP login uses existing dev bypass (250794230137 / 123456).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Reuse /app/backend/tests/test_radio_and_apple_config.py as regression for streamUrlHttps + Apple revocation config. Admin login uses OTP start/verify with phone 250794230137 and dev code 123456 (or the testCode field returned by /api/auth/otp/start when SMS_DEV_RETURN_CODE=true). Public backend URL: https://radio-vod-platform.preview.emergentagent.com (from EXPO_PUBLIC_BACKEND_URL in frontend/.env). The public VOD list endpoint is /api/shows, not /api/vod/videos.",
+  "rca_of_issue": "N/A — no bugs found. The single test that initially failed was a review-request typo (/api/vod/videos instead of /api/shows); the test was updated to validate the correct endpoint and to also document the 404 on the wrong path."
+}

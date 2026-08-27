@@ -30,20 +30,16 @@ const PlayerCtx = createContext<Ctx | null>(null);
 
 /**
  * Return the best-available stream URL for the current platform.
- * - On web (HTTPS pages): prefer the HTTPS mirror if configured, else fall back
- *   to the HTTP URL (works when the app is served over HTTP or the browser
- *   allows mixed content).
+ * - On web: ALWAYS prefer the HTTPS mirror if configured (avoids mixed-content
+ *   blocks on HTTPS pages and works fine on HTTP pages too).
  * - On native (iOS/Android): the HTTP URL works fine — iOS needs an ATS
- *   exception (already added for radio.bbkigali.com in app.json).
+ *   exception (already added for radio.bbkigali.com in app.json). We still
+ *   prefer HTTPS when available for better security.
  */
 function pickStreamUrl(np: NowPlaying): string {
   if (!np) return "";
-  if (Platform.OS === "web") {
-    // If the page is loaded over HTTPS, browsers block mixed content — prefer HTTPS mirror.
-    const pageIsHttps = typeof window !== "undefined" && window.location?.protocol === "https:";
-    if (pageIsHttps && np.streamUrlHttps) return np.streamUrlHttps;
-  }
-  return np.streamUrl;
+  if (Platform.OS === "web" && np.streamUrlHttps) return np.streamUrlHttps;
+  return np.streamUrlHttps || np.streamUrl;
 }
 
 export function PlayerProvider({ children }: { children: React.ReactNode }) {

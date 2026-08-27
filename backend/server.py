@@ -2496,6 +2496,7 @@ async def get_settings():
 # ---------- Admin ----------
 class AdminSettingsIn(BaseModel):
     radioStreamUrl: Optional[str] = None      # audio-only FM stream (icecast/shoutcast)
+    radioStreamUrlHttps: Optional[str] = None # HTTPS mirror (used by web to avoid mixed-content)
     youtubeLiveUrl: Optional[str] = None      # https://www.youtube.com/watch?v=...
     stationName: Optional[str] = None
     stationTagline: Optional[str] = None
@@ -2526,6 +2527,9 @@ async def admin_put_settings(body: AdminSettingsIn, _ = Depends(require_admin)):
             reflect["coverImage"] = f"https://img.youtube.com/vi/{vid}/maxresdefault.jpg"
     if body.radioStreamUrl:
         reflect["streamUrl"] = body.radioStreamUrl
+    if body.radioStreamUrlHttps is not None:
+        # allow admin to clear it by sending an empty string
+        reflect["streamUrlHttps"] = body.radioStreamUrlHttps or None
     if body.stationName:
         reflect["showTitle"] = body.stationName + " Live"
     if reflect:
