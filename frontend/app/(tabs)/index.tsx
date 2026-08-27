@@ -21,7 +21,7 @@ export default function Home() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { user } = useAuth();
-  const { nowPlaying, isPlaying, toggle, loading: playerLoading } = usePlayer();
+  const { nowPlaying, isPlaying, toggle, loading: playerLoading, requiresSubscription: radioLocked } = usePlayer();
   const [schedule, setSchedule] = useState<Sched[]>([]);
   const [news, setNews] = useState<News[]>([]);
   const [programs, setPrograms] = useState<Program[]>([]);
@@ -172,14 +172,15 @@ export default function Home() {
               onPress={(e) => {
                 e.stopPropagation();
                 if (!user) { router.push("/auth/phone"); return; }
+                if (radioLocked) { router.push("/paywall"); return; }
                 void toggle();
                 router.push("/player");
               }}
               style={styles.heroBtn}
               testID="home-play-live"
             >
-              <Ionicons name={playerLoading ? "hourglass" : isPlaying ? "pause" : "play"} size={22} color={colors.onBrandPrimary} />
-              <Text style={styles.heroBtnText}>{isPlaying ? "PAUSE" : "WATCH LIVE"}</Text>
+              <Ionicons name={radioLocked ? "lock-closed" : playerLoading ? "hourglass" : isPlaying ? "pause" : "play"} size={22} color={colors.onBrandPrimary} />
+              <Text style={styles.heroBtnText}>{radioLocked ? "SUBSCRIBE TO LISTEN" : isPlaying ? "PAUSE" : "LISTEN LIVE"}</Text>
             </Pressable>
           </View>
         </Pressable>
@@ -345,8 +346,8 @@ export default function Home() {
         <View style={styles.guideGrid}>
           <View style={styles.guideCard}>
             <View style={styles.guideIcon}><Ionicons name="radio-outline" size={22} color={colors.brandPrimary} /></View>
-            <Text style={styles.guideTitle}>LISTEN LIVE</Text>
-            <Text style={styles.guideDesc}>Stream BB FM 89.7 free — anytime, anywhere in the world.</Text>
+            <Text style={styles.guideTitle}>LIVE RADIO</Text>
+            <Text style={styles.guideDesc}>Stream BB FM 89.7 anywhere in the world — subscribers only.</Text>
           </View>
           <View style={styles.guideCard}>
             <View style={styles.guideIcon}><Ionicons name="videocam-outline" size={22} color={colors.brandPrimary} /></View>

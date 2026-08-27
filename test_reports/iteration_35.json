@@ -1,0 +1,42 @@
+{
+  "summary": "Radio subscription-protection layer end-to-end backend testing complete. All 17 targeted assertions PASS against https://radio-vod-platform.preview.emergentagent.com. Verified: (1) unauth /radio/now-playing strips streamUrl/streamUrlHttps and returns requiresSubscription=true, (2) free-tier user same behavior + /radio/token=>402 + /radio/live?token=(missing|invalid)=>401, (3) rc-sync premium_monthly upgrade returns 200 & flips tier, (4) premium /radio/now-playing exposes streamUrl+streamUrlHttps+proxyStreamUrl matching ^https://.+/api/radio/live\\?token=, (5) /radio/token returns {token, expiresIn:1800, streamUrl=$PUBLIC_BASE_URL/api/radio/live?token=<t>} with decoded JWT carrying pur=radio_stream and sub=user.id, (6) /radio/live streamed >=8192 bytes of non-HTML audio content over httpx within 6s window, (7) session accessToken from /auth/otp/verify is REJECTED (401) when passed as ?token= on /radio/live (purpose-claim isolation works), (8) forged JWTs (pur='not_radio', no pur, expired) all rejected 401, (9) regression /subscription/rc-sync, /live/status, /auth/otp/verify still healthy. No deprecated Expo packages or SafeAreaView issues checked (frontend testing skipped per request).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "GET /api/radio/token",
+        "issue": "Endpoint signs TWO separate radio tokens per call — one embedded in the returned `streamUrl` and one in the returned `token` field (see server.py:908-912, two _sign_radio_token(user['id']) calls). They differ in `iat`/`exp` micro-seconds and the `token` string is not the one embedded in `streamUrl`. Both are valid and interchangeable so it does not break any test, but it is wasteful and confusing for clients (they may open a stream URL whose token expires slightly earlier/later than the one they cached). Suggest signing once and reusing."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter34_radio_subscription_protection.py",
+    "/app/test_reports/pytest/pytest_iter35.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: dedupe the two _sign_radio_token() calls in /radio/token (server.py:908-912) — sign once, reuse for both `token` and `streamUrl` fields.",
+    "STALE TEST: /app/backend/tests/test_iter34_radio_stream.py still asserts old unauthenticated behavior (expects streamUrl in the guest response). 4/9 of its tests now fail because guests correctly get streamUrl stripped. Either delete the file or update those 4 tests to expect requiresSubscription=true + stripped fields. Not a product bug — expected consequence of the new gating."
+  ],
+  "critical_code_review_comments": [
+    "Purpose-claim isolation is implemented cleanly: _verify_radio_token() explicitly rejects any JWT where pur != 'radio_stream' (server.py:860). This is what makes the session-JWT-as-radio-token attack (verified in test) return 401.",
+    "/radio/live re-verifies the caller's subscription against Mongo via _tier_refresh + _has_active_paid_sub after decoding the token (server.py:932-937), so even a valid unexpired radio token becomes useless the moment the user's subscription expires — good defense-in-depth.",
+    "httpx.AsyncClient in /radio/live is created with verify=False (server.py:956). Only used for the internal icecast pull so acceptable, but flag for a future TODO to enable TLS verification when the upstream cert is fixed.",
+    "Best-effort listen logging (db.radio_listens.insert_one at server.py:948) is wrapped in try/except — good.",
+    "Field-stripping helper uses tuple _PROTECTED_RADIO_FIELDS and .pop(f, None) — idempotent, no KeyError risk."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter34_radio_subscription_protection.py (new)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "not tested (skipped per request)"},
+  "seed_data_creation": "No seed data created. Test uses admin phone 250794230137 (already seeded as admin), toggles that user's tier via /subscription/rc-sync and a direct pymongo reset in the free-tier fixture. Test isolation is guaranteed by _reset_user_to_free() before free-tier assertions.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Test file /app/backend/tests/test_iter34_radio_subscription_protection.py is the canonical regression for the radio paywall. It uses pymongo (MONGO_URL/DB_NAME env) to reset admin user's tier to free before free-tier assertions, so it is order-independent and safe to re-run. Old file /app/backend/tests/test_iter34_radio_stream.py has stale assertions (pre-gating) — 4 of its 9 tests will fail; main agent should delete or update. Endpoint /api/radio/live streams from upstream http://radio.bbkigali.com:8080/stream via httpx; the test closes the stream after 8KB (within 6s httpx timeout).",
+  "rca_of_issue": "N/A — no defects found. Only observations: (a) double token signing in /radio/token (cosmetic), (b) old test file has stale assertions."
+}

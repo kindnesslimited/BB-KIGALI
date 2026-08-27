@@ -11,7 +11,7 @@ from typing import List, Optional, Literal
 import jwt
 import httpx
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Header, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
@@ -835,9 +835,37 @@ async def delete_my_account(user = Depends(get_current_user)):
 # ---------- Radio ----------
 BB_KIGALI_STREAM = "http://radio.bbkigali.com:8080/stream"
 
+# Fields to STRIP from /radio/now-playing when the user is not a paid subscriber.
+# Without these the client cannot bypass the paywall by hitting the public
+# icecast URL directly — the app has no way to know it. Playback goes through
+# /api/radio/live which requires a short-lived signed token.
+_PROTECTED_RADIO_FIELDS = ("streamUrl", "streamUrlHttps")
+
+
+def _sign_radio_token(user_id: str, minutes: int = 30) -> str:
+    """Short-lived token used ONLY as a query param on /api/radio/live.
+    Separate purpose from the session JWT so it can't be reused elsewhere."""
+    payload = {
+        "sub": user_id,
+        "pur": "radio_stream",
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=minutes),
+        "iat": datetime.now(timezone.utc),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+
+
+def _verify_radio_token(token: str) -> Optional[str]:
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+        if payload.get("pur") != "radio_stream":
+            return None
+        return payload.get("sub")
+    except jwt.PyJWTError:
+        return None
+
 
 @api.get("/radio/now-playing")
-async def now_playing():
+async def now_playing(user = Depends(get_optional_user)):
     doc = await db.radio_state.find_one({"key": "current"}, {"_id": 0})
     if not doc:
         doc = {
@@ -853,7 +881,117 @@ async def now_playing():
             "coverImage": f"https://img.youtube.com/vi/{YOUTUBE_LIVE_ID}/maxresdefault.jpg",
             "isLive": True,
         }
-    return {k: v for k, v in doc.items() if k != "key"}
+    result = {k: v for k, v in doc.items() if k != "key"}
+    if not _has_active_paid_sub(user):
+        # Hide direct stream URLs from unpaid users. They still see the metadata
+        # (title, DJ, cover) so the app can render the paywall CTA.
+        for f in _PROTECTED_RADIO_FIELDS:
+            result.pop(f, None)
+        result["requiresSubscription"] = True
+        return result
+    # Paid user — also include the tokenised URL to our proxy so the client can
+    # play the stream WITHOUT ever seeing the raw icecast URL.
+    token = _sign_radio_token(user["id"])
+    result["proxyStreamUrl"] = f"{PUBLIC_BASE_URL}/api/radio/live?token={token}"
+    result["requiresSubscription"] = False
+    return result
+
+
+@api.get("/radio/token")
+async def radio_token(user = Depends(get_current_user)):
+    """Issues a short-lived (30 min) token the client uses to open /api/radio/live.
+
+    Requires an active paid subscription. Free users get 402.
+    """
+    if not _has_active_paid_sub(user):
+        raise HTTPException(402, "Active subscription required")
+    token = _sign_radio_token(user["id"])
+    return {
+        "token": token,
+        "expiresIn": 1800,
+        "streamUrl": f"{PUBLIC_BASE_URL}/api/radio/live?token={token}",
+    }
+
+
+@api.get("/radio/live")
+async def radio_live(request: Request, token: Optional[str] = None):
+    """Server-side subscription-authorised proxy of the icecast stream.
+
+    Verifies the short-lived `token` query param and re-verifies the caller's
+    subscription against MongoDB, then pipes bytes from the upstream icecast
+    server. This prevents anyone with the raw URL from bypassing our paywall.
+
+    We proxy the HTTPS mirror (or plain HTTP fallback). Bandwidth flows through
+    our backend — cost is acceptable for a small user base. For scale, run this
+    same check in a Cloudflare Worker in front of the icecast host instead.
+    """
+    if not token:
+        raise HTTPException(401, "Missing radio token")
+    user_id = _verify_radio_token(token)
+    if not user_id:
+        raise HTTPException(401, "Invalid or expired radio token")
+    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(401, "User not found")
+    user = await _tier_refresh(user)
+    if not _has_active_paid_sub(user):
+        raise HTTPException(402, "Active subscription required")
+
+    # Prefer HTTP origin for server-to-server pull (avoids Cloudflare bot challenge
+    # that fronts stream.bbkigali.com). The client never sees this — it only talks
+    # to our HTTPS backend URL, so there's no mixed-content risk.
+    doc = await db.radio_state.find_one({"key": "current"}, {"_id": 0}) or {}
+    upstream = (doc.get("streamUrl") or BB_KIGALI_STREAM
+                or doc.get("streamUrlHttps") or DEMO_AUDIO_STREAM_HTTPS)
+
+    # Log the listen event (best-effort, non-blocking).
+    try:
+        await db.radio_listens.insert_one({
+            "userId": user_id,
+            "at": datetime.now(timezone.utc).isoformat(),
+            "ua": request.headers.get("user-agent", "")[:200],
+        })
+    except Exception:
+        pass
+
+    client = httpx.AsyncClient(timeout=None, verify=False)
+    try:
+        req = client.build_request("GET", upstream, headers={
+            # Shoutcast origins gate metadata behind a media-player UA. Send a
+            # well-known player UA so the icecast/shoutcast server accepts us.
+            "User-Agent": "WinampMPEG/5.0",
+            "Icy-Metadata": "1",
+            "Accept": "*/*",
+            "Connection": "keep-alive",
+        })
+        resp = await client.send(req, stream=True)
+    except Exception as e:
+        await client.aclose()
+        raise HTTPException(502, f"Upstream stream unavailable: {e}")
+
+    if resp.status_code >= 400:
+        await resp.aclose()
+        await client.aclose()
+        raise HTTPException(502, f"Upstream returned {resp.status_code}")
+
+    media_type = resp.headers.get("content-type", "audio/mpeg")
+
+    async def _pump():
+        try:
+            async for chunk in resp.aiter_raw():
+                if await request.is_disconnected():
+                    break
+                yield chunk
+        finally:
+            try: await resp.aclose()
+            except Exception: pass
+            try: await client.aclose()
+            except Exception: pass
+
+    return StreamingResponse(_pump(), media_type=media_type, headers={
+        "Cache-Control": "no-store, no-transform",
+        "X-Content-Type-Options": "nosniff",
+    })
 
 
 @api.get("/radio/schedule")

@@ -62,3 +62,18 @@ See `/app/memory/test_credentials.md`.
 - 📻 Radio-behind-subscription protection (needs their confirmation on Free vs. Paywalled model)
 - 🍎 Apple `.p8` rotation (their previous paste was full plain-text; same content re-sent, NOT rotated)
 - ☁️ Cloudflare Stream signed playback (needs Account ID, API token, signing key, subdomain)
+
+## 2026-08-27 — Radio subscription protection (bypass-proof)
+- **`/api/radio/now-playing`** now takes optional bearer:
+  - Guests / free users → stripped of `streamUrl` + `streamUrlHttps`, returns `requiresSubscription: true`
+  - Paid subscribers → full payload + `proxyStreamUrl` (30-min signed) + `requiresSubscription: false`
+- **`/api/radio/token`** (auth) → returns short-lived JWT (`pur="radio_stream"`), 30-min TTL. Free users 402.
+- **`/api/radio/live?token=<jwt>`** → verifies token AND re-checks live subscription in Mongo → pipes upstream MP3 via httpx StreamingResponse. Missing/invalid/expired → 401. Non-subscriber → 402. Purpose-isolated: session JWTs cannot be reused as radio tokens.
+- Upstream: `http://radio.bbkigali.com:8080/stream` (HTTP origin, avoids Cloudflare bot challenge on `stream.bbkigali.com`). Client only sees our HTTPS backend URL — no mixed-content on web.
+- Frontend: `player.tsx` uses `proxyStreamUrl` only; UI shows lock + "SUBSCRIBE TO LISTEN" everywhere the play button used to be. Home, mini-player and full player all route to `/paywall` when locked.
+- Paywall copy sharpened: **"UNLOCK BB FM KIGALI · Live radio, on-demand shows and premium video — for paying members only."**
+- Backend tests: iteration_35.json — **17/17 PASS** including a forged-JWT bypass attempt (rejected 401) and end-to-end proxy streaming ≥8KB of MP3.
+
+## Still open (from user's 4-item batch)
+- ☁️ Cloudflare Stream signed playback (need Account ID / API Token / Signing Key ID+JWK PEM / Customer Subdomain)
+- 🍎 Apple `.p8` rotation (user re-sent same content — needs actual regeneration in Apple Developer)

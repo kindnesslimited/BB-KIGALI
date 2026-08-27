@@ -4,8 +4,12 @@ import { createAudioPlayer, setAudioModeAsync, AudioPlayer } from "expo-audio";
 import { api } from "../api";
 
 export type NowPlaying = {
-  streamUrl: string;
+  // NOTE: `streamUrl` and `streamUrlHttps` are ONLY returned by the backend for
+  // authenticated paying subscribers. Guests / free tier receive
+  // `requiresSubscription: true` with these fields absent.
+  streamUrl?: string;
   streamUrlHttps?: string;
+  proxyStreamUrl?: string; // preferred — subscription-authorised backend proxy
   youtubeVideoId?: string;
   youtubeEmbedUrl?: string;
   youtubeWatchUrl?: string;
@@ -14,12 +18,14 @@ export type NowPlaying = {
   description: string;
   coverImage: string;
   isLive: boolean;
+  requiresSubscription?: boolean;
 };
 
 type Ctx = {
   nowPlaying: NowPlaying | null;
   isPlaying: boolean;
   loading: boolean;
+  requiresSubscription: boolean;
   toggle: () => Promise<void>;
   play: () => Promise<void>;
   pause: () => void;
@@ -28,18 +34,13 @@ type Ctx = {
 
 const PlayerCtx = createContext<Ctx | null>(null);
 
-/**
- * Return the best-available stream URL for the current platform.
- * - On web: ALWAYS prefer the HTTPS mirror if configured (avoids mixed-content
- *   blocks on HTTPS pages and works fine on HTTP pages too).
- * - On native (iOS/Android): the HTTP URL works fine — iOS needs an ATS
- *   exception (already added for radio.bbkigali.com in app.json). We still
- *   prefer HTTPS when available for better security.
- */
-function pickStreamUrl(np: NowPlaying): string {
-  if (!np) return "";
-  if (Platform.OS === "web" && np.streamUrlHttps) return np.streamUrlHttps;
-  return np.streamUrlHttps || np.streamUrl;
+/** Returns the subscription-authorised proxy URL if the user is a paying
+ *  subscriber, else null. Playing raw upstream URLs is NOT allowed anymore —
+ *  the backend rewrites the paywall on `/radio/now-playing`. */
+function pickStreamUrl(np: NowPlaying | null): string | null {
+  if (!np) return null;
+  if (np.proxyStreamUrl) return np.proxyStreamUrl;
+  return null;
 }
 
 export function PlayerProvider({ children }: { children: React.ReactNode }) {
@@ -50,7 +51,11 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
   const refreshNowPlaying = useCallback(async () => {
     try {
-      const data = await api<NowPlaying>("/radio/now-playing");
+      // `auth: true` when a token is available — the backend returns richer data
+      // (proxyStreamUrl) for paying subscribers.
+      const data = await api<NowPlaying>("/radio/now-playing", { auth: true }).catch(() =>
+        api<NowPlaying>("/radio/now-playing"),
+      );
       setNowPlaying(data);
     } catch (e) { console.log("[radio] fetch now-playing failed", e); }
   }, []);
@@ -69,6 +74,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
 
   const play = useCallback(async () => {
     if (!nowPlaying) return;
+    if (nowPlaying.requiresSubscription) {
+      // Caller should route to /paywall — the play button becomes a paywall CTA.
+      return;
+    }
     const uri = pickStreamUrl(nowPlaying);
     if (!uri) return;
     setLoading(true);
@@ -76,7 +85,6 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       if (!playerRef.current) {
         playerRef.current = createAudioPlayer({ uri });
       } else {
-        // Reset source if it changed (e.g. admin swapped streamUrl live)
         try { playerRef.current.replace({ uri }); } catch { /* noop */ }
       }
       await playerRef.current.play();
@@ -96,8 +104,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     if (isPlaying) pause(); else await play();
   }, [isPlaying, play, pause]);
 
+  const requiresSubscription = !!(nowPlaying?.requiresSubscription);
+
   return (
-    <PlayerCtx.Provider value={{ nowPlaying, isPlaying, loading, toggle, play, pause, refreshNowPlaying }}>
+    <PlayerCtx.Provider value={{ nowPlaying, isPlaying, loading, requiresSubscription, toggle, play, pause, refreshNowPlaying }}>
       {children}
     </PlayerCtx.Provider>
   );

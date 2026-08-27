@@ -24,7 +24,7 @@ const PLANS: Plan[] = [
     yearly: 10000,
     monthlyEur: 1,
     yearlyEur: 10,
-    benefits: ["Live radio (ad-supported)", "Access to all news", "Public podcasts"],
+    benefits: ["24/7 Live Radio access", "Access to all news", "Public podcasts"],
   },
   {
     id: "premium",
@@ -35,7 +35,7 @@ const PLANS: Plan[] = [
     monthlyEur: 3,
     yearlyEur: 30,
     recommended: true,
-    benefits: ["Ad-free live radio", "ALL VOD & podcasts free", "Exclusive interviews", "Download for offline (soon)"],
+    benefits: ["24/7 Live Radio · ad-free", "ALL VOD & podcasts included", "Live video & exclusive interviews", "Download for offline (soon)"],
   },
 ];
 
@@ -153,8 +153,8 @@ export default function Paywall() {
       </View>
 
       <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: 160 }}>
-        <Text style={styles.h1}>UPGRADE YOUR{"\n"}LISTENING.</Text>
-        <Text style={styles.sub}>Unlock exclusive shows, ad-free radio, and full VOD library.</Text>
+        <Text style={styles.h1}>UNLOCK{"\n"}BB FM KIGALI.</Text>
+        <Text style={styles.sub}>Live radio, on-demand shows and premium video — for paying members only.</Text>
 
         {/* Period toggle */}
         <View style={styles.toggle}>

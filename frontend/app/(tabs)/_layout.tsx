@@ -10,29 +10,37 @@ import { colors, spacing, type, radius } from "@/src/theme";
 import { usePlayer } from "@/src/context/player";
 
 function MiniPlayer() {
-  const { nowPlaying, isPlaying, loading, toggle } = usePlayer();
+  const { nowPlaying, isPlaying, loading, toggle, requiresSubscription } = usePlayer();
   const router = useRouter();
   if (!nowPlaying) return null;
+
+  const onPressCard = () => {
+    if (requiresSubscription) { router.push("/paywall"); return; }
+    router.push("/player");
+  };
+  const onPressBtn = (e: any) => {
+    e.stopPropagation();
+    if (requiresSubscription) { router.push("/paywall"); return; }
+    void toggle();
+    router.push("/player");
+  };
+  const iconName = requiresSubscription ? "lock-closed" : loading ? "hourglass" : isPlaying ? "pause" : "play";
+
   return (
-    <Pressable onPress={() => router.push("/player")} testID="mini-player" style={styles.mp}>
+    <Pressable onPress={onPressCard} testID="mini-player" style={styles.mp}>
       <BlurView intensity={Platform.OS === "android" ? 90 : 60} tint="dark" style={StyleSheet.absoluteFill} />
       <View style={styles.mpInner}>
         <Image source={{ uri: nowPlaying.coverImage }} style={styles.mpArt} contentFit="cover" />
         <View style={{ flex: 1, marginHorizontal: spacing.md }}>
           <View style={styles.liveRow}>
             <View style={styles.liveDot} />
-            <Text style={styles.liveText}>LIVE</Text>
+            <Text style={styles.liveText}>{requiresSubscription ? "PREMIUM · LIVE" : "LIVE"}</Text>
           </View>
           <Text numberOfLines={1} style={styles.mpTitle}>{nowPlaying.showTitle}</Text>
-          <Text numberOfLines={1} style={styles.mpDj}>{nowPlaying.djName}</Text>
+          <Text numberOfLines={1} style={styles.mpDj}>{requiresSubscription ? "Subscribe to listen live" : nowPlaying.djName}</Text>
         </View>
-        <Pressable
-          onPress={(e) => { e.stopPropagation(); void toggle(); router.push("/player"); }}
-          hitSlop={10}
-          testID="mini-player-toggle"
-          style={styles.mpBtn}
-        >
-          <Ionicons name={loading ? "hourglass" : isPlaying ? "pause" : "play"} size={22} color={colors.onBrandPrimary} />
+        <Pressable onPress={onPressBtn} hitSlop={10} testID="mini-player-toggle" style={styles.mpBtn}>
+          <Ionicons name={iconName as any} size={22} color={colors.onBrandPrimary} />
         </Pressable>
       </View>
     </Pressable>

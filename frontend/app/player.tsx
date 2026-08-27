@@ -13,7 +13,7 @@ import { useScreenshotDetected } from "@/src/hooks/use-screen-capture-guard";
 export default function PlayerScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { nowPlaying, isPlaying, toggle } = usePlayer();
+  const { nowPlaying, isPlaying, toggle, requiresSubscription } = usePlayer();
   const screenshotCount = useScreenshotDetected();
   const [showWarning, setShowWarning] = useState(false);
 
@@ -27,6 +27,7 @@ export default function PlayerScreen() {
   if (!nowPlaying) return <View style={styles.container} />;
 
   const embedUrl = nowPlaying.youtubeEmbedUrl;
+  const goPaywall = () => router.replace("/paywall");
 
   return (
     <View style={styles.container} testID="full-player">
@@ -50,7 +51,18 @@ export default function PlayerScreen() {
             <Text style={styles.recSub}>Please respect our content.</Text>
           </View>
         )}
-        {isPlaying && embedUrl ? (
+        {requiresSubscription ? (
+          <Pressable onPress={goPaywall} style={styles.poster} testID="player-locked">
+            <Image source={{ uri: nowPlaying.coverImage }} style={StyleSheet.absoluteFill} contentFit="cover" blurRadius={20} />
+            <LinearGradient colors={["rgba(0,0,0,0.35)", "rgba(0,0,0,0.85)"]} style={StyleSheet.absoluteFill} />
+            <View style={styles.playCircle}>
+              <Ionicons name="lock-closed" size={36} color={colors.onBrandPrimary} />
+            </View>
+            <Text style={[styles.tapHint, { paddingHorizontal: spacing.lg, textAlign: "center" }]}>
+              LIVE RADIO IS FOR SUBSCRIBERS.{"\n"}TAP TO UPGRADE.
+            </Text>
+          </Pressable>
+        ) : isPlaying && embedUrl ? (
           Platform.OS === "web" ? (
             <iframe
               src={embedUrl}
@@ -90,8 +102,17 @@ export default function PlayerScreen() {
 
         <View style={styles.controls}>
           <View style={{ width: 56 }} />
-          <Pressable onPress={() => void toggle()} style={styles.playBtn} testID="player-toggle">
-            <Ionicons name={isPlaying ? "pause" : "play"} size={36} color={colors.onBrandPrimary} style={{ marginLeft: isPlaying ? 0 : 3 }} />
+          <Pressable
+            onPress={() => (requiresSubscription ? goPaywall() : void toggle())}
+            style={styles.playBtn}
+            testID="player-toggle"
+          >
+            <Ionicons
+              name={requiresSubscription ? "lock-closed" : (isPlaying ? "pause" : "play")}
+              size={36}
+              color={colors.onBrandPrimary}
+              style={{ marginLeft: (requiresSubscription || isPlaying) ? 0 : 3 }}
+            />
           </Pressable>
           <Pressable style={styles.iconRound} testID="player-share">
             <Ionicons name="share-outline" size={22} color={colors.onSurface} />
