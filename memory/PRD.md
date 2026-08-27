@@ -77,3 +77,14 @@ See `/app/memory/test_credentials.md`.
 ## Still open (from user's 4-item batch)
 - ☁️ Cloudflare Stream signed playback (need Account ID / API Token / Signing Key ID+JWK PEM / Customer Subdomain)
 - 🍎 Apple `.p8` rotation (user re-sent same content — needs actual regeneration in Apple Developer)
+
+## 2026-08-27 — Full Desktop / Web experience
+- **DesktopHeader** (`src/components/DesktopHeader.tsx`) — sticky top bar shown ONLY on web ≥ 1024px:
+  - Left: B&B brand mark + "BB FM KIGALI · 89.7 FM · #MuriSiporoIgitego"
+  - Center: Home / Shows / News / Schedule with active underline
+  - Right: red SUBSCRIBE button + LOG IN (or profile chip when authenticated)
+- Bottom mobile tab bar auto-hides on wide desktop (`Tabs.tabBarStyle: { display: "none" }`).
+- Home page internal header hidden on wide desktop to avoid duplication.
+- All routes (home, shows, news, paywall, auth/phone, profile) verified at 1440×900.
+- Cross-platform: same backend, DB, RevenueCat entitlement, radio proxy — subscribe on Web → login on iOS/Android → recognised, and vice versa (RevenueCat identity binding + `/subscription/rc-sync` already ensure this).
+- Landing page (`/app/landing/index.html`) CTAs point to production `https://radio-vod-platform.emergent.host` — NOT to `app.emergent.sh/share`. The share page only appears when a user opens the preview link; the production URL bypasses it.

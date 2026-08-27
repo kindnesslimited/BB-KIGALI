@@ -13,6 +13,7 @@ import { AuthProvider, useAuth } from "@/src/context/auth";
 import { PlayerProvider } from "@/src/context/player";
 import { ErrorBoundary } from "@/src/components/ErrorBoundary";
 import { colors } from "@/src/theme";
+import { DesktopHeader } from "@/src/components/DesktopHeader";
 import {
   AppQueryClientProvider,
   SubscriptionProvider,
@@ -89,6 +90,7 @@ export default function RootLayout() {
                 <PlayerProvider>
                   <StatusBar style="light" />
                   <AuthGate>
+                    <DesktopHeader />
                     <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.surface } }}>
                       <Stack.Screen name="index" />
                       <Stack.Screen name="onboarding" />

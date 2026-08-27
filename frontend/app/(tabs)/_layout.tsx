@@ -1,6 +1,6 @@
 import React from "react";
 import { Tabs } from "expo-router";
-import { View, Text, StyleSheet, Pressable, Platform } from "react-native";
+import { View, Text, StyleSheet, Pressable, Platform, useWindowDimensions } from "react-native";
 import { BlurView } from "expo-blur";
 import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
@@ -49,8 +49,10 @@ function MiniPlayer() {
 
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
-  const barHeight = 64 + insets.bottom;
+  const { width } = useWindowDimensions();
   const isWeb = Platform.OS === "web";
+  const isWideDesktop = isWeb && width >= 1024;
+  const barHeight = 64 + insets.bottom;
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.surface, alignItems: isWeb ? "center" : "stretch" }}>
@@ -58,7 +60,9 @@ export default function TabsLayout() {
       <Tabs
         screenOptions={{
           headerShown: false,
-          tabBarStyle: {
+          // Hide the mobile bottom tab bar on wide desktop — the DesktopHeader
+          // provides top navigation instead.
+          tabBarStyle: isWideDesktop ? { display: "none" } : {
             position: "absolute",
             backgroundColor: colors.surface,
             borderTopColor: colors.border,

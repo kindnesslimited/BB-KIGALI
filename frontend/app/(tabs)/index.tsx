@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, RefreshControl, Linking, Platform, Alert } from "react-native";
+import { View, Text, StyleSheet, ScrollView, Pressable, RefreshControl, Linking, Platform, Alert, useWindowDimensions } from "react-native";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -19,6 +19,8 @@ type LiveStatus = { isLive: boolean; videoId?: string; title?: string; thumbnail
 
 export default function Home() {
   const insets = useSafeAreaInsets();
+  const { width: winWidth } = useWindowDimensions();
+  const isWideDesktop = Platform.OS === "web" && winWidth >= 1024;
   const router = useRouter();
   const { user } = useAuth();
   const { nowPlaying, isPlaying, toggle, loading: playerLoading, requiresSubscription: radioLocked } = usePlayer();
@@ -90,11 +92,12 @@ export default function Home() {
   return (
     <ScrollView
       style={{ flex: 1, backgroundColor: colors.surface }}
-      contentContainerStyle={{ paddingTop: insets.top + spacing.md, paddingBottom: 200 }}
+      contentContainerStyle={{ paddingTop: isWideDesktop ? spacing.md : insets.top + spacing.md, paddingBottom: 200 }}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.brandPrimary} />}
       testID="home-screen"
     >
-      {/* Header */}
+      {/* Header — hidden on wide desktop because the DesktopHeader is already shown */}
+      {!isWideDesktop && (
       <View style={styles.header}>
         {settings.logoUrl ? (
           <Image source={{ uri: settings.logoUrl }} style={styles.logoImg} contentFit="contain" testID="home-logo" />
@@ -115,7 +118,8 @@ export default function Home() {
           <Text style={styles.avatarText}>{(user?.displayName?.[0] || user?.phone?.slice(-2) || "?").toUpperCase()}</Text>
         </Pressable>
       </View>
-      {settings.logoUrl && (
+      )}
+      {settings.logoUrl && !isWideDesktop && (
         <Text style={styles.taglineOnly}>Muraho{user?.displayName ? `, ${user.displayName}` : ""} · {settings.stationTagline || "#MuriSiporonIgitego"}</Text>
       )}
 
