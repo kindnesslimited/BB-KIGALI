@@ -41,6 +41,7 @@ from subscription_reminders import (
     run_reminder_pass as _sub_reminder_pass,
 )  # noqa: E402
 from admin_analytics import compute_dashboard as _admin_dashboard, revenue_series as _admin_revenue_series, render_receipt_pdf as _render_receipt_pdf, render_business_report_pdf as _render_business_pdf  # noqa: E402
+from cloudflare_stream import sign_playback as _cf_sign_playback, stream_ready as _cf_stream_ready  # noqa: E402
 import audit_log  # noqa: E402
 from fastapi import UploadFile, File
 from fastapi.responses import Response
@@ -1116,6 +1117,47 @@ async def list_shows(category: Optional[str] = None, user = Depends(get_optional
         q = {"category": category.lower()}
     items = await db.shows.find(q, {"_id": 0}).sort("createdAt", -1).to_list(200)
     return [_sanitize_show_for_list(i, user) for i in items]
+
+
+# ---------- Cloudflare Stream — signed playback for VOD/live videos ----------
+@api.get("/videos/status")
+async def videos_status():
+    """Public — advertises whether Cloudflare Stream is configured. The client
+    uses this to render 'video temporarily unavailable' when we haven't wired
+    the Worker yet."""
+    return {"ready": _cf_stream_ready(), "subdomain": os.environ.get("CLOUDFLARE_STREAM_SUBDOMAIN") or None}
+
+
+@api.get("/videos/{show_id}/playback")
+async def show_playback(show_id: str, user = Depends(get_current_user)):
+    """Return a signed Cloudflare Stream playback URL for a VOD/live show.
+
+    Requires an active paid subscription OR a purchased one-off VOD unlock.
+    Non-subscribers get 402. Missing Stream configuration returns 503.
+    """
+    show = await db.shows.find_one({"id": show_id}, {"_id": 0})
+    if not show:
+        raise HTTPException(404, "Show not found")
+    stream_id = (show.get("cloudflareStreamId")
+                 or show.get("cloudflareVideoId")
+                 or show.get("streamId"))
+    if not stream_id:
+        raise HTTPException(404, "This show is not on Cloudflare Stream")
+
+    # Authorisation — premium OR owns this VOD.
+    if not _has_premium(user):
+        owned = await db.vod_purchases.find_one(
+            {"userId": user["id"], "showId": show_id, "status": "success"}, {"_id": 0}
+        )
+        if not owned:
+            raise HTTPException(402, "Purchase or subscribe to watch")
+
+    signed = await _cf_sign_playback(stream_id, ttl_seconds=900, origin=PUBLIC_WEB_URL)
+    return {
+        "showId": show_id,
+        "streamId": stream_id,
+        **signed,  # embedUrl, manifestUrl, token, expiresAt, videoId
+    }
 
 
 @api.get("/shows/{show_id}")

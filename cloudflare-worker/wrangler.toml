@@ -1,0 +1,23 @@
+name = "bb-stream-signer"
+main = "worker.js"
+compatibility_date = "2025-05-01"
+
+# The Workers Stream Binding — points at the Stream namespace on your account.
+# This is what lets us call `env.STREAM.video(uid).generateToken()` without an API key.
+[[services]]
+# not needed for the binding, kept for future service-binding scenarios
+
+# Plain-text env vars — configure these in the Cloudflare dashboard OR via
+# `wrangler deploy --var STREAM_SUBDOMAIN=customer-abc123.cloudflarestream.com`
+[vars]
+STREAM_SUBDOMAIN = "customer-CHANGE-ME.cloudflarestream.com"
+
+# SHARED_SECRET must be set as a Worker SECRET (never in plain [vars]).
+#   $ wrangler secret put SHARED_SECRET
+#   (paste the same random string that lives in the FastAPI backend's
+#    CLOUDFLARE_STREAM_WORKER_SECRET env var)
+
+# Stream binding — use your Cloudflare account's Stream namespace.
+[[unsafe.bindings]]
+name = "STREAM"
+type = "stream"

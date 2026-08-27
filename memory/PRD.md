@@ -132,3 +132,21 @@ Two bugs blocked desktop login:
 - New backend helper `_canonicalize_phone(raw)` strips all non-digit chars (preserves leading `+`). Now `+250 794 230 137`, `250794230137`, `+250-794-230-137`, `(250) 794 230 137` all canonicalise to `+250794230137` (or `250794230137` if no plus) — all 5 formats verified via curl return admin+premium.
 - Frontend only forwards `testCode` when the backend actually returned one.
 - Auth screens (`phone.tsx`, `otp.tsx`) constrained to `maxWidth: 480px` and centered on desktop — 6 OTP boxes now group nicely instead of stretching across a 1440px viewport.
+
+## 2026-08-27 — Cloudflare Stream signed playback wiring
+- Created **`/app/cloudflare-worker/`** with 3 files (`worker.js`, `wrangler.toml`, `README.md`) — a self-contained Worker that uses Cloudflare Workers Stream Binding (no API token or JWK needed).
+- Backend module **`/app/backend/cloudflare_stream.py`** wraps the Worker. Env vars in backend/.env:
+  - `CLOUDFLARE_STREAM_WORKER_URL` — the deployed Worker URL (empty for now)
+  - `CLOUDFLARE_STREAM_WORKER_SECRET` — shared 32-char secret between backend + Worker
+  - `CLOUDFLARE_STREAM_SUBDOMAIN` — `customer-XXXX.cloudflarestream.com`
+- New endpoints:
+  - `GET /api/videos/status` — public advertisement of readiness (`{ready: false}` until user deploys the Worker).
+  - `GET /api/videos/{show_id}/playback` — auth+subscription-gated; calls the Worker to mint a 15-min signed URL. 402 for non-subs, 503 when Worker not configured, 404 when show has no `cloudflareStreamId`.
+- Show docs get a new optional field `cloudflareStreamId` (aliases: `cloudflareVideoId`, `streamId`). Admin will populate this when they upload a video to Cloudflare Stream.
+- Signed URLs pinned to `PUBLIC_WEB_URL` origin (currently `web.bbkigali.com`) so a leaked token cannot be embedded on another site.
+
+### User-side deploy (README.md has full walkthrough)
+1. Set `STREAM_SUBDOMAIN` in `wrangler.toml`
+2. `wrangler login && wrangler deploy && wrangler secret put SHARED_SECRET`
+3. Paste the Worker URL + secret into backend/.env → restart backend
+4. `videos/status` will flip to `ready: true` — VOD playback endpoint starts serving signed URLs
