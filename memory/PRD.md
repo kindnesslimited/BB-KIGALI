@@ -121,3 +121,14 @@ See `/app/memory/test_credentials.md`.
 
 ### Backend tests
 - Iteration 36: **16/16 pass** after UserOut fix.
+
+## 2026-08-27 — Desktop login regression FIX
+### Root cause
+Two bugs blocked desktop login:
+1. **Backend**: `_normalize_phone` stripped only `+` and whitespace at the ends — not spaces INSIDE the number. `+250 794 230 137` never matched the admin allow-list `250794230137`, so no `testCode: "123456"` was returned; a real random code was sent via WhatsApp instead — the user typing 123456 got "Invalid code".
+2. **Frontend**: `app/auth/phone.tsx` sent `testCode: r?.testCode || "123456"` to the OTP screen, showing "Demo mode — use code 123456" to EVERY user, even when the backend never issued that code.
+
+### Fix
+- New backend helper `_canonicalize_phone(raw)` strips all non-digit chars (preserves leading `+`). Now `+250 794 230 137`, `250794230137`, `+250-794-230-137`, `(250) 794 230 137` all canonicalise to `+250794230137` (or `250794230137` if no plus) — all 5 formats verified via curl return admin+premium.
+- Frontend only forwards `testCode` when the backend actually returned one.
+- Auth screens (`phone.tsx`, `otp.tsx`) constrained to `maxWidth: 480px` and centered on desktop — 6 OTP boxes now group nicely instead of stretching across a 1440px viewport.

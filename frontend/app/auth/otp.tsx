@@ -113,11 +113,11 @@ export default function OTPVerify() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, paddingHorizontal: spacing.lg },
+  container: { flex: 1, paddingHorizontal: spacing.lg, width: "100%", maxWidth: 480, alignSelf: "center" },
   back: { width: 40, height: 40, alignItems: "center", justifyContent: "center", marginLeft: -spacing.sm, marginBottom: spacing.md },
   title: { ...type.displayXL, marginBottom: spacing.sm },
   subtitle: { ...type.bodyMuted, lineHeight: 22, marginBottom: spacing.xl },
-  otpRow: { flexDirection: "row", gap: spacing.sm, justifyContent: "space-between" },
+  otpRow: { flexDirection: "row", gap: spacing.sm, justifyContent: "center" },
   otpCell: { width: 48, height: 60, borderRadius: radius.md, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border, color: colors.onSurface, textAlign: "center", fontSize: 22, fontFamily: "BarlowCondensed-Bold" },
   otpCellFilled: { borderColor: colors.brandPrimary, backgroundColor: colors.brandTertiary },
   demoBox: { flexDirection: "row", alignItems: "center", gap: spacing.sm, marginTop: spacing.lg, backgroundColor: colors.brandTertiary, borderRadius: radius.md, padding: spacing.md },

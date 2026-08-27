@@ -29,7 +29,10 @@ export default function PhoneEntry() {
     try {
       const r = await requestOtp(p);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      router.push({ pathname: "/auth/otp", params: { phone: p, testCode: r?.testCode || "123456" } });
+      // Only forward `testCode` when the backend actually returned one (dev/admin phones).
+      // Otherwise the OTP screen falsely suggested "use 123456" for regular users
+      // who receive their real code by SMS/WhatsApp.
+      router.push({ pathname: "/auth/otp", params: r?.testCode ? { phone: p, testCode: r.testCode } : { phone: p } });
     } catch (e: any) {
       setErr(e.message || "Failed to send code");
     } finally { setLoading(false); }
@@ -121,7 +124,7 @@ export default function PhoneEntry() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, paddingHorizontal: spacing.lg },
+  container: { flex: 1, paddingHorizontal: spacing.lg, width: "100%", maxWidth: 480, alignSelf: "center" },
   back: { width: 40, height: 40, alignItems: "center", justifyContent: "center", marginLeft: -spacing.sm, marginBottom: spacing.md },
   brandRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm, marginBottom: spacing.md },
   liveDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.brandPrimary },

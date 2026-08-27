@@ -542,9 +542,32 @@ async def _send_payment_receipt(*, user_id: Optional[str], phone: Optional[str],
         logger.exception("[payment-sms] failed for user=%s", user_id)
 
 
+def _canonicalize_phone(raw: str) -> str:
+    """Normalize a phone string so that '+250 794 230 137', '250794230137' and
+    '+250794230137' all map to the same canonical form '+250794230137'.
+
+    Rules:
+      - strip whitespace, dashes, dots, parentheses
+      - preserve a leading '+' if present
+      - fall back to '+' + digits if no plus was given but the number is
+        long enough to look like an msisdn
+    """
+    if not raw:
+        return raw
+    s = raw.strip()
+    plus = s.startswith("+")
+    digits = "".join(ch for ch in s if ch.isdigit())
+    if not digits:
+        return s
+    return ("+" + digits) if plus else digits
+
+
 @api.post("/auth/otp/start")
 async def otp_start(body: OTPStartIn):
-    phone = body.phone.strip()
+    # Canonicalise BEFORE we persist / lookup the challenge so users can
+    # type their number with spaces, dashes or brackets and still hit the
+    # admin allow-list on verify.
+    phone = _canonicalize_phone(body.phone)
     if len(phone) < 7:
         raise HTTPException(400, "Invalid phone number")
 
@@ -603,7 +626,9 @@ async def otp_start(body: OTPStartIn):
 
 @api.post("/auth/otp/verify", response_model=AuthOut)
 async def otp_verify(body: OTPVerifyIn):
-    phone = body.phone.strip()
+    # Same canonicalisation as /auth/otp/start — otherwise 'admin phone typed
+    # with spaces' would never match the stored challenge or the admin allow-list.
+    phone = _canonicalize_phone(body.phone)
     challenge = await db.otp_challenges.find_one({"phone": phone}, {"_id": 0})
     if not challenge:
         raise HTTPException(401, "No OTP challenge. Request a new code.")
