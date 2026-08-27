@@ -3094,7 +3094,7 @@ async def admin_subscriptions_report(status: Literal["active", "expired", "all"]
     return users
 
 
-# ==================== ADMIN BUSINESS REPORT PDF ====================
+@api.get("/admin/audit-log")
 @api.get("/admin/reports/business.pdf")
 async def admin_business_report_pdf(
     start: Optional[str] = None,
