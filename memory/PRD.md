@@ -45,3 +45,20 @@ See `/app/memory/test_credentials.md`.
 - Apple Sign-in revocation is now READY: `APPLE_TEAM_ID`, `APPLE_KEY_ID`, `APPLE_PRIVATE_KEY` all set. `apple_revocation_ready()` returns True. `DELETE /api/auth/me` will now hit Apple `/auth/revoke` for users who signed in with Apple.
 - ⚠️ Apple `AuthKey` private key was pasted in chat — user asked to rotate it and re-send. Once rotated, the new key must be placed in `APPLE_PRIVATE_KEY` env var (use \n escapes for newlines).
 - Backend smoke: iteration_33.json — 12/12 pass.
+
+## 2026-08-27 — RevenueCat integrated (Emergent-managed)
+- **Setup**: `/setup` → `rc_project_id=proj7b23b575`, `entitlement=pro`, `offering=default`, `$rc_monthly=€3/P1M`, `$rc_annual=€30/P1Y` (mirrors web Premium Monthly / Yearly).
+- **Frontend**:
+  - `src/lib/revenuecat.tsx` (SDK init, `SubscriptionProvider`, `useSubscription`, `useBindRevenueCatIdentity`).
+  - `_layout.tsx` — `initializeRevenueCat()` at module scope; wraps app in `AppQueryClientProvider → AuthProvider → SubscriptionProvider`.
+  - `context/auth.tsx` — `Purchases.logIn(user.id)` on every auth path; `logOut` on sign-out; exposes `purchaseIdentityError` on context (never swallowed).
+  - `app/paywall.tsx` — iOS routes CONTINUE through `Purchases.purchasePackage`; web + Android keep Stripe/PayPal/MoMo. iOS gains a Restore Purchases button (Apple requirement). Success/error modal added.
+- **Backend**: `POST /api/subscription/rc-sync` mirrors purchases into Mongo `users.tier=premium` + payments row (`provider=revenuecat / method=apple_iap`).
+- **Env**: `EXPO_PUBLIC_REVENUECAT_{TEST,IOS,ANDROID}_API_KEY` written to frontend `.env`.
+- Backend tests: iteration_34.json — 11/11 pass.
+- **Still needed from user for LIVE App Store purchases**: App Store Connect API key (.p8), Google Play service-account JSON, matching IAP products in ASC + Play Console (same product IDs as RevenueCat dashboard). Docs in `/app/memory/revenuecat.md` §"Taking in-app purchases LIVE".
+
+## Still open (from user's 4-item batch)
+- 📻 Radio-behind-subscription protection (needs their confirmation on Free vs. Paywalled model)
+- 🍎 Apple `.p8` rotation (their previous paste was full plain-text; same content re-sent, NOT rotated)
+- ☁️ Cloudflare Stream signed playback (needs Account ID, API token, signing key, subdomain)

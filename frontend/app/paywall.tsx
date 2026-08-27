@@ -1,10 +1,17 @@
 import { useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
+import { View, Text, StyleSheet, ScrollView, Pressable, Modal, Platform, ActivityIndicator } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, type, radius } from "@/src/theme";
+import { useSubscription, rcEnabled } from "@/src/lib/revenuecat";
+import { useAuth } from "@/src/context/auth";
+import { api } from "@/src/api";
+
+/** iOS uses Apple IAP via RevenueCat (Apple guideline 3.1.1); web + Android keep
+ *  Stripe/PayPal/MoMo. This flag decides which flow runs when the user taps CONTINUE. */
+const USE_RC_ON_THIS_PLATFORM = Platform.OS === "ios";
 
 type Plan = { id: string; tier: "basic" | "premium"; label: string; monthly: number; yearly: number; monthlyEur: number; yearlyEur: number; benefits: string[]; recommended?: boolean };
 
@@ -35,8 +42,20 @@ const PLANS: Plan[] = [
 export default function Paywall() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const { user, purchaseIdentityError } = useAuth();
+  const {
+    offerings,
+    isSubscribed,
+    identityReady,
+    purchase,
+    restore,
+    isPurchasing,
+    isRestoring,
+  } = useSubscription();
   const [selectedTier, setSelectedTier] = useState<"basic" | "premium">("premium");
   const [period, setPeriod] = useState<"monthly" | "yearly">("monthly");
+  const [rcConfirm, setRcConfirm] = useState<{ visible: boolean; error?: string; success?: boolean }>({ visible: false });
+  const [rcBusyLabel, setRcBusyLabel] = useState<string | null>(null);
 
   const plan = PLANS.find((p) => p.tier === selectedTier)!;
   const price = period === "monthly" ? plan.monthly : plan.yearly;
@@ -45,9 +64,83 @@ export default function Paywall() {
 
   const savings = plan.monthly * 12 - plan.yearly;
 
-  const proceed = () => {
+  // Resolve the RevenueCat package matching the current selection (iOS only).
+  const rcOffering = offerings?.current;
+  const rcPackage = (() => {
+    if (!rcOffering) return null;
+    return period === "monthly"
+      ? rcOffering.availablePackages.find((p) => p.identifier === "$rc_monthly")
+      : rcOffering.availablePackages.find((p) => p.identifier === "$rc_annual");
+  })();
+
+  const rcPriceString = rcPackage?.product.priceString;
+  // iOS Basic tier is not offered natively (Apple requires a single "pro" entitlement);
+  // native iOS subscribers get Premium features regardless of chosen tier.
+  const rcAvailable = USE_RC_ON_THIS_PLATFORM && rcEnabled && !!rcPackage;
+
+  const notifyBackendAfterRC = async () => {
+    // Best-effort — mark backend subscription tier so premium content unlocks
+    // immediately in-session while server-to-server webhooks catch up.
+    try {
+      await api("/subscription/rc-sync", {
+        method: "POST",
+        auth: true,
+        body: {
+          plan: `premium_${period}`,
+          entitlement: "pro",
+        },
+      });
+    } catch (e) {
+      if (__DEV__) console.log("[rc-sync] failed (non-fatal)", e);
+    }
+  };
+
+  const proceed = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+
+    // iOS → Apple IAP via RevenueCat
+    if (rcAvailable && rcPackage) {
+      if (!user) {
+        router.replace("/auth/phone");
+        return;
+      }
+      if (!identityReady) {
+        setRcConfirm({ visible: true, error: purchaseIdentityError || "Preparing your account for purchase…" });
+        return;
+      }
+      try {
+        setRcBusyLabel("Confirming purchase with Apple…");
+        await purchase(rcPackage);
+        await notifyBackendAfterRC();
+        setRcConfirm({ visible: true, success: true });
+      } catch (e: any) {
+        const msg = String(e?.message || e);
+        if (msg.toLowerCase().includes("cancel")) {
+          // silent user cancellation
+        } else {
+          setRcConfirm({ visible: true, error: msg });
+        }
+      } finally {
+        setRcBusyLabel(null);
+      }
+      return;
+    }
+
+    // Web + Android → existing Stripe/PayPal/MoMo checkout
     router.push({ pathname: "/checkout", params: { plan: planKey, amount: String(price) } });
+  };
+
+  const onRestore = async () => {
+    try {
+      setRcBusyLabel("Restoring purchases…");
+      await restore();
+      await notifyBackendAfterRC();
+      setRcConfirm({ visible: true, success: true });
+    } catch (e: any) {
+      setRcConfirm({ visible: true, error: String(e?.message || e) });
+    } finally {
+      setRcBusyLabel(null);
+    }
   };
 
   return (
@@ -132,14 +225,85 @@ export default function Paywall() {
 
       <View style={[styles.footer, { paddingBottom: insets.bottom + spacing.md }]}>
         <View style={{ flex: 1 }}>
-          <Text style={styles.footerLabel}>TOTAL</Text>
-          <Text style={styles.footerPrice}>{priceEur}€ / {price.toLocaleString()} RWF</Text>
+          <Text style={styles.footerLabel}>{rcAvailable ? "APPLE IAP" : "TOTAL"}</Text>
+          <Text style={styles.footerPrice}>
+            {rcAvailable && rcPriceString
+              ? rcPriceString
+              : `${priceEur}€ / ${price.toLocaleString()} RWF`}
+          </Text>
+          {rcAvailable && (
+            <Text style={styles.iapHint} numberOfLines={2}>
+              Apple bills your Apple ID{selectedTier === "basic" ? " • iOS grants full Premium" : ""}
+            </Text>
+          )}
         </View>
-        <Pressable onPress={proceed} style={styles.continueBtn} testID="paywall-continue">
-          <Text style={styles.continueText}>CONTINUE</Text>
-          <Ionicons name="arrow-forward" size={18} color={colors.onBrandPrimary} />
+        <Pressable
+          onPress={proceed}
+          disabled={isPurchasing || isRestoring}
+          style={[styles.continueBtn, (isPurchasing || isRestoring) && { opacity: 0.5 }]}
+          testID="paywall-continue"
+        >
+          {isPurchasing ? (
+            <ActivityIndicator color={colors.onBrandPrimary} />
+          ) : (
+            <>
+              <Text style={styles.continueText}>CONTINUE</Text>
+              <Ionicons name="arrow-forward" size={18} color={colors.onBrandPrimary} />
+            </>
+          )}
         </Pressable>
       </View>
+
+      {/* iOS-only: Apple requires a Restore Purchases entry point */}
+      {rcAvailable && (
+        <Pressable
+          onPress={onRestore}
+          disabled={isPurchasing || isRestoring}
+          style={[styles.restoreBtn, { bottom: insets.bottom + 96 }]}
+          testID="paywall-restore"
+        >
+          <Ionicons name="refresh" size={14} color={colors.onSurfaceSecondary} />
+          <Text style={styles.restoreText}>
+            {isRestoring ? "Restoring…" : "Restore purchases"}
+          </Text>
+        </Pressable>
+      )}
+
+      {/* Confirmation modal (success or error) */}
+      <Modal transparent visible={rcConfirm.visible} animationType="fade" onRequestClose={() => setRcConfirm({ visible: false })}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Ionicons
+              name={rcConfirm.success ? "checkmark-circle" : rcConfirm.error ? "alert-circle" : "hourglass"}
+              size={44}
+              color={rcConfirm.success ? colors.brandPrimary : rcConfirm.error ? colors.brandSecondary : colors.onSurfaceSecondary}
+            />
+            <Text style={styles.modalTitle}>
+              {rcConfirm.success ? "You're Premium!" : rcConfirm.error ? "Purchase issue" : "Preparing…"}
+            </Text>
+            <Text style={styles.modalBody}>
+              {rcConfirm.success
+                ? "Your Apple subscription is active. Enjoy ad-free radio and full VOD."
+                : rcConfirm.error || "Setting up your account for Apple purchases."}
+            </Text>
+            <Pressable
+              onPress={() => {
+                setRcConfirm({ visible: false });
+                if (rcConfirm.success) router.back();
+              }}
+              style={styles.modalBtn}
+            >
+              <Text style={styles.modalBtnText}>{rcConfirm.success ? "DONE" : "OK"}</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      {rcBusyLabel && !isPurchasing && !isRestoring && (
+        <View style={styles.toast} pointerEvents="none">
+          <Text style={styles.toastText}>{rcBusyLabel}</Text>
+        </View>
+      )}
     </View>
   );
 }
@@ -175,4 +339,15 @@ const styles = StyleSheet.create({
   footerPrice: { ...type.displayLg, fontSize: 22 },
   continueBtn: { flexDirection: "row", alignItems: "center", gap: spacing.sm, backgroundColor: colors.brandPrimary, paddingHorizontal: spacing.xl, paddingVertical: spacing.md, borderRadius: radius.pill },
   continueText: { ...type.h2, color: colors.onBrandPrimary, letterSpacing: 1.5, fontSize: 14 },
+  iapHint: { ...type.caption, fontSize: 10, color: colors.onSurfaceSecondary, marginTop: 2 },
+  restoreBtn: { position: "absolute", left: 0, right: 0, alignItems: "center", flexDirection: "row", justifyContent: "center", gap: 6, paddingVertical: spacing.sm },
+  restoreText: { ...type.caption, color: colors.onSurfaceSecondary, textDecorationLine: "underline" },
+  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.7)", alignItems: "center", justifyContent: "center", padding: spacing.lg },
+  modalCard: { width: "100%", maxWidth: 360, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.xl, alignItems: "center", gap: spacing.md, borderWidth: 1, borderColor: colors.border },
+  modalTitle: { ...type.displayLg, fontSize: 22, textAlign: "center" },
+  modalBody: { ...type.body, textAlign: "center", color: colors.onSurfaceTertiary, lineHeight: 20 },
+  modalBtn: { backgroundColor: colors.brandPrimary, paddingHorizontal: spacing.xl, paddingVertical: spacing.md, borderRadius: radius.pill, marginTop: spacing.sm },
+  modalBtnText: { ...type.h2, color: colors.onBrandPrimary, letterSpacing: 1.5, fontSize: 13 },
+  toast: { position: "absolute", top: 80, left: spacing.lg, right: spacing.lg, backgroundColor: "rgba(0,0,0,0.85)", borderRadius: radius.sm, padding: spacing.md, alignItems: "center" },
+  toastText: { ...type.caption, color: "#fff" },
 });

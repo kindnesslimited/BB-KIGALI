@@ -3,6 +3,7 @@ import { Platform } from "react-native";
 import * as WebBrowser from "expo-web-browser";
 import * as Linking from "expo-linking";
 import { api, saveToken, getToken, clearToken } from "../api";
+import { useBindRevenueCatIdentity } from "../lib/revenuecat";
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -20,6 +21,7 @@ export type User = {
 type Ctx = {
   user: User | null;
   loading: boolean;
+  purchaseIdentityError: string | null;
   requestOtp: (phone: string) => Promise<{ testCode?: string }>;
   verifyOtp: (phone: string, code: string) => Promise<void>;
   loginWithGoogle: () => Promise<void>;
@@ -52,6 +54,9 @@ async function completeGoogle(sessionId: string, setUser: (u: User) => void) {
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  // Bind RevenueCat identity to the backend user id on EVERY auth path
+  // (session-restore, sign-in, sign-up, sign-out). Errors surface via context.
+  const purchaseIdentityError = useBindRevenueCatIdentity(user?.id ?? null);
 
   const refresh = useCallback(async () => {
     const tok = await getToken();
@@ -184,7 +189,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <AuthCtx.Provider value={{ user, loading, requestOtp, verifyOtp, loginWithGoogle, loginWithApple, refresh, updateProfile, deleteAccount, logout }}>
+    <AuthCtx.Provider value={{ user, loading, purchaseIdentityError, requestOtp, verifyOtp, loginWithGoogle, loginWithApple, refresh, updateProfile, deleteAccount, logout }}>
       {children}
     </AuthCtx.Provider>
   );

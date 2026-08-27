@@ -1,0 +1,37 @@
+{
+  "summary": "Backend regression + RevenueCat rc-sync smoke test. 11/11 pytest tests passed against the public preview URL. POST /api/subscription/rc-sync is correctly bearer-gated (401 unauthenticated), returns {ok:true, tier:'premium', provider:'revenuecat', expiresAt:...} for both premium_monthly (~30d) and premium_yearly (~365d), inserts a payments row with provider=revenuecat / method=apple_iap / status=success / note=client_hint_pending_webhook, and updates users.tier=premium + subscriptionExpiresAt + currentPlan + provider. GET /auth/me reflects tier=premium after sync. After rc-sync, /api/live/status now returns videoId/watchUrl/embedUrl and requiresSubscription=false for the authenticated premium user, while the same endpoint without auth still strips those fields (requiresSubscription=true). GET /api/shows/{id} returns locked=false + unlockedFor='premium' for the synced user. Regression: OTP flow (250794230137 / 123456) works; /api/radio/now-playing still returns streamUrlHttps=https://stream.bbkigali.com/stream/1/. Verified rows directly in MongoDB payments collection.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/subscription/rc-sync", "issue": "Review request expected basic_monthly → 400. Actual: because RcSyncIn uses Literal['premium_monthly','premium_yearly'], Pydantic returns 422 for basic_monthly (never reaches the manual `if not plan: raise HTTPException(400)` branch). This is arguably CORRECT/stronger validation. The dead 400 branch in server.py:1616-1618 is unreachable and could be removed for clarity. Test accepts both 400 and 422."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter34_rc_sync.py",
+    "/app/test_reports/pytest/pytest_iter34_rc.xml"
+  ],
+  "action_items": [
+    "(Optional cleanup) In /app/backend/server.py:1616-1618, the `plan = PLAN_CATALOG.get(body.plan); if not plan: raise HTTPException(400, 'Invalid plan')` branch is dead code because RcSyncIn.plan is a Literal — Pydantic rejects anything else with 422 before this function runs. Safe to delete or replace with a direct `plan = PLAN_CATALOG[body.plan]` lookup.",
+    "(Optional) Review request mentions `isLocked` for /api/shows/{id}, but backend actually uses `locked` — either alias the field for iOS clients or update the docstring. Not a bug; matches existing behaviour tested in previous iterations."
+  ],
+  "critical_code_review_comments": [
+    "rc_sync endpoint is well-scoped: no PII leakage, uses uuid for payment id, stamps createdAt in UTC ISO, and mirrors PLAN_CATALOG for consistency with other billing paths.",
+    "Note: rc_sync unconditionally trusts the client. This is called out in the docstring ('client hint' + 'ALWAYS reconcile against RevenueCat's authoritative state via the webhook'). Ensure the RevenueCat S2S webhook path is implemented before enabling ARR reporting — currently the code says 'pending_webhook' but no webhook handler is grep-able for provider='revenuecat' (only client sync). Follow-up for future iteration.",
+    "server.py is 4128 lines — well over the 700-line guideline. Recommend splitting into routers (auth, radio, billing, live, admin) in a dedicated refactor."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter34_rc_sync.py (new)"
+  ],
+  "success_rate": {"backend": "100% (11/11)", "frontend": "not tested (per request)"},
+  "seed_data_creation": "None. Test relies on admin OTP dev bypass (250794230137 / 123456) which idempotently upserts the admin user. Post-test the admin user is left as tier=premium with subscriptionExpiresAt ≈ +30d (last successful monthly sync). This does not affect production because MONGO_URL points to the local dev cluster.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Reuse /app/backend/tests/test_iter34_rc_sync.py to regress RevenueCat rc-sync. Endpoint: POST /api/subscription/rc-sync with body {plan: 'premium_monthly'|'premium_yearly', entitlement?: 'pro'} + bearer JWT. Success writes payments (provider=revenuecat, method=apple_iap, status=success, note=client_hint_pending_webhook) and updates users (tier=premium, subscriptionExpiresAt=+30d/+365d, currentPlan, provider=revenuecat). Note: /api/shows/{id} uses key `locked` not `isLocked`. Note: Pydantic Literal validation rejects any plan other than premium_{monthly,yearly} with 422 — the `if not plan: 400` branch inside rc_sync is unreachable.",
+  "rca_of_issue": "N/A — no bugs found. Only minor observation: review request predicted 400 for basic_monthly but implementation returns 422 due to Pydantic Literal (stricter, correct behaviour)."
+}

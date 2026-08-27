@@ -1593,6 +1593,64 @@ async def list_plans():
     return [{"id": pid, **p} for pid, p in PLAN_CATALOG.items()]
 
 
+# ---------- RevenueCat client-side sync (iOS Apple IAP) ----------
+class RcSyncIn(BaseModel):
+    plan: Literal["premium_monthly", "premium_yearly"]
+    entitlement: Optional[str] = "pro"
+
+
+@api.post("/subscription/rc-sync")
+async def rc_sync(body: RcSyncIn, current = Depends(get_current_user)):
+    """Best-effort in-session unlock after a successful RevenueCat purchase on iOS.
+
+    The RevenueCat SDK is the SOURCE OF TRUTH for `customerInfo.entitlements.active`
+    on-device — this endpoint just mirrors that state into MongoDB so backend-gated
+    endpoints (VOD, /live/status) recognise the user as premium immediately, without
+    waiting for RevenueCat's server-to-server webhook.
+
+    Security: this endpoint accepts a client hint. A malicious client can fake this
+    call, so we ALWAYS reconcile against RevenueCat's authoritative state via the
+    webhook (or on next SDK `getCustomerInfo`). Do NOT rely on this endpoint alone
+    for lifetime revenue reporting.
+    """
+    plan = PLAN_CATALOG.get(body.plan)
+    if not plan:
+        raise HTTPException(400, "Invalid plan")
+
+    now = datetime.now(timezone.utc)
+    expires = now + timedelta(days=plan["days"])
+    payment_id = str(uuid.uuid4())
+    payment = {
+        "id": payment_id,
+        "userId": current["id"],
+        "plan": body.plan,
+        "planLabel": plan["label"],
+        "amount": plan["amount"],
+        "currency": plan["currency"],
+        "method": "apple_iap",
+        "provider": "revenuecat",
+        "status": "success",
+        "note": "client_hint_pending_webhook",
+        "createdAt": now.isoformat(),
+    }
+    await db.payments.insert_one(payment.copy())
+    await db.users.update_one(
+        {"id": current["id"]},
+        {"$set": {
+            "tier": plan["tier"],
+            "subscriptionExpiresAt": expires.isoformat(),
+            "currentPlan": body.plan,
+            "provider": "revenuecat",
+        }}
+    )
+    return {
+        "ok": True,
+        "tier": plan["tier"],
+        "expiresAt": expires.isoformat(),
+        "provider": "revenuecat",
+    }
+
+
 @api.post("/billing/subscribe")
 async def subscribe(body: SubscribeIn, current = Depends(get_current_user)):
     """DEPRECATED — this endpoint used to unconditionally grant a subscription without

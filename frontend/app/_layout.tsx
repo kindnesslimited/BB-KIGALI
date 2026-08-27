@@ -13,9 +13,23 @@ import { AuthProvider, useAuth } from "@/src/context/auth";
 import { PlayerProvider } from "@/src/context/player";
 import { ErrorBoundary } from "@/src/components/ErrorBoundary";
 import { colors } from "@/src/theme";
+import {
+  AppQueryClientProvider,
+  SubscriptionProvider,
+  initializeRevenueCat,
+} from "@/src/lib/revenuecat";
 
 LogBox.ignoreAllLogs(true);
 SplashScreen.preventAutoHideAsync();
+
+// Module-scope: RevenueCat SDK must initialize exactly once before any
+// component renders. If keys are missing or the SDK is unavailable we log a
+// warning and continue — the paywall handles the "unavailable" fallback state.
+try {
+  initializeRevenueCat();
+} catch (err) {
+  console.warn("RevenueCat unavailable:", err);
+}
 
 function AuthGate({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -69,39 +83,43 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.surface }}>
       <SafeAreaProvider>
         <ErrorBoundary>
-          <AuthProvider>
-            <PlayerProvider>
-              <StatusBar style="light" />
-              <AuthGate>
-                <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.surface } }}>
-                  <Stack.Screen name="index" />
-                  <Stack.Screen name="onboarding" />
-                  <Stack.Screen name="auth/phone" />
-                  <Stack.Screen name="auth/otp" />
-                  <Stack.Screen name="(tabs)" />
-                  <Stack.Screen name="player" options={{ presentation: "modal" }} />
-                  <Stack.Screen name="video/[id]" />
-                  <Stack.Screen name="paywall" options={{ presentation: "modal" }} />
-                  <Stack.Screen name="checkout" options={{ presentation: "modal" }} />
-                  <Stack.Screen name="admin/index" />
-                  <Stack.Screen name="admin/settings" />
-                  <Stack.Screen name="admin/programs" />
-                  <Stack.Screen name="admin/shows" />
-                  <Stack.Screen name="admin/categories" />
-                  <Stack.Screen name="admin/users" />
-                  <Stack.Screen name="admin/sms" />
-                  <Stack.Screen name="admin/payments" />
-                  <Stack.Screen name="admin/schedule" />
-                <Stack.Screen name="admin/live-shows" />
-                <Stack.Screen name="admin/youtube-config" />
-                <Stack.Screen name="admin/cloudflare-stream" />
-                <Stack.Screen name="live" options={{ presentation: "fullScreenModal" }} />
-                  <Stack.Screen name="live-news" options={{ presentation: "modal" }} />
-                  <Stack.Screen name="program/[id]" />
-                </Stack>
-              </AuthGate>
-            </PlayerProvider>
-          </AuthProvider>
+          <AppQueryClientProvider>
+            <AuthProvider>
+              <SubscriptionProvider>
+                <PlayerProvider>
+                  <StatusBar style="light" />
+                  <AuthGate>
+                    <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.surface } }}>
+                      <Stack.Screen name="index" />
+                      <Stack.Screen name="onboarding" />
+                      <Stack.Screen name="auth/phone" />
+                      <Stack.Screen name="auth/otp" />
+                      <Stack.Screen name="(tabs)" />
+                      <Stack.Screen name="player" options={{ presentation: "modal" }} />
+                      <Stack.Screen name="video/[id]" />
+                      <Stack.Screen name="paywall" options={{ presentation: "modal" }} />
+                      <Stack.Screen name="checkout" options={{ presentation: "modal" }} />
+                      <Stack.Screen name="admin/index" />
+                      <Stack.Screen name="admin/settings" />
+                      <Stack.Screen name="admin/programs" />
+                      <Stack.Screen name="admin/shows" />
+                      <Stack.Screen name="admin/categories" />
+                      <Stack.Screen name="admin/users" />
+                      <Stack.Screen name="admin/sms" />
+                      <Stack.Screen name="admin/payments" />
+                      <Stack.Screen name="admin/schedule" />
+                    <Stack.Screen name="admin/live-shows" />
+                    <Stack.Screen name="admin/youtube-config" />
+                    <Stack.Screen name="admin/cloudflare-stream" />
+                    <Stack.Screen name="live" options={{ presentation: "fullScreenModal" }} />
+                      <Stack.Screen name="live-news" options={{ presentation: "modal" }} />
+                      <Stack.Screen name="program/[id]" />
+                    </Stack>
+                  </AuthGate>
+                </PlayerProvider>
+              </SubscriptionProvider>
+            </AuthProvider>
+          </AppQueryClientProvider>
         </ErrorBoundary>
       </SafeAreaProvider>
     </GestureHandlerRootView>
