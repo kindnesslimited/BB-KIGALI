@@ -101,6 +101,40 @@ export default function AdminPayments() {
     }
   };
 
+  // Owner business report — full KPI + revenue + subscribers + payments as a PDF.
+  const downloadPdfReport = async () => {
+    try {
+      const end = new Date();
+      const start = new Date(end.getTime() - days * 86400 * 1000);
+      const toIso = (d: Date) => d.toISOString().slice(0, 10);
+      const params = new URLSearchParams({ start: toIso(start), end: toIso(end) });
+      const token = await getToken();
+      const url = `${BACKEND_URL}/api/admin/reports/business.pdf?${params.toString()}`;
+      if (Platform.OS === "web") {
+        const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const blob = await r.blob();
+        const objUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = objUrl;
+        a.download = `bb-fm-business-report-${toIso(start)}_${toIso(end)}.pdf`;
+        document.body.appendChild(a); a.click();
+        setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(objUrl); }, 500);
+      } else {
+        const FileSystem = require("expo-file-system");
+        const Sharing = require("expo-sharing");
+        const target = `${FileSystem.cacheDirectory}bb-fm-business-report-${Date.now()}.pdf`;
+        const dl = await FileSystem.downloadAsync(url, target, { headers: { Authorization: `Bearer ${token}` } });
+        if (dl.status !== 200) throw new Error(`HTTP ${dl.status}`);
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(dl.uri, { UTI: "com.adobe.pdf", mimeType: "application/pdf" });
+        }
+      }
+    } catch (e: any) {
+      Alert.alert("PDF export failed", e?.message || "Please try again.");
+    }
+  };
+
   const load = async () => {
     try {
       const [s, p] = await Promise.all([
@@ -158,6 +192,10 @@ export default function AdminPayments() {
           <Pressable onPress={downloadCsv} hitSlop={8} testID="payments-csv" style={styles.csvBtn}>
             <Ionicons name="download-outline" size={16} color="#000" />
             <Text style={styles.csvBtnText}>CSV</Text>
+          </Pressable>
+          <Pressable onPress={downloadPdfReport} hitSlop={8} testID="payments-pdf" style={styles.pdfBtn}>
+            <Ionicons name="document-text-outline" size={16} color="#fff" />
+            <Text style={styles.pdfBtnText}>PDF</Text>
           </Pressable>
           <Pressable onPress={() => { setLoading(true); void load(); }} hitSlop={8} testID="payments-refresh">
             <Ionicons name="refresh" size={22} color={colors.brandPrimary} />
@@ -341,6 +379,8 @@ const styles = StyleSheet.create({
   },
   title: { ...type.h1, flex: 1, textAlign: "center", letterSpacing: 1.5 },
   csvBtn: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.brandPrimary, paddingHorizontal: 10, paddingVertical: 6, borderRadius: radius.pill },
+  pdfBtn: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.brandSecondary, paddingHorizontal: 10, paddingVertical: 6, borderRadius: radius.pill },
+  pdfBtnText: { color: "#fff", fontFamily: "BarlowCondensed-Bold", letterSpacing: 1.2, fontSize: 12 },
   csvBtnText: { color: "#000", fontFamily: "BarlowCondensed-Bold", letterSpacing: 1.5, fontSize: 11, fontWeight: "900" },
   windowSegment: {
     flexDirection: "row",

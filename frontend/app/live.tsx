@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { View, Text, StyleSheet, Pressable, ActivityIndicator, Platform } from "react-native";
+import { View, Text, StyleSheet, Pressable, ActivityIndicator, Platform, Linking } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -13,6 +13,7 @@ type LiveSession = {
   title?: string;
   thumbnail?: string;
   embedUrl: string;
+  watchUrl?: string;     // youtube.com/watch?v=<id> — used as a fallback if the embed is blocked (error 153)
   startedAt?: string;
 };
 
@@ -31,6 +32,7 @@ export default function LivePlayer() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [needsSub, setNeedsSub] = useState(false);
+  const [embedFailed, setEmbedFailed] = useState(false);
 
   useEffect(() => {
     if (!user) {
@@ -135,6 +137,7 @@ export default function LivePlayer() {
               allow="autoplay; encrypted-media; picture-in-picture"
               allowFullScreen
               style={{ border: 0 }}
+              title="BB Kigali live"
             />
           </View>
         ) : (
@@ -146,7 +149,34 @@ export default function LivePlayer() {
             mediaPlaybackRequiresUserAction={false}
             javaScriptEnabled
             domStorageEnabled
+            originWhitelist={["https://*.youtube.com", "https://*.youtu.be", "*"]}
+            onError={() => setEmbedFailed(true)}
+            onHttpError={(e) => {
+              const code = (e as any)?.nativeEvent?.statusCode;
+              if (code && code >= 400) setEmbedFailed(true);
+            }}
           />
+        )}
+        {/* Fallback overlay when embed is blocked (YouTube "video unavailable / error 153") */}
+        {embedFailed && (session.watchUrl || session.videoId) && (
+          <View style={styles.embedFail} testID="live-embed-fail">
+            <Ionicons name="alert-circle" size={38} color="#fff" />
+            <Text style={styles.embedFailTitle}>PLAYER BLOCKED</Text>
+            <Text style={styles.embedFailSub}>
+              This live stream can&apos;t be embedded inside the app right now. You can still watch it on YouTube.
+            </Text>
+            <Pressable
+              style={styles.gateBtn}
+              onPress={() => {
+                const url = session.watchUrl || `https://youtu.be/${session.videoId}`;
+                Linking.openURL(url).catch(() => {});
+              }}
+              testID="live-open-youtube"
+            >
+              <Ionicons name="logo-youtube" size={16} color="#000" />
+              <Text style={styles.gateBtnText}>WATCH ON YOUTUBE</Text>
+            </Pressable>
+          </View>
         )}
       </View>
       <View style={styles.meta}>
@@ -166,7 +196,17 @@ const styles = StyleSheet.create({
   livePill: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "#ff0000", paddingHorizontal: spacing.md, paddingVertical: 4, borderRadius: radius.pill },
   liveDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: "#fff" },
   livePillText: { color: "#fff", fontFamily: "BarlowCondensed-Bold", fontSize: 10, letterSpacing: 1.4 },
-  playerBox: { width: "100%", aspectRatio: 16 / 9, backgroundColor: "#000" },
+  playerBox: { width: "100%", aspectRatio: 16 / 9, backgroundColor: "#000", position: "relative" },
+  embedFail: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.92)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: spacing.lg,
+    gap: 8,
+  },
+  embedFailTitle: { color: "#fff", fontFamily: "BarlowCondensed-Bold", fontSize: 18, letterSpacing: 2, marginTop: 4 },
+  embedFailSub: { color: "rgba(255,255,255,0.75)", fontSize: 13, textAlign: "center", lineHeight: 18, maxWidth: 300 },
   iframeWrap: { flex: 1, backgroundColor: "#000", overflow: "hidden" },
   meta: { padding: spacing.lg, gap: 4 },
   title: { ...type.h1, fontSize: 18, color: "#fff" },

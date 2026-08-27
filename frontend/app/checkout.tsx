@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput, KeyboardAvoidingView, Platform, Modal } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -35,6 +35,11 @@ export default function Checkout() {
   const [stripeUrl, setStripeUrl] = useState<string | null>(null);
   const [stripeSessionId, setStripeSessionId] = useState<string | null>(null);
   const [suggestStripe, setSuggestStripe] = useState(false);
+  const [termsAccepted, setTermsAccepted] = useState(false);
+  const [terms, setTerms] = useState<{ version?: string; url?: string; privacyUrl?: string }>({});
+
+  // Fetch current Terms & Conditions version once for the page
+  useEffect(() => { void api<typeof terms>("/legal/terms/current").then(setTerms).catch(() => {}); }, []);
 
   const onPayPalNav = async (nav: WebViewNavigation) => {
     const url = nav.url || "";
@@ -138,8 +143,22 @@ export default function Checkout() {
   };
 
   const pay = async () => {
-    setErr(null); setLoading(true); setMomoStatus(null); setSuggestStripe(false);
+    setErr(null);
+    if (!termsAccepted) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+      setErr("Please accept the Terms & Conditions before continuing.");
+      return;
+    }
+    setLoading(true); setMomoStatus(null); setSuggestStripe(false);
     try {
+      // Record the acceptance server-side BEFORE we take any money.
+      try {
+        await api("/legal/terms/accept", {
+          method: "POST", auth: true,
+          body: { version: terms.version, context: "subscribe" },
+        });
+      } catch (e) { /* non-fatal; keep going — the acceptance is still logged in the UI */ }
+
       const chosen = METHODS.find((m) => m.id === method)!;
       if (chosen.needsPhone && phone.replace(/\D/g, "").length < 9) {
         throw new Error("Enter a valid phone number for mobile money");
@@ -463,14 +482,47 @@ export default function Checkout() {
             <Ionicons name="chevron-forward" size={20} color={colors.brandPrimary} />
           </Pressable>
         )}
+
+        {/* Terms & Conditions gate — required before any payment can be initiated */}
+        <Pressable
+          onPress={() => setTermsAccepted((v) => !v)}
+          style={[styles.termsRow, termsAccepted && styles.termsRowActive]}
+          testID="terms-checkbox"
+        >
+          <View style={[styles.termsBox, termsAccepted && styles.termsBoxChecked]}>
+            {termsAccepted && <Ionicons name="checkmark" size={16} color={colors.onBrandPrimary} />}
+          </View>
+          <Text style={styles.termsLabel}>
+            I have read and accept the{" "}
+            <Text style={styles.termsLink} onPress={() => {
+              const u = terms.url; if (u) Platform.OS === "web" ? window.open(u, "_blank") : import("expo-linking").then((L) => L.openURL(u));
+            }}>Terms & Conditions</Text>
+            {" "}and{" "}
+            <Text style={styles.termsLink} onPress={() => {
+              const u = terms.privacyUrl; if (u) Platform.OS === "web" ? window.open(u, "_blank") : import("expo-linking").then((L) => L.openURL(u));
+            }}>Privacy Policy</Text>
+            . I understand I am buying{" "}
+            <Text style={{ fontWeight: "700" }}>
+              {String(plan || "").replace("_", " ").toUpperCase()} — {displayAmount} {displayCurrency}
+            </Text>
+            . Access lasts exactly the plan period; expires automatically.
+          </Text>
+        </Pressable>
       </ScrollView>
 
       <View style={[styles.footer, { paddingBottom: insets.bottom + spacing.md }]}>
-        <Pressable onPress={pay} disabled={loading} style={[styles.payBtn, loading && { opacity: 0.6 }]} testID="pay-btn">
+        <Pressable
+          onPress={pay}
+          disabled={loading || !termsAccepted}
+          style={[styles.payBtn, (loading || !termsAccepted) && { opacity: 0.4 }]}
+          testID="pay-btn"
+        >
           {loading ? <ActivityIndicator color="#000" /> : (
             <>
               <Ionicons name="lock-closed" size={18} color="#000" />
-              <Text style={styles.payText}>PAY {displayAmount} {displayCurrency}</Text>
+              <Text style={styles.payText}>
+                {termsAccepted ? `PAY ${displayAmount} ${displayCurrency}` : "ACCEPT TERMS TO PAY"}
+              </Text>
             </>
           )}
         </Pressable>
@@ -520,6 +572,28 @@ const styles = StyleSheet.create({
   footer: { position: "absolute", left: 0, right: 0, bottom: 0, backgroundColor: colors.surface, borderTopWidth: 1, borderTopColor: colors.border, padding: spacing.lg },
   payBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, backgroundColor: colors.brandPrimary, height: 56, borderRadius: radius.md },
   payText: { ...type.h2, color: "#000", fontFamily: "BarlowCondensed-Bold", letterSpacing: 1.8, fontSize: 17, fontWeight: "900" },
+  // Terms & Conditions checkbox row
+  termsRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: spacing.sm,
+    marginTop: spacing.xl,
+    padding: spacing.md,
+    backgroundColor: colors.surfaceSecondary,
+    borderRadius: radius.md,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+  },
+  termsRowActive: { borderColor: colors.brandPrimary },
+  termsBox: {
+    width: 22, height: 22, borderRadius: 4,
+    borderWidth: 2, borderColor: colors.onSurfaceSecondary,
+    alignItems: "center", justifyContent: "center",
+    marginTop: 2,
+  },
+  termsBoxChecked: { backgroundColor: colors.brandPrimary, borderColor: colors.brandPrimary },
+  termsLabel: { ...type.caption, flex: 1, color: colors.onSurface, lineHeight: 16 },
+  termsLink: { color: colors.brandPrimary, textDecorationLine: "underline", fontWeight: "600" },
   successWrap: { flex: 1, backgroundColor: colors.surface, alignItems: "center", justifyContent: "center", padding: spacing.xl, gap: spacing.md },
   successIcon: { width: 100, height: 100, borderRadius: 50, backgroundColor: colors.brandPrimary, alignItems: "center", justifyContent: "center", marginBottom: spacing.lg },
   successTitle: { ...type.displayXL, letterSpacing: 2 },

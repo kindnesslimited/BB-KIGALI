@@ -40,7 +40,7 @@ from subscription_reminders import (
     reminder_loop as _sub_reminder_loop,
     run_reminder_pass as _sub_reminder_pass,
 )  # noqa: E402
-from admin_analytics import compute_dashboard as _admin_dashboard, revenue_series as _admin_revenue_series, render_receipt_pdf as _render_receipt_pdf  # noqa: E402
+from admin_analytics import compute_dashboard as _admin_dashboard, revenue_series as _admin_revenue_series, render_receipt_pdf as _render_receipt_pdf, render_business_report_pdf as _render_business_pdf  # noqa: E402
 import audit_log  # noqa: E402
 from fastapi import UploadFile, File
 from fastapi.responses import Response
@@ -59,13 +59,16 @@ JWT_ALG = "HS256"
 MOCK_OTP_CODE = "123456"
 YOUTUBE_LIVE_ID = "wPD77ygQKfo"
 YOUTUBE_LIVE_URL = f"https://www.youtube.com/watch?v={YOUTUBE_LIVE_ID}"
-YOUTUBE_EMBED_URL = f"https://www.youtube.com/embed/{YOUTUBE_LIVE_ID}?autoplay=1&playsinline=1&rel=0"
+YOUTUBE_EMBED_URL = f"https://www.youtube.com/embed/{YOUTUBE_LIVE_ID}?autoplay=1&playsinline=1&rel=0&enablejsapi=1&origin=https%3A%2F%2Fweb.bbkigali.com"
 DEMO_AUDIO_STREAM = os.environ.get("RADIO_STREAM_URL", "http://radio.bbkigali.com:8080/stream").strip()
 # HTTPS mirror — some clients (iOS ATS, browser mixed-content on https pages) refuse HTTP streams.
 # If a customer configures an HTTPS proxy in the ADMIN settings we use it, otherwise we send the
 # HTTP URL and clients that can play HTTP (Android + native iOS with ATS exception) will still work.
 DEMO_AUDIO_STREAM_HTTPS = os.environ.get("RADIO_STREAM_URL_HTTPS", "").strip()
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "https://radio-vod-platform.preview.emergentagent.com")
+# Public-facing WEB URL (used in Terms links, PDF footers, etc). Defaults to the
+# custom domain configured for BB FM Kigali.
+PUBLIC_WEB_URL = os.environ.get("PUBLIC_WEB_URL", "https://web.bbkigali.com")
 EMERGENT_AUTH_SESSION_URL = os.environ.get(
     "EMERGENT_AUTH_SESSION_URL",
     "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
@@ -191,6 +194,10 @@ class UserOut(BaseModel):
     tier: Literal["free", "basic", "premium"] = "free"
     role: Literal["user", "admin"] = "user"
     subscriptionExpiresAt: Optional[str] = None
+    currentPlan: Optional[str] = None
+    provider: Optional[str] = None
+    termsAcceptedAt: Optional[str] = None
+    termsVersion: Optional[str] = None
 
 
 class GoogleSessionIn(BaseModel):
@@ -311,6 +318,10 @@ def user_public(u: dict) -> dict:
         "tier": u.get("tier", "free"),
         "role": u.get("role", "user"),
         "subscriptionExpiresAt": u.get("subscriptionExpiresAt"),
+        "currentPlan": u.get("currentPlan"),
+        "provider": u.get("provider"),
+        "termsAcceptedAt": u.get("termsAcceptedAt"),
+        "termsVersion": u.get("termsVersion"),
     }
 
 
@@ -1033,7 +1044,7 @@ async def live_status(refresh: bool = False, user = Depends(get_optional_user)):
     vid = result["videoId"]
     if _has_active_paid_sub(user):
         result["watchUrl"] = f"https://www.youtube.com/watch?v={vid}"
-        result["embedUrl"] = f"https://www.youtube.com/embed/{vid}?autoplay=1&playsinline=1&rel=0&modestbranding=1"
+        result["embedUrl"] = f"https://www.youtube.com/embed/{vid}?autoplay=1&playsinline=1&rel=0&modestbranding=1&enablejsapi=1&origin=https%3A%2F%2Fweb.bbkigali.com"
         result["requiresSubscription"] = False
         return result
     return _sanitize_live_for_public(result)
@@ -1054,7 +1065,8 @@ async def live_session(user = Depends(get_current_user)):
         "videoId": vid,
         "title": result.get("title"),
         "thumbnail": result.get("thumbnail"),
-        "embedUrl": f"https://www.youtube.com/embed/{vid}?autoplay=1&playsinline=1&rel=0&modestbranding=1",
+        "embedUrl": f"https://www.youtube.com/embed/{vid}?autoplay=1&playsinline=1&rel=0&modestbranding=1&enablejsapi=1&origin=https%3A%2F%2Fweb.bbkigali.com",
+        "watchUrl": f"https://www.youtube.com/watch?v={vid}",
         "startedAt": result.get("startedAt"),
     }
 
@@ -1461,7 +1473,7 @@ async def list_public_live_shows(user = Depends(get_optional_user)):
         if is_sub:
             safe["recordingUrl"] = it.get("recordingUrl") or ""
             if it.get("youtubeVideoId"):
-                safe["youtubeEmbedUrl"] = f"https://www.youtube.com/embed/{it['youtubeVideoId']}?autoplay=1&playsinline=1&rel=0&modestbranding=1"
+                safe["youtubeEmbedUrl"] = f"https://www.youtube.com/embed/{it['youtubeVideoId']}?autoplay=1&playsinline=1&rel=0&enablejsapi=1&origin=https%3A%2F%2Fweb.bbkigali.com&modestbranding=1&enablejsapi=1&origin=https%3A%2F%2Fweb.bbkigali.com"
             safe["requiresSubscription"] = False
         else:
             safe["requiresSubscription"] = True
@@ -1735,6 +1747,168 @@ async def list_plans():
 class RcSyncIn(BaseModel):
     plan: Literal["premium_monthly", "premium_yearly"]
     entitlement: Optional[str] = "pro"
+
+
+# ---------- Terms & Conditions acceptance ----------
+TERMS_CURRENT_VERSION = "2026-08-27"
+
+
+class TermsAcceptIn(BaseModel):
+    version: Optional[str] = None
+    context: Optional[str] = "subscribe"
+
+
+@api.post("/legal/terms/accept")
+async def accept_terms(body: TermsAcceptIn, user = Depends(get_current_user)):
+    """Records the user's explicit Terms & Conditions acceptance."""
+    now = datetime.now(timezone.utc).isoformat()
+    version = body.version or TERMS_CURRENT_VERSION
+    ev = {
+        "id": str(uuid.uuid4()),
+        "userId": user["id"],
+        "version": version,
+        "context": body.context or "subscribe",
+        "at": now,
+    }
+    await db.terms_acceptances.insert_one(ev.copy())
+    await db.users.update_one({"id": user["id"]}, {"$set": {
+        "termsAcceptedAt": now,
+        "termsVersion": version,
+    }})
+    return {"ok": True, "version": version, "acceptedAt": now}
+
+
+@api.get("/legal/terms/current")
+async def get_current_terms():
+    return {
+        "version": TERMS_CURRENT_VERSION,
+        "url": f"{PUBLIC_WEB_URL}/terms.html",
+        "privacyUrl": f"{PUBLIC_WEB_URL}/privacy.html",
+    }
+
+
+# ---------- Payment reconciliation (safety net) ----------
+async def _reconcile_user_payments(user_id: str) -> dict:
+    """Idempotent — walks every non-final payment for this user and asks each
+    provider if it's now completed. Grants access when a provider confirms
+    'paid'. This is the safety net for the classic 'customer paid but got no
+    access' failure mode (e.g. webhook lost, WebView closed early, network drop
+    between success URL and app)."""
+    granted: list = []
+    checked = 0
+    now = datetime.now(timezone.utc)
+
+    # 1) Stripe pending checkout sessions
+    if stripe:
+        async for p in db.payments.find({
+            "userId": user_id,
+            "stripeSessionId": {"$exists": True, "$ne": None},
+            "status": {"$in": ["pending", "created", "processing", None]},
+        }):
+            sid = p.get("stripeSessionId")
+            if not sid:
+                continue
+            checked += 1
+            try:
+                session = stripe.checkout.Session.retrieve(sid)
+                if getattr(session, "payment_status", "") == "paid":
+                    await _stripe_grant_from_session(session)
+                    granted.append({"provider": "stripe", "session": sid})
+                elif getattr(session, "status", "") == "expired":
+                    await db.payments.update_one({"stripeSessionId": sid}, {"$set": {"status": "failed"}})
+            except Exception as e:
+                logger.warning("[reconcile] stripe session %s failed: %s", sid, e)
+
+    # 2) PayPal pending subscriptions
+    async for p in db.payments.find({
+        "userId": user_id,
+        "method": {"$in": ["paypal", None]},
+        "reference": {"$exists": True, "$ne": None},
+        "status": {"$in": ["pending", "created", None]},
+    }):
+        ref = (p.get("reference") or "")
+        if not ref.startswith("I-"):  # PayPal subscription ids look like I-xxxxxxxxxx
+            continue
+        checked += 1
+        try:
+            res = await _paypal_verify_and_grant(ref, user_id)
+            if res.get("status") == "success":
+                granted.append({"provider": "paypal", "sub": ref})
+        except Exception as e:
+            logger.warning("[reconcile] paypal %s failed: %s", ref, e)
+
+    # 3) MoMo pending references
+    async for p in db.payments.find({
+        "userId": user_id,
+        "method": "mtn_momo",
+        "status": {"$in": ["pending", "processing", "created", None]},
+    }):
+        checked += 1
+        try:
+            besoft_id = p.get("besoftTxId")
+            if not besoft_id:
+                continue
+            async with httpx.AsyncClient(timeout=15.0, verify=BESOFT_VERIFY_SSL) as c:
+                r = await c.get(f"{BESOFT_BASE_URL}/public/payments/{besoft_id}/status", headers=_besoft_headers())
+            if r.status_code != 200:
+                continue
+            data = (r.json().get("data") or {}) if isinstance(r.json(), dict) else {}
+            raw = (data.get("status") or "").lower()
+            new_status = "success" if raw in ("success", "completed") else \
+                         "failed"  if raw in ("failed", "reversed", "expired", "cancelled") else \
+                         "processing" if raw == "processing" else "pending"
+            if new_status == p.get("status"):
+                continue
+            await db.payments.update_one(
+                {"reference": p["reference"]},
+                {"$set": {"status": new_status, "besoftStatusPayload": data, "updatedAt": now.isoformat()}},
+            )
+            if new_status == "success":
+                plan = PLAN_CATALOG.get(p["plan"]) if p.get("plan") else None
+                if plan:
+                    expires = now + timedelta(days=plan["days"])
+                    await db.users.update_one(
+                        {"id": user_id},
+                        {"$set": {
+                            "tier": plan["tier"],
+                            "subscriptionExpiresAt": expires.isoformat(),
+                            "currentPlan": p["plan"],
+                            "provider": "mtn_momo",
+                        }},
+                    )
+                    u = await db.users.find_one({"id": user_id}, {"_id": 0, "phone": 1}) or {}
+                    await _send_payment_receipt(
+                        user_id=user_id, phone=p.get("phone") or u.get("phone"),
+                        plan_label=plan.get("label", p["plan"]),
+                        amount=plan.get("amount", p.get("amount")),
+                        currency=plan.get("currency", p.get("currency", "RWF")),
+                        provider="MTN MoMo", reference=p["reference"],
+                    )
+                    granted.append({"provider": "mtn_momo", "ref": p["reference"]})
+        except Exception as e:
+            logger.warning("[reconcile] momo %s failed: %s", p.get("reference"), e)
+
+    return {"checked": checked, "granted": granted, "at": now.isoformat()}
+
+
+@api.post("/subscription/reconcile")
+async def subscription_reconcile(user = Depends(get_current_user)):
+    """Public reconciliation endpoint — safe to call anytime.
+
+    The mobile / web client calls this on app boot AND after any payment flow
+    completes, so a customer who paid but lost the callback still lands with
+    `tier=basic|premium` before the paywall re-renders."""
+    result = await _reconcile_user_payments(user["id"])
+    u = await db.users.find_one({"id": user["id"]}, {"_id": 0})
+    u = await _tier_refresh(u)
+    return {
+        **result,
+        "user": {
+            "tier": u.get("tier", "free"),
+            "subscriptionExpiresAt": u.get("subscriptionExpiresAt"),
+            "currentPlan": u.get("currentPlan"),
+        },
+    }
 
 
 @api.post("/subscription/rc-sync")
@@ -2331,6 +2505,11 @@ async def paypal_create(body: PayPalCreateIn, user = Depends(get_current_user)):
 @api.post("/billing/paypal/verify/{subscription_id}")
 async def paypal_verify(subscription_id: str, user = Depends(get_current_user)):
     """Called by the app after the WebView redirects back on approval — polls PayPal for real status."""
+    return await _paypal_verify_and_grant(subscription_id, user["id"])
+
+
+async def _paypal_verify_and_grant(subscription_id: str, user_id: str) -> dict:
+    """Idempotent — verify PayPal subscription, upsert payment record, grant user tier."""
     token = await _paypal_token()
     async with httpx.AsyncClient(timeout=30.0) as c:
         r = await c.get(
@@ -2338,12 +2517,12 @@ async def paypal_verify(subscription_id: str, user = Depends(get_current_user)):
             headers={"Authorization": f"Bearer {token}"},
         )
     if r.status_code >= 300:
-        raise HTTPException(502, f"PayPal fetch subscription failed: {r.text}")
+        return {"status": "pending", "reason": f"paypal_http_{r.status_code}"}
     data = r.json()
     status_raw = (data.get("status") or "").upper()
-    payment = await db.payments.find_one({"reference": subscription_id, "userId": user["id"]}, {"_id": 0})
+    payment = await db.payments.find_one({"reference": subscription_id, "userId": user_id}, {"_id": 0})
     if not payment:
-        raise HTTPException(404, "Payment record not found")
+        return {"status": "unknown", "reason": "no_local_payment"}
     final_status = "success" if status_raw in ("ACTIVE", "APPROVED") else \
                    "failed"  if status_raw in ("CANCELLED", "EXPIRED", "SUSPENDED") else "pending"
     await db.payments.update_one(
@@ -2354,11 +2533,12 @@ async def paypal_verify(subscription_id: str, user = Depends(get_current_user)):
         pm = PLAN_META[payment["plan"]]
         expires = datetime.now(timezone.utc) + timedelta(days=pm["days"])
         await db.users.update_one(
-            {"id": user["id"]},
-            {"$set": {"tier": pm["tier"], "subscriptionExpiresAt": expires.isoformat(), "currentPlan": payment["plan"]}},
+            {"id": user_id},
+            {"$set": {"tier": pm["tier"], "subscriptionExpiresAt": expires.isoformat(), "currentPlan": payment["plan"], "provider": "paypal"}},
         )
+        u = await db.users.find_one({"id": user_id}, {"_id": 0, "phone": 1}) or {}
         await _send_payment_receipt(
-            user_id=user["id"], phone=user.get("phone"),
+            user_id=user_id, phone=u.get("phone"),
             plan_label=pm.get("label", payment["plan"]),
             amount=payment.get("amount", pm.get("amount")),
             currency=payment.get("currency", "EUR"),
@@ -2719,7 +2899,7 @@ async def admin_put_settings(body: AdminSettingsIn, _ = Depends(require_admin)):
         if vid:
             reflect["youtubeVideoId"] = vid
             reflect["youtubeWatchUrl"] = body.youtubeLiveUrl
-            reflect["youtubeEmbedUrl"] = f"https://www.youtube.com/embed/{vid}?autoplay=1&playsinline=1&rel=0"
+            reflect["youtubeEmbedUrl"] = f"https://www.youtube.com/embed/{vid}?autoplay=1&playsinline=1&rel=0&enablejsapi=1&origin=https%3A%2F%2Fweb.bbkigali.com"
             reflect["coverImage"] = f"https://img.youtube.com/vi/{vid}/maxresdefault.jpg"
     if body.radioStreamUrl:
         reflect["streamUrl"] = body.radioStreamUrl
@@ -2887,6 +3067,111 @@ async def admin_subscriptions_report(status: Literal["active", "expired", "all"]
     for u in users:
         u["status"] = "active" if (u.get("subscriptionExpiresAt") or "") > now_iso else "expired"
     return users
+
+
+# ==================== ADMIN BUSINESS REPORT PDF ====================
+@api.get("/admin/reports/business.pdf")
+async def admin_business_report_pdf(
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    _ = Depends(require_admin),
+):
+    """Downloadable owner business report (PDF).
+
+    ?start=YYYY-MM-DD&end=YYYY-MM-DD (both optional; defaults to last 30 days).
+    Returns application/pdf with KPIs + revenue table + subscribers + payments.
+    """
+    try:
+        end_dt = datetime.fromisoformat(end).replace(tzinfo=timezone.utc) if end else datetime.now(timezone.utc)
+    except Exception:
+        raise HTTPException(400, "Invalid `end` date, use YYYY-MM-DD")
+    try:
+        start_dt = datetime.fromisoformat(start).replace(tzinfo=timezone.utc) if start else end_dt - timedelta(days=30)
+    except Exception:
+        raise HTTPException(400, "Invalid `start` date, use YYYY-MM-DD")
+    if end_dt < start_dt:
+        raise HTTPException(400, "`end` must be after `start`")
+
+    range_label = f"{start_dt.strftime('%Y-%m-%d')} → {end_dt.strftime('%Y-%m-%d')}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    start_iso = start_dt.isoformat()
+    end_iso = end_dt.isoformat()
+
+    # KPIs
+    total_users = await db.users.count_documents({})
+    active_subs = await db.users.count_documents({
+        "tier": {"$in": ["basic", "premium"]},
+        "subscriptionExpiresAt": {"$gt": now_iso},
+    })
+    expired_subs = await db.users.count_documents({
+        "tier": {"$in": ["basic", "premium"]},
+        "subscriptionExpiresAt": {"$lte": now_iso},
+    })
+    period_q = {"createdAt": {"$gte": start_iso, "$lte": end_iso}}
+    tx_success = await db.payments.count_documents({**period_q, "status": "success"})
+    tx_pending = await db.payments.count_documents({**period_q, "status": {"$in": ["pending", "processing", "created"]}})
+    tx_failed = await db.payments.count_documents({**period_q, "status": {"$in": ["failed", "cancelled", "expired"]}})
+
+    # Revenue split by currency (EUR / RWF)
+    rev_eur_pipeline = [
+        {"$match": {**period_q, "status": "success", "currency": "EUR"}},
+        {"$group": {"_id": None, "sum": {"$sum": "$amount"}}},
+    ]
+    rev_rwf_pipeline = [
+        {"$match": {**period_q, "status": "success", "currency": "RWF"}},
+        {"$group": {"_id": None, "sum": {"$sum": "$amount"}}},
+    ]
+    rev_eur_agg = await db.payments.aggregate(rev_eur_pipeline).to_list(1)
+    rev_rwf_agg = await db.payments.aggregate(rev_rwf_pipeline).to_list(1)
+
+    kpis = {
+        "totalUsers": total_users,
+        "activeSubscribers": active_subs,
+        "expiredSubscribers": expired_subs,
+        "purchases": tx_success,
+        "txSuccess": tx_success,
+        "txPending": tx_pending,
+        "txFailed": tx_failed,
+        "revenueEur": (rev_eur_agg[0]["sum"] if rev_eur_agg else 0),
+        "revenueRwf": (rev_rwf_agg[0]["sum"] if rev_rwf_agg else 0),
+    }
+
+    # Revenue rows — reuse the existing analytics helper with day granularity, filter to range
+    days_span = max(1, (end_dt - start_dt).days + 1)
+    revenue_rows = await _admin_revenue_series(db, granularity="day", days=days_span)
+
+    # Subscribers list (active + expired within the period end)
+    subs_docs = await db.users.find(
+        {"tier": {"$in": ["basic", "premium"]}},
+        {"_id": 0, "id": 1, "displayName": 1, "phone": 1, "email": 1,
+         "tier": 1, "currentPlan": 1, "subscriptionExpiresAt": 1, "provider": 1},
+    ).sort("subscriptionExpiresAt", -1).to_list(200)
+    for u in subs_docs:
+        u["status"] = "active" if (u.get("subscriptionExpiresAt") or "") > now_iso else "expired"
+
+    # Payments in range — enrich with a friendly customer label
+    payment_docs = await db.payments.find(
+        {"createdAt": {"$gte": start_iso, "$lte": end_iso}},
+        {"_id": 0},
+    ).sort("createdAt", -1).to_list(500)
+    if payment_docs:
+        user_ids = list({p.get("userId") for p in payment_docs if p.get("userId")})
+        user_map = {}
+        if user_ids:
+            async for u in db.users.find({"id": {"$in": user_ids}}, {"_id": 0, "id": 1, "displayName": 1, "phone": 1}):
+                user_map[u["id"]] = u.get("displayName") or u.get("phone") or u["id"]
+        for p in payment_docs:
+            p["customerLabel"] = user_map.get(p.get("userId"), (p.get("userId") or "")[:10])
+
+    pdf_bytes = await run_in_threadpool(
+        _render_business_pdf, range_label, kpis, revenue_rows, subs_docs, payment_docs
+    )
+    filename = f"bb-fm-business-report-{start_dt.strftime('%Y%m%d')}-{end_dt.strftime('%Y%m%d')}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @api.get("/admin/audit-log")

@@ -1,0 +1,48 @@
+{
+  "summary": "Iteration 36 backend testing complete for the payment/access-reliability layer. 15/16 assertions PASS, 1 SKIP (station not currently live, spec allows 404), 1 FAIL — a real regression: GET /api/auth/me strips the four new fields (currentPlan, provider, termsAcceptedAt, termsVersion) because the Pydantic `UserOut` response_model (server.py:188) was never updated to include them. Verified working end-to-end: (1) /subscription/reconcile 401 unauth + 200 auth with {checked:0, granted:[], user:{tier,expiresAt,currentPlan}}; (2) /legal/terms/current returns version + url + privacyUrl all pointing at web.bbkigali.com; (3) /legal/terms/accept 401 unauth + 200 auth with empty body — stamps users.termsAcceptedAt/termsVersion AND inserts a terms_acceptances doc with context='subscribe'; (4) /admin/reports/business.pdf → 401 unauth, 403 non-admin, 200 admin returns application/pdf with %PDF- magic + attachment Content-Disposition + 9.7KB body, 400 on start=hello, 400 on end<start; (5) Regression radio/now-playing unauth hides streamUrl+requiresSubscription=true; /radio/token JWT decodes with pur='radio_stream'; /subscription/rc-sync premium_monthly returns tier=premium; /subscription/reconcile immediately after shows user.tier='premium'. Live /live/session was skipped because YouTube is not currently live (404 is acceptable per spec). No deprecated Expo packages checked (frontend testing skipped per request).",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/auth/me",
+        "issue": "Pydantic response_model=UserOut (server.py:188 & server.py:635) filters out the 4 new fields — currentPlan, provider, termsAcceptedAt, termsVersion. `user_public()` (server.py:307-321) already returns them, but Pydantic strips anything not in UserOut before serialization. Result: after login the frontend can read the 4 fields from AuthOut.user (dict passthrough), but a subsequent /auth/me refresh will silently drop them, forcing the paywall to re-appear for premium users and breaking the new Terms-acceptance UI. Same issue applies to PATCH /auth/me (server.py:708).",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter36_payments_and_legal.py",
+    "/app/test_reports/pytest/pytest_iter36.xml"
+  ],
+  "action_items": [
+    "FIX (HIGH): update `UserOut` in server.py:188 to declare the 4 new optional fields — `currentPlan: Optional[str] = None`, `provider: Optional[str] = None`, `termsAcceptedAt: Optional[str] = None`, `termsVersion: Optional[str] = None`. OR simpler: remove `response_model=UserOut` on both /auth/me handlers (server.py:635 and server.py:708) so the dict from user_public() passes through untouched — this is the pattern already used by /auth/otp/verify (AuthOut.user: dict). Once fixed, re-run TestAuthMeShape::test_all_new_fields_present.",
+    "NICE-TO-HAVE: /live/session was skipped in this iteration because @bbkigalifm isn't live at test time. Consider adding a `mockLive` admin override for CI or seeding a fake live session record so this assertion actually executes.",
+    "OBSERVE: /live/status (line 1043) contains a duplicated query string suffix `&modestbranding=1&enablejsapi=1&origin=...` — the params are repeated. Not a functional bug (query string params dedupe in most clients) but cosmetically noisy in the URL."
+  ],
+  "critical_code_review_comments": [
+    "server.py:1787-1887 (_reconcile_user_payments) is well-structured — three isolated provider blocks (Stripe / PayPal / MoMo), each wrapped in try/except so one provider's failure never aborts reconciliation of the others. `granted` accumulates events per provider — good structure for observability.",
+    "server.py:1826 filters PayPal payments to `ref.startswith('I-')` to match subscription IDs — correct heuristic, but any pending order (O-…) or captured payment id (PAYID-…) will be silently skipped. Not a bug for the current UX flow (only subscriptions use reconcile), but a lurking gap if you later reconcile one-time orders.",
+    "server.py:1801 only reconciles Stripe payments where `stripeSessionId` exists — the guard is correct, but if `stripe` client init failed at module import (e.g. missing STRIPE_SECRET_KEY) then the whole Stripe leg silently no-ops. Consider logging once at startup.",
+    "server.py:1043 has an accidental duplication of `enablejsapi=1&origin=...` in the /live/status embedUrl — safe but should be cleaned up.",
+    "server.py:1064 (in /live/session) sets `origin=https%3A%2F%2Fweb.bbkigali.com` correctly (single copy) — mismatched with the /live/status line above; keep both in sync.",
+    "server.py:188 UserOut model is now stale — see HIGH-priority issue.",
+    "server.py:3069-3170 (admin business PDF) validates start/end + returns proper 400 messages, sets correct Content-Disposition, and awaits pdf render via run_in_threadpool — clean.",
+    "server.py:1769 terms_acceptances document uses uuid4 id and stores context — good for audit purposes.",
+    "server.py:1743-1774 no rate-limiting on /legal/terms/accept — a malicious client can spam the collection. Low priority; consider adding a per-user upsert instead of `insert_one` if audit history isn't required (currently it IS — every accept is a distinct log entry which is arguably correct)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter36_payments_and_legal.py (new)"
+  ],
+  "success_rate": {"backend": "93.75% (15/16 assertions, 1 SKIP for live-off, 1 FAIL for /auth/me shape)", "frontend": "not tested (skipped per request)"},
+  "seed_data_creation": "Test uses admin phone 250794230137 (already seeded as admin). A fresh non-admin phone +250788555777 is auto-created via the OTP challenge (mongo challenge doc is read directly since WhatsApp actually delivers SMS successfully for that number and no testCode is returned). Test file is idempotent: /legal/terms/accept can be called multiple times (each call inserts a new acceptance doc); /subscription/rc-sync is idempotent (same-day re-application).",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Canonical regression file for this layer is /app/backend/tests/test_iter36_payments_and_legal.py. It uses pymongo (MONGO_URL/DB_NAME env) to read fresh OTP challenges for non-admin phone numbers (WhatsApp actually delivers so testCode is not returned). Run with `-p no:xdist -o addopts=''` to bypass the xdist race condition on the shared otp_challenges collection (fixtures otherwise consume each other's OTPs). The single FAIL (TestAuthMeShape::test_all_new_fields_present) is a REAL backend bug — do not silence the assertion; fix UserOut or drop response_model=UserOut on /auth/me and PATCH /auth/me. TestLiveSession will SKIP whenever the station is not currently live on YouTube — that is expected. If it starts unexpectedly returning 200, verify enablejsapi=1 + origin= are both in embedUrl and that watchUrl matches https://www.youtube.com/watch?v=<videoId>.",
+  "rca_of_issue": "REAL BUG — GET /api/auth/me missing new fields. RCA: `user_public()` was correctly extended (server.py:317-320) to emit currentPlan/provider/termsAcceptedAt/termsVersion, but the `UserOut` pydantic model (server.py:188) that FastAPI uses as response_model was NOT extended in the same commit. FastAPI's response_model=UserOut coercion strips any dict key not declared on the model. Reproduction: (1) `POST /api/auth/otp/verify` returns AuthOut.user with all 10 fields (because AuthOut.user is `dict`, no filtering). (2) `GET /api/auth/me` returns UserOut with only 8 fields — the 4 new fields silently vanish. Mitigation: either (a) add the 4 optional fields to UserOut, or (b) delete `response_model=UserOut` on both /auth/me GET (line 635) and PATCH (line 708) so the dict passes through unchanged. Option (a) is safer type-wise; option (b) matches the pattern already used elsewhere for user payloads."
+}

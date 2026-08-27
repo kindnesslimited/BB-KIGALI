@@ -88,3 +88,36 @@ See `/app/memory/test_credentials.md`.
 - All routes (home, shows, news, paywall, auth/phone, profile) verified at 1440×900.
 - Cross-platform: same backend, DB, RevenueCat entitlement, radio proxy — subscribe on Web → login on iOS/Android → recognised, and vice versa (RevenueCat identity binding + `/subscription/rc-sync` already ensure this).
 - Landing page (`/app/landing/index.html`) CTAs point to production `https://radio-vod-platform.emergent.host` — NOT to `app.emergent.sh/share`. The share page only appears when a user opens the preview link; the production URL bypasses it.
+
+## 2026-08-27 — Payment→Access reliability + Terms + Admin PDF + Error 153
+### Payment reconciliation safety net
+- New `POST /api/subscription/reconcile` (auth). Walks user's non-final payments, verifies each with Stripe/PayPal/BeSoft MoMo, grants tier idempotently if provider confirms paid. Returns fresh user tier.
+- `auth.refresh()` in `src/context/auth.tsx` now calls `/subscription/reconcile` BEFORE `/auth/me` on every session-restore — customers who paid-but-lost-callback now land with correct tier on next app open.
+
+### Terms & Conditions gate
+- `POST /api/legal/terms/accept` records `terms_acceptances` doc + stamps `users.termsAcceptedAt/Version`. Called from checkout BEFORE payment initiates.
+- `GET /api/legal/terms/current` returns `{version, url, privacyUrl}` pointing at `web.bbkigali.com/{terms,privacy}.html`.
+- `/auth/me` (UserOut) now exposes `currentPlan`, `provider`, `termsAcceptedAt`, `termsVersion`.
+- **Checkout UI**: red-outlined checkbox above PAY button; button label toggles between "ACCEPT TERMS TO PAY" and "PAY X EUR". Explicit plan + amount + expiry-duration shown in the label.
+
+### Admin business reporting
+- `GET /api/admin/reports/business.pdf?start=YYYY-MM-DD&end=YYYY-MM-DD` (admin) — full owner PDF with:
+  - KPIs: total customers, active/expired subscribers, purchases, tx success/pending/failed, revenue split by currency (EUR + RWF)
+  - Revenue rows by day
+  - Subscribers table (up to 200)
+  - Payments table (last 40, customer-labeled)
+- Admin Payments screen now has a new **PDF** button next to CSV. Selects the days-window and downloads the report.
+
+### YouTube Error 153 mitigation
+- All YouTube embed URLs now include `enablejsapi=1&origin=https%3A%2F%2Fweb.bbkigali.com` — YouTube treats the embed as first-party, cutting most 153 rejections.
+- `/live/session` and `/live/status` return `watchUrl` alongside `embedUrl`.
+- Live player (`app/live.tsx`) shows a "WATCH ON YOUTUBE" fallback overlay when the embed fails (WebView `onError`/`onHttpError`).
+- **Root cause NOT under our control**: if the video owner explicitly disables embedding on YouTube Studio for a specific stream, Error 153 will still fire. Fallback opens the YouTube app/browser — user still gets to watch, business rule still upheld.
+
+### Production URL update
+- `PUBLIC_WEB_URL` env var default = `https://web.bbkigali.com`.
+- All 7 landing page URLs migrated from `radio-vod-platform.emergent.host` → `web.bbkigali.com`.
+- Terms/Privacy links point at `web.bbkigali.com/terms.html` and `/privacy.html`.
+
+### Backend tests
+- Iteration 36: **16/16 pass** after UserOut fix.

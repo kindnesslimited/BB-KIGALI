@@ -62,6 +62,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const tok = await getToken();
     if (!tok) { setUser(null); return; }
     try {
+      // Best-effort: reconcile any pending payments BEFORE loading /auth/me so
+      // customers who paid-but-lost-callback get their tier applied immediately.
+      try {
+        await api<{ granted: unknown[] }>("/subscription/reconcile", { method: "POST", auth: true });
+      } catch { /* non-fatal — /auth/me will still return the current state */ }
       const u = await api<User>("/auth/me", { auth: true });
       setUser(u);
     } catch {
