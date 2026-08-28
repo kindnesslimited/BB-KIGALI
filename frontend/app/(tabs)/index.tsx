@@ -105,7 +105,7 @@ export default function Home() {
           <View style={{ flex: 1 }}>
             <Text style={styles.hello}>Muraho{user?.displayName ? `, ${user.displayName}` : ""}</Text>
             <Text style={styles.brand}>{settings.stationName?.toUpperCase() || "B&B KIGALI"} {settings.frequency || "89.7 FM"}</Text>
-            <Text style={styles.tagline}>{settings.stationTagline || "#MuriSiporonIgitego"}</Text>
+            <Text style={styles.tagline}>{settings.stationTagline || "MURI SPORTS, NI IGITEGO!"}</Text>
           </View>
         )}
         {user?.role === "admin" && (
@@ -120,7 +120,7 @@ export default function Home() {
       </View>
       )}
       {settings.logoUrl && !isWideDesktop && (
-        <Text style={styles.taglineOnly}>Muraho{user?.displayName ? `, ${user.displayName}` : ""} · {settings.stationTagline || "#MuriSiporonIgitego"}</Text>
+        <Text style={styles.taglineOnly}>Muraho{user?.displayName ? `, ${user.displayName}` : ""} · {settings.stationTagline || "MURI SPORTS, NI IGITEGO!"}</Text>
       )}
 
       {/* YouTube LIVE detection banner — appears automatically when @bbkigalifm is live */}

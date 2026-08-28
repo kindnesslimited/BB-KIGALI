@@ -47,7 +47,7 @@ export function DesktopHeader() {
           </View>
           <View>
             <Text style={styles.brandTitle}>BB FM KIGALI</Text>
-            <Text style={styles.brandTagline}>89.7 FM · #MuriSiporoIgitego</Text>
+            <Text style={styles.brandTagline}>89.7 FM · MURI SPORTS, NI IGITEGO!</Text>
           </View>
         </Pressable>
 

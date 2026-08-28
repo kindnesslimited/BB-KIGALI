@@ -103,7 +103,7 @@ class TestSettings:
         j = r.json()
         assert j.get("stationName") == "B&B Kigali", f"stationName={j.get('stationName')}"
         assert j.get("frequency") == "89.7 FM", f"frequency={j.get('frequency')}"
-        assert j.get("tagline") == "#MuriSiporonIgitego" or j.get("stationTagline") == "#MuriSiporonIgitego", (
+        assert j.get("tagline") == "MURI SPORTS, NI IGITEGO!" or j.get("stationTagline") == "MURI SPORTS, NI IGITEGO!", (
             f"tagline={j.get('tagline')} stationTagline={j.get('stationTagline')}"
         )
 

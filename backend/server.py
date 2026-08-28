@@ -4473,7 +4473,7 @@ async def seed():
         await db.settings.insert_one({
             "key": "global",
             "stationName": "B&B Kigali",
-            "stationTagline": "#MuriSiporonIgitego",
+            "stationTagline": "MURI SPORTS, NI IGITEGO!",
             "frequency": "89.7 FM",
             "logoUrl": None,
             "radioStreamUrl": DEMO_AUDIO_STREAM,
@@ -4486,12 +4486,12 @@ async def seed():
         news = [
             {"id": str(uuid.uuid4()), "title": "B&B Kigali 89.7 FM launches new mobile app",
              "excerpt": "Listen live, watch VOD, and subscribe from your phone.",
-             "body": "Today, B&B Kigali 89.7 FM proudly launches its brand new mobile app. #MuriSiporonIgitego — Listen live, watch on-demand videos, subscribe to premium, and follow every match from anywhere.",
+             "body": "Today, B&B Kigali 89.7 FM proudly launches its brand new mobile app. MURI SPORTS, NI IGITEGO! — Listen live, watch on-demand videos, subscribe to premium, and follow every match from anywhere.",
              "thumbnail": "https://images.pexels.com/photos/28435464/pexels-photo-28435464.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
              "publishedAt": now.isoformat()},
             {"id": str(uuid.uuid4()), "title": "BBSPORTSTALK returns for a new season",
              "excerpt": "The most-watched sports program is back with weekly deep dives.",
-             "body": "BBSPORTSTALK is back — with more analysis, more guests, and more #MuriSiporonIgitego. Tune in live every week or catch every episode on demand inside this app.",
+             "body": "BBSPORTSTALK is back — with more analysis, more guests, and more MURI SPORTS, NI IGITEGO!. Tune in live every week or catch every episode on demand inside this app.",
              "thumbnail": "https://images.pexels.com/photos/26447525/pexels-photo-26447525.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
              "publishedAt": (now - timedelta(hours=5)).isoformat()},
             {"id": str(uuid.uuid4()), "title": "B&B SPORTS BAR — new episode this Friday",

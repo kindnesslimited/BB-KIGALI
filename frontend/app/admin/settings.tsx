@@ -58,7 +58,7 @@ export default function AdminSettings() {
       </View>
       <ScrollView contentContainerStyle={{ padding: spacing.lg, paddingBottom: 160 }} testID="admin-settings">
         <Field label="Station name" value={data.stationName || ""} onChange={setField("stationName")} placeholder="B&B Kigali" testID="input-station-name" />
-        <Field label="Tagline" value={data.stationTagline || ""} onChange={setField("stationTagline")} placeholder="#MuriSiporonIgitego" testID="input-tagline" />
+        <Field label="Tagline" value={data.stationTagline || ""} onChange={setField("stationTagline")} placeholder="MURI SPORTS, NI IGITEGO!" testID="input-tagline" />
         <Field label="Frequency" value={data.frequency || ""} onChange={setField("frequency")} placeholder="89.7 FM" testID="input-frequency" />
         <Field label="Logo URL" value={data.logoUrl || ""} onChange={setField("logoUrl")} placeholder="https://..." testID="input-logo-url" />
 
