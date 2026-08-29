@@ -243,11 +243,11 @@ export default function Home() {
               <Text style={type.bodyMuted}>No slots scheduled yet.</Text>
             </View>
           )}
-          {sortedSchedule.map((s) => {
+          {sortedSchedule.map((s, idx) => {
             const showFeatured = !!s.featured && !s.isLive;
             const hasReminder = !!reminders[s.id];
             return (
-              <View key={s.id} style={[styles.schedCard, s.isLive && styles.schedCardLive, showFeatured && styles.schedCardFeatured, s.coverImage && { padding: 0, overflow: "hidden" }]}>
+              <View key={`${s.id}-${idx}`} style={[styles.schedCard, s.isLive && styles.schedCardLive, showFeatured && styles.schedCardFeatured, s.coverImage && { padding: 0, overflow: "hidden" }]}>
                 <Pressable
                   onPress={() => { if (s.isLive) router.push("/player"); }}
                   style={{ flex: 1 }}

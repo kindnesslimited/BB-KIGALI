@@ -86,6 +86,8 @@ android-sdk/
 credentials.json
 *.key
 .credentials
-.env
-.env.*
-*.env
+# Note: Emergent deploys rely on frontend/.env and backend/.env being present.
+# We only ignore LOCAL-ONLY overrides, never the committed .env used by the container.
+.env.local
+.env.development.local
+.env.production.local

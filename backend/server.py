@@ -66,10 +66,10 @@ DEMO_AUDIO_STREAM = os.environ.get("RADIO_STREAM_URL", "http://radio.bbkigali.co
 # If a customer configures an HTTPS proxy in the ADMIN settings we use it, otherwise we send the
 # HTTP URL and clients that can play HTTP (Android + native iOS with ATS exception) will still work.
 DEMO_AUDIO_STREAM_HTTPS = os.environ.get("RADIO_STREAM_URL_HTTPS", "").strip()
-PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "https://radio-vod-platform.preview.emergentagent.com")
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
 # Public-facing WEB URL (used in Terms links, PDF footers, etc). Defaults to the
-# custom domain configured for BB FM Kigali.
-PUBLIC_WEB_URL = os.environ.get("PUBLIC_WEB_URL", "https://web.bbkigali.com")
+# custom domain configured for BB FM Kigali. Override via env in production.
+PUBLIC_WEB_URL = os.environ.get("PUBLIC_WEB_URL", "https://web.bbkigali.com").rstrip("/")
 EMERGENT_AUTH_SESSION_URL = os.environ.get(
     "EMERGENT_AUTH_SESSION_URL",
     "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",

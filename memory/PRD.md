@@ -150,3 +150,23 @@ Two bugs blocked desktop login:
 2. `wrangler login && wrangler deploy && wrangler secret put SHARED_SECRET`
 3. Paste the Worker URL + secret into backend/.env → restart backend
 4. `videos/status` will flip to `ready: true` — VOD playback endpoint starts serving signed URLs
+
+## 2026-08-28 — Final production readiness + build handoff
+- **Full test pass**: iteration_37 → **40/40 backend + 6/6 web frontend PASS**. Every business rule (auth, terms gate, subscription payment→access reconciliation, radio subscription gate, admin PDF, cross-platform entitlement sync) verified.
+- Fixed 2 low-priority React warnings (deprecated `pointerEvents` prop, duplicate key in schedule map).
+- Cleaned deployment health check:
+  - Removed hardcoded preview URL fallback from `PUBLIC_BASE_URL` — env-only now.
+  - Added `PUBLIC_WEB_URL` to `.env` for terms/privacy link generation.
+  - Narrowed `.gitignore` so `frontend/.env` and `backend/.env` are no longer excluded.
+- **Blockers/warns from deployment_agent**:
+  - `react-native-purchases` config plugin FALSE POSITIVE — package uses autolinking, no `app.plugin.js`. Adding it as a plugin crashes Metro.
+  - `/api/videos/*` "unsupported stack" FALSE POSITIVE — Cloudflare Worker is external optional infrastructure like Stripe, endpoint gracefully returns 503 when unconfigured. Non-blocking.
+- Slogan **MURI SPORTS, NI IGITEGO!** now persisted in DB + returned by `/api/settings`.
+
+## Build & Publish workflow (user action)
+1. Click **Publish** (top-right of workspace) → generates production build served at `radio-vod-platform.emergent.host`.
+2. Point `web.bbkigali.com` CNAME → the Emergent host.
+3. In Emergent workspace → **Generate Build** → pick platform:
+   - **Android**: downloads `.apk` (side-load / real device test) + `.aab` (Play Console upload).
+   - **iOS**: requires Apple Developer login → submits to TestFlight.
+4. Apple IAP only works in TestFlight/App Store builds — never in Expo Go.

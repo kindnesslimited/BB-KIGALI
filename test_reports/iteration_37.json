@@ -1,0 +1,40 @@
+{
+  "summary": "Iteration 37 FULL PRODUCTION READINESS test — 40 backend tests PASS, 1 SKIP (station not currently live on YouTube), 0 FAIL + all 6 web frontend flows verified at 1440×900 (H38 slogan, H39 LOG IN→/auth/phone, H40 OTP screen w/ 'Demo mode — use code 123456', H41 auto-submit → home with logged-in user +250794230137 shown, H42 SUBSCRIBE opens paywall showing BASIC 1€ / PREMIUM 3€ Monthly/Yearly plans, H43 landing/index.html has 7 web.bbkigali.com refs, 0 app.emergent.sh/share, slogan present). Backend coverage — A(auth: 4 admin phone formats all promoted to admin+valid JWT, non-admin OTP via mongo challenge, /auth/me returns all 9 fields incl. currentPlan/provider/termsAcceptedAt/termsVersion, stateless-logout), B(legal terms current+accept, rc-sync premium_monthly→tier=premium+30d expiry, reconcile shape, 4 billing plans, Stripe create-checkout returns sessionId+stripe.com checkoutUrl reachable via httpx, PayPal returns I- subscriptionId + paypal.com approveUrl, MoMo BeSoft initiate+poll), C(radio unauth/free hides streamUrl+requiresSubscription=true, premium gets streamUrl/streamUrlHttps/proxyStreamUrl=/api/radio/live?token=…, /radio/token JWT pur='radio_stream', /radio/live streams ≥8KB audio/mpeg in <8s, forged token pur='other' → 401, RADIO_STREAM_URL_HTTPS=stream.bbkigali.com), D(/live/status hides watchUrl unauth; premium /live/status embedUrl has single enablejsapi=1 + single origin=https%3A%2F%2Fweb.bbkigali.com (no duplication regression — fixed since iter36), /videos/status ready=false+subdomain=null as CF worker not deployed, /videos/{id}/playback unauth→401, premium→404/503), E(shows array strips videoUrl/streamUrl/hlsUrl for free users, premium sees full detail, free sees locked=true+unlockPrice), F(admin analytics dashboard 200/non-admin 403, subscriptions?status=all list, payments summary, payments list, payments CSV export with headers, business.pdf %PDF- >3KB), G(all public endpoints 200, /api/settings.stationTagline exact-match 'MURI SPORTS, NI IGITEGO!'). All 43 numbered items in the review request PASS or SKIP with justification. No critical or high-priority issues found — iter36's UserOut regression has been resolved. Production readiness: GO.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "all (web)", "issues": ["React key warning ('Encountered two children with the same key') fires repeatedly across screens — harmless but should be traced to a .map() without stable keys in the home/schedule component. Non-blocking for prod."]}
+    ],
+    "react_native_issues": [
+      {"component": "web preview console", "issue": "Warning: 'props.pointerEvents is deprecated. Use style.pointerEvents' — one component still passes pointerEvents as a top-level prop. Non-blocking, but flagged for a future cleanup. Reference: search codebase for pointerEvents= and move to style={{pointerEvents}}."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter37_production_readiness.py",
+    "/app/test_reports/pytest/pytest_iter37.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: fix React duplicate-key warning (see console). Not a blocker for launch — likely a shows or schedule list rendering with id collisions or missing keyExtractor.",
+    "OPTIONAL: migrate remaining `pointerEvents` prop usage to `style.pointerEvents` (RN deprecation warning).",
+    "OPTIONAL: seed a fake live YouTube session in dev to make /live/session assertion actually execute in CI instead of SKIP.",
+    "OBSERVE (iter36 leftover already fixed but keep an eye on): /live/status embedUrl now contains exactly one occurrence each of enablejsapi=1 and origin=… — regression cleared."
+  ],
+  "critical_code_review_comments": [
+    "server.py:188 UserOut was updated to include the 4 new fields — /auth/me now correctly returns all 9 keys (id, phone, tier, role, subscriptionExpiresAt, currentPlan, provider, termsAcceptedAt, termsVersion). Iter36 HIGH issue is CLOSED.",
+    "server.py:3923 StripeCheckoutIn correctly requires purchase_type — clients that omit it get a clear 422 with pydantic detail. Good defensive shape.",
+    "server.py:1043-1064 /live/status and /live/session both emit origin=https%3A%2F%2Fweb.bbkigali.com exactly once each — matches spec (single param, correct origin for postMessage-based JS API).",
+    "test_iter37_production_readiness.py sends OTP for non-admin phones which triggers real WhatsApp/SMS delivery (SMS_DEV_RETURN_CODE=true still returns testCode only for admin phones in .env logic). Fallback reads mongo.otp_challenges — safe and idempotent.",
+    "Landing page /app/landing/index.html: 7 occurrences of web.bbkigali.com, 0 occurrences of app.emergent.sh/share, slogan 'MURI SPORTS, NI IGITEGO!' present twice — meets spec."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter37_production_readiness.py (new)"
+  ],
+  "success_rate": {"backend": "100% (40/40 executed, 1 skipped for live-off)", "frontend": "100% (6/6 web flows verified at 1440×900)"},
+  "seed_data_creation": "Uses admin phone 250794230137 (already seeded admin via ADMIN_PHONES env). Fresh non-admin phones (+250780111*) auto-created on OTP challenge; test reads code via mongo.otp_challenges (server stores E.164 form). Idempotent across runs.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "test_iter37_production_readiness.py runs against http://localhost:8001 by default (override via EXPO_BACKEND_URL/PUBLIC_BASE_URL). Run with `-p no:xdist -o addopts=''` to bypass xdist race on shared otp_challenges collection. TestLiveVideo::test_D24_live_session SKIPS when @bbkigalifm is not live — expected. All Stripe/PayPal/MoMo endpoints require purchase_type='subscription' for stripe.",
+  "rca_of_issue": "N/A — no failures on iter37. Iter36 HIGH-priority /auth/me shape regression has been resolved; TestAuth::test_A4 confirms all 9 fields now present. Production-readiness status: GO."
+}

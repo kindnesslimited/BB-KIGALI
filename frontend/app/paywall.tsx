@@ -300,7 +300,7 @@ export default function Paywall() {
       </Modal>
 
       {rcBusyLabel && !isPurchasing && !isRestoring && (
-        <View style={styles.toast} pointerEvents="none">
+        <View style={[styles.toast, { pointerEvents: "none" }]}>
           <Text style={styles.toastText}>{rcBusyLabel}</Text>
         </View>
       )}

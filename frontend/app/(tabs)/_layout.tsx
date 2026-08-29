@@ -97,7 +97,7 @@ export default function TabsLayout() {
           tabBarButtonTestID: "tab-profile",
         }} />
       </Tabs>
-      <View pointerEvents="box-none" style={[styles.mpWrap, { bottom: barHeight + spacing.xs }]}>
+      <View style={[styles.mpWrap, { bottom: barHeight + spacing.xs, pointerEvents: "box-none" }]}>
         <MiniPlayer />
       </View>
       </View>
