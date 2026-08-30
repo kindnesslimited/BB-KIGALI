@@ -170,3 +170,18 @@ Two bugs blocked desktop login:
    - **Android**: downloads `.apk` (side-load / real device test) + `.aab` (Play Console upload).
    - **iOS**: requires Apple Developer login → submits to TestFlight.
 4. Apple IAP only works in TestFlight/App Store builds — never in Expo Go.
+
+## 2026-08-28 — Web Agent Integration handoff
+- Wrote `/app/memory/web_agent_integration.md` — full contract for the Web agent:
+  - Single FastAPI + Mongo backend is source of truth
+  - Base URL, auth flow (phone OTP + Google + Apple), all subscription endpoints, reconciliation safety net, content endpoints, admin endpoints, data model, E2E checklist
+  - Explicit "do NOT create a second system" clause and mapping of what to import (theme, terms, privacy, slogan) vs. what to rebuild in web UI
+- E2E health check just ran — all green:
+  - `/api/health` → ok (db, stripe, sms providers)
+  - `/api/settings.stationTagline` = "MURI SPORTS, NI IGITEGO!"
+  - 4 subscription plans returned
+  - Radio gate enforced for unauth users (streamUrl hidden, requiresSubscription=true)
+  - `/api/videos/status` → `{ready: false}` (Cloudflare Worker not deployed yet — graceful)
+  - Admin login with all phone formats returns 188-char JWT, `/auth/me` returns all 9 fields
+  - Reconciliation processed 16 pending payments, tier=premium confirmed
+  - Business PDF 6012 bytes, `%PDF-` magic present
