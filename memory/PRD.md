@@ -185,3 +185,15 @@ Two bugs blocked desktop login:
   - Admin login with all phone formats returns 188-char JWT, `/auth/me` returns all 9 fields
   - Reconciliation processed 16 pending payments, tier=premium confirmed
   - Business PDF 6012 bytes, `%PDF-` magic present
+
+## 2026-08-30 — Web Admin API Contract handed off
+- Wrote `/app/memory/web_admin_api_contract.md` — complete `/api/admin/*` reference for the Web agent covering:
+  - Auth flow (JWT via existing `/auth/otp/verify` for admin phones)
+  - 13 categories of endpoints (analytics, exports, users, content, uploads, settings, YouTube, Cloudflare, reminders, SMS, audit)
+  - Real response shapes taken directly from a live curl against localhost — dashboard already returns per-method + per-currency breakdown (RWF + EUR) and success/pending/failed counters
+  - CSV + PDF export URLs with date-range filtering
+  - Rules the Web admin MUST follow (single source of truth, no direct Mongo writes, do not recompute aggregations client-side)
+- Verified 3 endpoints live from the current backend before publishing the doc:
+  - `/admin/analytics/dashboard` → returns breakdownByMethod + revenue by currency
+  - `/admin/payments/summary` → byMethod with per-currency revenue
+  - `/admin/reports/business.pdf` → 6KB PDF, valid `%PDF-` magic
