@@ -1999,13 +1999,19 @@ async def rc_sync(body: RcSyncIn, current = Depends(get_current_user)):
     now = datetime.now(timezone.utc)
     expires = now + timedelta(days=plan["days"])
     payment_id = str(uuid.uuid4())
+    # Apple IAP + Google Play IAP both bill in the user's local currency but we
+    # priced the RevenueCat products in EUR (€3 / €30), so record EUR in the
+    # payment log — that's what the customer sees on their receipt and what
+    # matches the Stripe/PayPal Premium price. This keeps mixed-currency totals
+    # honest instead of silently converting to RWF.
+    plan_amount_eur = 3.0 if body.plan == "premium_monthly" else 30.0
     payment = {
         "id": payment_id,
         "userId": current["id"],
         "plan": body.plan,
         "planLabel": plan["label"],
-        "amount": plan["amount"],
-        "currency": plan["currency"],
+        "amount": plan_amount_eur,
+        "currency": "EUR",
         "method": "apple_iap",
         "provider": "revenuecat",
         "status": "success",
@@ -2616,7 +2622,12 @@ async def _paypal_verify_and_grant(subscription_id: str, user_id: str) -> dict:
 
 @api.post("/billing/paypal/webhook")
 async def paypal_webhook(request: Request):
-    """Public webhook — configure this URL in PayPal Dashboard → Apps & Credentials → Webhooks."""
+    """Public webhook — configure this URL in PayPal Dashboard → Apps & Credentials → Webhooks.
+
+    Signature verification is enforced when PAYPAL_WEBHOOK_ID is set in the backend .env.
+    When unset (dev), we log a warning and still process — this makes local testing painless
+    but MUST be configured in production; check `/api/health` for `paypal.webhook_verified`.
+    """
     raw = await request.body()
     try:
         payload = await request.json()
@@ -2672,6 +2683,250 @@ async def paypal_webhook(request: Request):
         await db.payments.update_one({"reference": sub_id}, {"$set": {"status": "failed", "providerPayload": payload, "updatedAt": datetime.now(timezone.utc).isoformat()}})
         await db.users.update_one({"id": payment["userId"]}, {"$set": {"tier": "free"}})
     return {"ok": True}
+
+
+@api.get("/billing/paypal/return", response_class=HTMLResponse)
+async def paypal_return(request: Request):
+    """PayPal redirects the customer back here after they approve the subscription
+    on paypal.com. We extract the subscription id from the query string (PayPal
+    uses `subscription_id`, some checkout variants use `token`/`ba_token`),
+    verify + grant against our backend, then render a small HTML page that either:
+      • Redirects the user back to the app deep link (`bbfmkigali://checkout/success`) if opened from mobile;
+      • Bounces to `PUBLIC_WEB_URL/checkout/success` for web customers.
+    Reviewers hitting this URL manually see the plain success screen so it is
+    NEVER a dead-end (fixing the previous 404 at bbkigali.com/paypal/success).
+    """
+    params = dict(request.query_params)
+    sub_id = params.get("subscription_id") or params.get("ba_token") or params.get("token")
+    granted = False
+    reason: Optional[str] = None
+    if sub_id:
+        pmt = await db.payments.find_one({"reference": sub_id}, {"_id": 0})
+        if pmt:
+            try:
+                res = await _paypal_verify_and_grant(sub_id, pmt["userId"])
+                granted = res.get("status") == "success"
+                if not granted:
+                    reason = res.get("status") or "pending"
+            except Exception as e:
+                reason = f"verify_error: {e}"
+        else:
+            reason = "no_local_payment"
+    else:
+        reason = "no_subscription_id_in_return"
+
+    title = "Payment received" if granted else "Almost there…"
+    body = (
+        "Your Premium subscription is active. You can close this page and return to the BB FM Kigali app."
+        if granted else
+        "Thanks — we got your PayPal confirmation. Your subscription will activate as soon as PayPal notifies us "
+        "(usually within a minute). If it doesn't unlock automatically, open the app and pull to refresh."
+    )
+    web_success = f"{PUBLIC_WEB_URL}/checkout/success?ok={'1' if granted else '0'}"
+    deep_link = f"bbfmkigali://checkout/success?sub={sub_id or ''}&ok={'1' if granted else '0'}"
+    return HTMLResponse(f"""
+      <!doctype html><html lang="en"><head><meta charset="utf-8" />
+      <title>BB FM Kigali — {title}</title>
+      <meta name="viewport" content="width=device-width,initial-scale=1" />
+      <style>
+        body {{ margin:0; font-family:-apple-system,Segoe UI,Roboto,sans-serif; background:#0b0b0b; color:#fff; min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; }}
+        .card {{ max-width:400px; background:#151515; border:1px solid #2a2a2a; border-radius:16px; padding:32px; text-align:center; }}
+        .ok {{ color:#3ddc84; font-size:44px; }}
+        .wait {{ color:#e10600; font-size:44px; }}
+        h1 {{ font-size:22px; margin:8px 0 12px; }}
+        p {{ color:#bbb; line-height:1.5; }}
+        a.btn {{ display:inline-block; margin-top:20px; background:#e10600; color:#fff; padding:14px 22px; border-radius:8px; text-decoration:none; font-weight:700; }}
+      </style></head>
+      <body><div class="card">
+        <div class="{ 'ok' if granted else 'wait'}">{'✓' if granted else '…'}</div>
+        <h1>{title}</h1>
+        <p>{body}</p>
+        <a class="btn" href="{deep_link}">RETURN TO APP</a>
+        <p style="margin-top:20px;font-size:12px;color:#666">
+          Ref: {sub_id or 'none'} · Status: {'granted' if granted else (reason or 'pending')}
+        </p>
+      </div>
+      <script>
+        // Try to open the app deep link automatically on mobile. Fallback to web after 1.5s.
+        setTimeout(function() {{
+          try {{ window.location.replace("{deep_link}"); }} catch (e) {{}}
+          setTimeout(function() {{ window.location.replace("{web_success}"); }}, 1500);
+        }}, 400);
+      </script>
+      </body></html>
+    """)
+
+
+@api.get("/billing/paypal/cancel", response_class=HTMLResponse)
+async def paypal_cancel():
+    """User cancelled or closed the PayPal window."""
+    return HTMLResponse(f"""
+      <!doctype html><html><head><meta charset="utf-8" /><title>BB FM Kigali — Cancelled</title>
+      <style>body{{margin:0;font-family:sans-serif;background:#0b0b0b;color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;text-align:center}}</style>
+      </head><body><div><h1>Payment cancelled</h1><p>No worries — you can restart the subscription any time from the app.</p>
+      <a style="background:#e10600;color:#fff;padding:14px 22px;border-radius:8px;text-decoration:none" href="bbfmkigali://checkout/cancelled">RETURN TO APP</a></div>
+      <script>setTimeout(function(){{location.href="{PUBLIC_WEB_URL}/paywall";}}, 600);</script>
+      </body></html>
+    """)
+
+
+@api.post("/admin/paypal/reconcile-stranded")
+async def paypal_reconcile_stranded(_ = Depends(require_admin)):
+    """Admin-only: find PayPal payments still `pending`/`created` locally and
+    ask PayPal for the authoritative status. Any that PayPal now reports as
+    ACTIVE/APPROVED get promoted to `status=success` and grant the user tier.
+    Idempotent — safe to run any time."""
+    granted: list = []
+    async for p in db.payments.find({
+        "method": {"$in": ["paypal", None]},
+        "reference": {"$regex": "^I-"},
+        "status": {"$in": ["pending", "created", None]},
+    }, {"_id": 0, "reference": 1, "userId": 1}):
+        try:
+            res = await _paypal_verify_and_grant(p["reference"], p["userId"])
+            if res.get("status") == "success":
+                granted.append({"sub": p["reference"], "user": p["userId"]})
+        except Exception as e:
+            logger.warning("[paypal-reconcile] %s failed: %s", p.get("reference"), e)
+    return {"ok": True, "granted": granted, "grantedCount": len(granted)}
+
+
+@api.post("/webhooks/revenuecat")
+async def revenuecat_webhook(request: Request):
+    """Server-to-server RevenueCat webhook — authoritative source of truth for
+    Apple / Google in-app purchases. Configure in RevenueCat Dashboard →
+    Integrations → Webhooks → point at `$PUBLIC_BASE_URL/api/webhooks/revenuecat`
+    and set the Authorization header to `Bearer $REVENUECAT_WEBHOOK_SECRET`.
+
+    We accept these RC event types:
+      INITIAL_PURCHASE, RENEWAL, PRODUCT_CHANGE, UNCANCELLATION → grant tier
+      NON_RENEWING_PURCHASE → grant tier (one-off)
+      EXPIRATION, CANCELLATION, BILLING_ISSUE → revoke tier (soft — expiry-driven)
+      TRANSFER → move the entitlement to the new app_user_id
+
+    We identify the customer via `app_user_id` which the mobile client sets to
+    the BB FM Kigali user id via `Purchases.logIn(user.id)` on every auth path.
+    The write goes to the SAME `payments` + `users` collections used by Stripe /
+    PayPal / MoMo — mobile and web see one entitlement, exactly what the spec
+    requires. Idempotent by `event.id`.
+    """
+    # Signature check — reject unauthenticated callbacks.
+    secret = os.environ.get("REVENUECAT_WEBHOOK_SECRET", "").strip()
+    if secret:
+        auth = (request.headers.get("authorization") or "").strip()
+        if auth != f"Bearer {secret}":
+            raise HTTPException(401, "invalid webhook secret")
+
+    try:
+        payload = await request.json()
+    except Exception:
+        return {"ok": False, "error": "invalid_json"}
+    event = payload.get("event") or {}
+    ev_id = event.get("id")
+    ev_type = event.get("type")
+    if not ev_id or not ev_type:
+        return {"ok": False, "error": "missing fields"}
+    if await db.rc_events.find_one({"id": ev_id}, {"_id": 0}):
+        return {"ok": True, "note": "duplicate"}
+    await db.rc_events.insert_one({
+        "id": ev_id, "type": ev_type,
+        "at": datetime.now(timezone.utc).isoformat(),
+        "payload": event,
+    })
+
+    user_id = event.get("app_user_id") or event.get("original_app_user_id")
+    if not user_id:
+        return {"ok": True, "note": "no app_user_id"}
+    # Ignore RevenueCat anonymous ids ("$RCAnonymousID:...") — client should
+    # always `Purchases.logIn(user.id)` before purchase.
+    if isinstance(user_id, str) and user_id.startswith("$RCAnonymousID:"):
+        return {"ok": True, "note": "anonymous_id_ignored"}
+
+    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user:
+        return {"ok": True, "note": "user_not_found"}
+
+    product_id = event.get("product_id") or ""
+    is_yearly = "yearly" in product_id.lower() or "annual" in product_id.lower() or "$rc_annual" in product_id
+    plan_key = "premium_yearly" if is_yearly else "premium_monthly"
+    plan = PLAN_CATALOG.get(plan_key, {})
+
+    grants = {"INITIAL_PURCHASE", "RENEWAL", "PRODUCT_CHANGE", "UNCANCELLATION", "NON_RENEWING_PURCHASE"}
+    revokes = {"EXPIRATION", "CANCELLATION", "BILLING_ISSUE", "SUBSCRIPTION_PAUSED"}
+
+    if ev_type in grants:
+        expiration_ms = event.get("expiration_at_ms")
+        try:
+            expires = datetime.fromtimestamp(int(expiration_ms) / 1000, tz=timezone.utc) if expiration_ms \
+                      else datetime.now(timezone.utc) + timedelta(days=plan.get("days", 30))
+        except Exception:
+            expires = datetime.now(timezone.utc) + timedelta(days=plan.get("days", 30))
+        # Idempotency-by-purchase: skip if user already has a strictly-later
+        # expiration on the same plan (RC sends periodic renewals; only forward).
+        current_expiry = user.get("subscriptionExpiresAt") or ""
+        if current_expiry and current_expiry >= expires.isoformat() and user.get("tier") in ("basic", "premium"):
+            return {"ok": True, "note": "already_active_longer"}
+
+        # Never re-charge a paid user — write payments row that reflects RC only.
+        price = float(event.get("price") or (3.0 if plan_key == "premium_monthly" else 30.0))
+        currency = (event.get("currency") or "EUR").upper()
+        await db.payments.insert_one({
+            "id": str(uuid.uuid4()),
+            "userId": user_id,
+            "reference": event.get("transaction_id") or event.get("id"),
+            "plan": plan_key,
+            "planLabel": plan.get("label", plan_key),
+            "amount": price,
+            "currency": currency,
+            "method": "apple_iap" if "apple" in (event.get("store") or "").lower() else "google_iap",
+            "provider": "revenuecat",
+            "status": "success",
+            "eventType": ev_type,
+            "productId": product_id,
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+        })
+        await db.users.update_one(
+            {"id": user_id},
+            {"$set": {
+                "tier": "premium",
+                "subscriptionExpiresAt": expires.isoformat(),
+                "currentPlan": plan_key,
+                "provider": "revenuecat",
+            }},
+        )
+        await _send_payment_receipt(
+            user_id=user_id, phone=user.get("phone"),
+            plan_label=plan.get("label", plan_key),
+            amount=price, currency=currency,
+            provider="Apple / Google IAP", reference=event.get("transaction_id", ""),
+        )
+    elif ev_type in revokes:
+        # RevenueCat sends EXPIRATION at the moment the sub actually lapses.
+        # Downgrade only if the local expiry is not already in the future
+        # (renewal can arrive before expiry event out of order).
+        expiry = user.get("subscriptionExpiresAt") or ""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        if not expiry or expiry <= now_iso:
+            await db.users.update_one({"id": user_id}, {"$set": {"tier": "free"}})
+    return {"ok": True, "event": ev_type, "user": user_id}
+
+
+@api.get("/subscription/status")
+async def subscription_status(user = Depends(get_current_user)):
+    """Fresh check for the client — returns the current tier + expiry.
+    Client should call this before showing an Apple/Google purchase sheet so a
+    user who already has an active sub from ANY platform isn't re-charged.
+    """
+    u = await _tier_refresh(await db.users.find_one({"id": user["id"]}, {"_id": 0}) or user)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    active = u.get("tier") in ("basic", "premium") and (u.get("subscriptionExpiresAt") or "") > now_iso
+    return {
+        "active": active,
+        "tier": u.get("tier", "free"),
+        "subscriptionExpiresAt": u.get("subscriptionExpiresAt"),
+        "currentPlan": u.get("currentPlan"),
+        "provider": u.get("provider"),
+    }
 
 
 @api.get("/billing/paypal/config")

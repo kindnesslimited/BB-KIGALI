@@ -89,6 +89,28 @@ function useSubscriptionContext() {
     mutationFn: async (packageToPurchase: PurchasesPackage) => {
       const id = (await Purchases.getCustomerInfo()).originalAppUserId;
       if (id.startsWith("$RCAnonymousID:")) throw new Error("identity_not_ready");
+
+      // Guard: never charge someone who already has an active subscription on
+      // ANY platform (Stripe/PayPal/MoMo/other IAP). This is what "one purchase,
+      // any platform, unlocks everywhere" looks like on the mobile side.
+      try {
+        const { api } = await import("../api");
+        const status = await api<{ active: boolean; tier?: string; subscriptionExpiresAt?: string }>(
+          "/subscription/status",
+          { auth: true },
+        );
+        if (status?.active) {
+          throw new Error(
+            `You already have an active ${status.tier || "premium"} subscription until ${(status.subscriptionExpiresAt || "").slice(0, 10)}. No need to buy again.`,
+          );
+        }
+      } catch (e: any) {
+        // If the pre-flight check itself failed AND it wasn't the "already active"
+        // guard message, proceed with the purchase (better UX than blocking on a
+        // network hiccup — RevenueCat webhook + reconcile still keeps state honest).
+        if (String(e?.message || "").startsWith("You already have an active")) throw e;
+      }
+
       const { customerInfo } = await Purchases.purchasePackage(packageToPurchase);
       return customerInfo;
     },

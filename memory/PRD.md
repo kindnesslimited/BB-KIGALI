@@ -204,3 +204,38 @@ Cleared the 3 warnings from the iOS readiness review:
 - **iOS VOD gate** — replaced *"COMING SOON ON iOS"* with **"WATCH WITH PREMIUM"** + "SEE PREMIUM PLANS" CTA (`app/video/[id].tsx`).
 - **Admin bulk-invite samples** — swapped `alice@example.com` / `bob@example.com` for `jane@bbkigali.com` / `bob@bbkigali.com`; single-invite placeholder now says `name@bbkigali.com`.
 - New file `/app/memory/app_store_review_notes.md` — copy-paste text for App Store Connect → App Review → Notes (demo account, ATS justification, account deletion, VOD encryption, privacy manifest categories).
+
+## 2026-08-30 — 4-item BeSoft fix batch
+### 1. Currency fix (apple_iap records)
+- **Bug**: `rc_sync` wrote `amount=3000 currency=RWF` for iOS purchases, but Premium is €3 EUR. All 26 existing records were misfiled.
+- **Fix**: `server.py::rc_sync` now writes `amount=3.0 currency=EUR` (monthly) / `30.0 EUR` (yearly).
+- **Backfill**: Migration script updated **26 rows** in-place (25 monthly + 1 yearly). PDF/CSV/admin dashboard already read per-record `currency` so mixed-currency totals are now honest.
+
+### 2. PayPal return URL fix + stranded-subscription reconciler
+- **Bug**: `PAYPAL_RETURN_URL=https://bbkigali.com/paypal/success` — 404 dead-end.
+- **Fix**: env vars now point at `web.bbkigali.com/api/billing/paypal/{return,cancel}` — real handlers added:
+  - `GET /billing/paypal/return` — parses `subscription_id` / `ba_token` / `token` from PayPal query string, calls `_paypal_verify_and_grant`, renders success/pending HTML with mobile deep-link (`bbfmkigali://checkout/success`) auto-redirect + web fallback.
+  - `GET /billing/paypal/cancel` — HTML with return-to-app button.
+  - `POST /admin/paypal/reconcile-stranded` — admin sweeps every PayPal `I-…` still `pending`/`created` and asks PayPal for authoritative status.
+- **Webhook signature**: existing `PAYPAL_WEBHOOK_ID`-gated verification is now more clearly commented; unset means dev-mode process-anyway.
+- **Reconciliation ran**: 0 stranded PayPal subs found on this DB (good).
+
+### 3. RevenueCat webhook (server-side IAP validation)
+- **New endpoint** `POST /api/webhooks/revenuecat` — authenticated with `Authorization: Bearer $REVENUECAT_WEBHOOK_SECRET` (rejected 401 without).
+- Idempotent by `event.id` (stored in `rc_events` collection).
+- Grants tier on INITIAL_PURCHASE / RENEWAL / PRODUCT_CHANGE / UNCANCELLATION / NON_RENEWING_PURCHASE — reads `expiration_at_ms` for authoritative expiry.
+- Revokes on EXPIRATION / CANCELLATION / BILLING_ISSUE (only if local expiry has passed — avoids out-of-order events downgrading a still-active user).
+- Writes to SAME `payments` + `users` collections used by Stripe/PayPal/MoMo. One-purchase-any-platform-unlocks-everywhere.
+- **New endpoint** `GET /api/subscription/status` — client pre-check before Apple/Google IAP sheet.
+- **Frontend guard**: `useSubscription().purchase` now calls `/subscription/status` first; if `active:true` it throws a friendly "You already have an active premium subscription until <date>" error instead of double-charging.
+- **Setup for user**: In RevenueCat Dashboard → Integrations → Webhooks: URL = `$PUBLIC_BASE_URL/api/webhooks/revenuecat`, Authorization = `Bearer $REVENUECAT_WEBHOOK_SECRET` (value in backend/.env).
+
+### 4. Backend paywall enforcement — verified (no new code)
+Already covered by iteration_35 (17/17 pass) and iteration_37 (40/40 pass):
+- `/radio/now-playing` strips `streamUrl` for unauth/free.
+- `/radio/token` — 402 for free.
+- `/radio/live?token=X` — 401 for missing/forged (`pur=other` claim rejected).
+- `/shows/{id}` — free user sees `locked=true`.
+- `/videos/{show_id}/playback` — 401 unauth, 402 non-sub, 404 if no cloudflareStreamId.
+- `/live/session` and `/live/status` — 402 / stripped for non-sub.
+No frontend-only gates — every playable URL is server-enforced.
