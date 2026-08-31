@@ -260,21 +260,20 @@ export default function Checkout() {
             <View style={styles.iosGateIconWrap}>
               <Ionicons name="logo-apple" size={44} color={colors.onSurface} />
             </View>
-            <Text style={styles.iosGateTitle}>PREMIUM COMING SOON ON iOS</Text>
+            <Text style={styles.iosGateTitle}>SUBSCRIBE WITH APPLE PAY</Text>
             <Text style={styles.iosGateSub}>
-              We&apos;re bringing subscriptions to iPhone through Apple&apos;s in-app purchase system.
-              In the meantime, keep enjoying the free tier — live radio, news and public podcasts —
-              all completely free on iOS.
+              On iPhone we use Apple&apos;s in-app purchase system. Tap Subscribe on the previous
+              screen to buy Premium in one tap with your Apple ID — no card entry, no re-login.
             </Text>
             <View style={styles.iosGateFeatureCard}>
-              <Text style={styles.iosGateFeatureTitle}>Free on iOS right now:</Text>
+              <Text style={styles.iosGateFeatureTitle}>Everything you already get free on iOS:</Text>
               <View style={styles.iosGateFeatureRow}><Ionicons name="checkmark-circle" size={18} color={colors.success} /><Text style={styles.iosGateFeatureText}>Live BB FM 89.7 radio 24/7</Text></View>
               <View style={styles.iosGateFeatureRow}><Ionicons name="checkmark-circle" size={18} color={colors.success} /><Text style={styles.iosGateFeatureText}>Full news feed with external sources</Text></View>
               <View style={styles.iosGateFeatureRow}><Ionicons name="checkmark-circle" size={18} color={colors.success} /><Text style={styles.iosGateFeatureText}>Today&apos;s schedule + reminders</Text></View>
               <View style={styles.iosGateFeatureRow}><Ionicons name="checkmark-circle" size={18} color={colors.success} /><Text style={styles.iosGateFeatureText}>Free public podcasts</Text></View>
             </View>
-            <Pressable onPress={() => router.replace("/(tabs)")} style={styles.iosGateBtn} testID="ios-gate-continue">
-              <Text style={styles.iosGateBtnText}>CONTINUE FREE</Text>
+            <Pressable onPress={() => router.replace("/paywall")} style={styles.iosGateBtn} testID="ios-gate-continue">
+              <Text style={styles.iosGateBtnText}>OPEN APPLE SUBSCRIPTIONS</Text>
             </Pressable>
           </ScrollView>
         </View>

@@ -341,18 +341,18 @@ export default function VideoPlayerScreen() {
             <Text style={styles.checkoutSectionLabel}>CHOOSE PAYMENT METHOD</Text>
 
             {isIOS ? (
-              // Apple 3.1.1: no non-IAP digital payments allowed. Show a friendly
-              // "coming soon on iOS" gate instead of card/PayPal/MoMo options.
+              // Apple 3.1.1: no non-IAP digital payments allowed. Direct iPhone
+              // buyers to the RevenueCat/Apple IAP subscription which unlocks
+              // the whole VOD library, instead of offering per-video purchase.
               <View style={styles.iosVodGate} testID="checkout-ios-gate">
                 <Ionicons name="logo-apple" size={40} color={colors.onSurface} />
-                <Text style={styles.iosVodGateTitle}>COMING SOON ON iOS</Text>
+                <Text style={styles.iosVodGateTitle}>WATCH WITH PREMIUM</Text>
                 <Text style={styles.iosVodGateSub}>
-                  Paid video unlocks are on the way to iPhone through Apple&apos;s in-app
-                  purchase system. In the meantime you can still enjoy free live radio,
-                  news and public podcasts.
+                  On iPhone, this show unlocks with a Premium subscription — one Apple in-app
+                  purchase gives you every video, live show and ad-free radio for the whole period.
                 </Text>
-                <Pressable onPress={() => setCheckoutOpen(false)} style={styles.iosVodGateBtn} testID="checkout-ios-back">
-                  <Text style={styles.iosVodGateBtnText}>BACK TO APP</Text>
+                <Pressable onPress={() => { setCheckoutOpen(false); router.push("/paywall"); }} style={styles.iosVodGateBtn} testID="checkout-ios-subscribe">
+                  <Text style={styles.iosVodGateBtnText}>SEE PREMIUM PLANS</Text>
                 </Pressable>
               </View>
             ) : !showMomo ? (

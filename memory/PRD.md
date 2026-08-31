@@ -197,3 +197,10 @@ Two bugs blocked desktop login:
   - `/admin/analytics/dashboard` → returns breakdownByMethod + revenue by currency
   - `/admin/payments/summary` → byMethod with per-currency revenue
   - `/admin/reports/business.pdf` → 6KB PDF, valid `%PDF-` magic
+
+## 2026-08-30 — App Store polish
+Cleared the 3 warnings from the iOS readiness review:
+- **iOS checkout gate** — replaced *"PREMIUM COMING SOON ON iOS"* with **"SUBSCRIBE WITH APPLE PAY"** + CTA that routes to the paywall (`app/checkout.tsx`).
+- **iOS VOD gate** — replaced *"COMING SOON ON iOS"* with **"WATCH WITH PREMIUM"** + "SEE PREMIUM PLANS" CTA (`app/video/[id].tsx`).
+- **Admin bulk-invite samples** — swapped `alice@example.com` / `bob@example.com` for `jane@bbkigali.com` / `bob@bbkigali.com`; single-invite placeholder now says `name@bbkigali.com`.
+- New file `/app/memory/app_store_review_notes.md` — copy-paste text for App Store Connect → App Review → Notes (demo account, ATS justification, account deletion, VOD encryption, privacy manifest categories).

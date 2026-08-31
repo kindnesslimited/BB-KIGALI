@@ -300,9 +300,9 @@ function BulkInviteModal({ visible, onClose, onDone }: { visible: boolean; onClo
           </Text>
           <View style={bulkStyles.hint}>
             <Text style={bulkStyles.hintText}>phone,email,name</Text>
-            <Text style={bulkStyles.hintExample}>+250788123456,test@bbkigali.com,Test User</Text>
-            <Text style={bulkStyles.hintExample}>250794230137,,Alice</Text>
-            <Text style={bulkStyles.hintExample}>,bob@example.com,Bob</Text>
+            <Text style={bulkStyles.hintExample}>+250788123456,jane@bbkigali.com,Jane Uwase</Text>
+            <Text style={bulkStyles.hintExample}>250794230137,,Alice Mukamana</Text>
+            <Text style={bulkStyles.hintExample}>,bob@bbkigali.com,Bob Habimana</Text>
           </View>
           <Text style={bulkStyles.roleLabel}>ROLE FOR ALL ROWS</Text>
           <View style={{ flexDirection: "row", gap: spacing.sm }}>
@@ -316,7 +316,7 @@ function BulkInviteModal({ visible, onClose, onDone }: { visible: boolean; onClo
             value={text}
             onChangeText={setText}
             multiline
-            placeholder="+250788123456,alice@example.com,Alice&#10;250794230137,,Bob"
+            placeholder="+250788123456,jane@bbkigali.com,Jane Uwase&#10;250794230137,,Alice Mukamana"
             placeholderTextColor={colors.onSurfaceSecondary}
             style={bulkStyles.textarea}
             autoCapitalize="none"
@@ -421,7 +421,7 @@ function InviteModal({
               <TextInput
                 value={value}
                 onChangeText={setValue}
-                placeholder={mode === "phone" ? "+250 78x xxx xxx" : "name@example.com"}
+                placeholder={mode === "phone" ? "+250 78x xxx xxx" : "name@bbkigali.com"}
                 placeholderTextColor={colors.onSurfaceSecondary}
                 keyboardType={mode === "phone" ? "phone-pad" : "email-address"}
                 autoCapitalize="none"
