@@ -1,5 +1,5 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
-import { Platform } from "react-native";
+import React, { createContext, useContext, useEffect, useState, useCallback, useMemo, useRef } from "react";
+import { Platform, AppState, AppStateStatus } from "react-native";
 import * as WebBrowser from "expo-web-browser";
 import * as Linking from "expo-linking";
 import { api, saveToken, getToken, clearToken } from "../api";
@@ -18,15 +18,25 @@ export type User = {
   subscriptionExpiresAt?: string | null;
 };
 
+type SubscriptionStatus = {
+  active: boolean;
+  tier: string;
+  subscriptionExpiresAt?: string | null;
+  currentPlan?: string | null;
+  provider?: string | null;
+};
+
 type Ctx = {
   user: User | null;
   loading: boolean;
   purchaseIdentityError: string | null;
+  hasActiveSubscription: boolean;
   requestOtp: (phone: string) => Promise<{ testCode?: string }>;
   verifyOtp: (phone: string, code: string) => Promise<void>;
   loginWithGoogle: () => Promise<void>;
   loginWithApple: () => Promise<void>;
   refresh: () => Promise<void>;
+  syncSubscriptionFromBackend: () => Promise<SubscriptionStatus | null>;
   updateProfile: (displayName: string) => Promise<void>;
   deleteAccount: () => Promise<void>;
   logout: () => Promise<void>;
@@ -51,9 +61,17 @@ async function completeGoogle(sessionId: string, setUser: (u: User) => void) {
   setUser(r.user);
 }
 
+function isActiveTier(u: User | null | undefined): boolean {
+  if (!u) return false;
+  if (u.tier !== "basic" && u.tier !== "premium") return false;
+  const exp = u.subscriptionExpiresAt || "";
+  return exp > new Date().toISOString();
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   // Bind RevenueCat identity to the backend user id on EVERY auth path
   // (session-restore, sign-in, sign-up, sign-out). Errors surface via context.
   const purchaseIdentityError = useBindRevenueCatIdentity(user?.id ?? null);
@@ -62,8 +80,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const tok = await getToken();
     if (!tok) { setUser(null); return; }
     try {
-      // Best-effort: reconcile any pending payments BEFORE loading /auth/me so
-      // customers who paid-but-lost-callback get their tier applied immediately.
+      // ALWAYS reconcile with the central backend first — cross-platform payments
+      // (Web/Android/iOS/prior sessions) get applied to this user before /auth/me
+      // reads the tier. Never trust local cache alone.
       try {
         await api<{ granted: unknown[] }>("/subscription/reconcile", { method: "POST", auth: true });
       } catch { /* non-fatal — /auth/me will still return the current state */ }
@@ -72,6 +91,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch {
       await clearToken();
       setUser(null);
+    }
+  }, []);
+
+  /**
+   * Backend-authoritative subscription check. Callers use this BEFORE showing
+   * the paywall/checkout — if the backend already reports an active sub, we
+   * skip the payment screens entirely and re-hydrate the local user object.
+   */
+  const syncSubscriptionFromBackend = useCallback(async (): Promise<SubscriptionStatus | null> => {
+    const tok = await getToken();
+    if (!tok) return null;
+    try {
+      // Reconcile first (applies any pending webhooks that missed us).
+      try {
+        await api<{ granted: unknown[] }>("/subscription/reconcile", { method: "POST", auth: true });
+      } catch { /* keep going — status endpoint is still authoritative */ }
+      const status = await api<SubscriptionStatus>("/subscription/status", { auth: true });
+      // Re-hydrate user object so `tier`/`subscriptionExpiresAt` reflect backend.
+      try {
+        const u = await api<User>("/auth/me", { auth: true });
+        setUser(u);
+      } catch { /* status already returned — good enough */ }
+      return status;
+    } catch {
+      return null;
     }
   }, []);
 
@@ -104,7 +148,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setLoading(false);
     })();
 
-    // Hot deep-links (native only)
+    // Hot deep-links (native only) — Google Sign-In return
     let sub: any;
     if (Platform.OS !== "web") {
       sub = Linking.addEventListener("url", async (e) => {
@@ -115,7 +159,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       });
     }
-    return () => { try { sub?.remove?.(); } catch {} };
+
+    // AppState listener: when the app returns to foreground (e.g. after the
+    // user completed a Stripe/PayPal/MoMo payment in Safari or Chrome), we
+    // immediately reconcile with the central backend so their new subscription
+    // is applied without any user action. Also runs on Android/web.
+    const appStateSub = AppState.addEventListener("change", (next) => {
+      const prev = appStateRef.current;
+      appStateRef.current = next;
+      if (prev !== "active" && next === "active") {
+        // fire-and-forget — refresh() itself calls /subscription/reconcile.
+        refresh();
+      }
+    });
+
+    // Web-only: also refresh on tab visibility change (returning from a Stripe
+    // tab / PayPal window). AppState only fires 'active' reliably on native.
+    let onVis: (() => void) | null = null;
+    if (Platform.OS === "web" && typeof document !== "undefined") {
+      onVis = () => { if (!document.hidden) refresh(); };
+      document.addEventListener("visibilitychange", onVis);
+    }
+
+    return () => {
+      try { sub?.remove?.(); } catch {}
+      try { appStateSub?.remove?.(); } catch {}
+      if (onVis && Platform.OS === "web" && typeof document !== "undefined") {
+        try { document.removeEventListener("visibilitychange", onVis); } catch {}
+      }
+    };
   }, [refresh]);
 
   const requestOtp = async (phone: string) =>
@@ -127,6 +199,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
     await saveToken(r.accessToken);
     setUser(r.user);
+    // Cross-platform: after sign-in, sync subscription from central backend so
+    // any previous payment (any platform) unlocks the app immediately.
+    try { await syncSubscriptionFromBackend(); } catch { /* non-fatal */ }
   };
 
   const loginWithGoogle = async () => {
@@ -142,7 +217,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let sid: string | null = null;
     if (result.type === "success") sid = extractSessionId(result.url);
     if (!sid) sid = extractSessionId(await Linking.getInitialURL());
-    if (sid) await completeGoogle(sid, setUser);
+    if (sid) {
+      await completeGoogle(sid, setUser);
+      try { await syncSubscriptionFromBackend(); } catch { /* non-fatal */ }
+    }
   };
 
   const loginWithApple = async () => {
@@ -175,6 +253,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
     await saveToken(r.accessToken);
     setUser(r.user);
+    try { await syncSubscriptionFromBackend(); } catch { /* non-fatal */ }
   };
 
   const deleteAccount = async () => {
@@ -193,8 +272,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null);
   };
 
+  const hasActiveSubscription = useMemo(() => isActiveTier(user), [user]);
+
   return (
-    <AuthCtx.Provider value={{ user, loading, purchaseIdentityError, requestOtp, verifyOtp, loginWithGoogle, loginWithApple, refresh, updateProfile, deleteAccount, logout }}>
+    <AuthCtx.Provider value={{
+      user, loading, purchaseIdentityError, hasActiveSubscription,
+      requestOtp, verifyOtp, loginWithGoogle, loginWithApple,
+      refresh, syncSubscriptionFromBackend, updateProfile, deleteAccount, logout,
+    }}>
       {children}
     </AuthCtx.Provider>
   );

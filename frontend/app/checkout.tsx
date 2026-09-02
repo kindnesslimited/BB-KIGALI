@@ -1,28 +1,31 @@
-import { useEffect, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput, KeyboardAvoidingView, Platform, Modal } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput, KeyboardAvoidingView, Platform, Modal, AppState, AppStateStatus, Linking as RNLinking } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { WebView, type WebViewNavigation } from "react-native-webview";
 import * as Haptics from "expo-haptics";
+import * as WebBrowser from "expo-web-browser";
 import { colors, spacing, type, radius } from "@/src/theme";
 import { api } from "@/src/api";
 import { useAuth } from "@/src/context/auth";
 
 type Method = "stripe" | "paypal" | "mtn_momo";
 const isIOS = Platform.OS === "ios";
-const ALL_METHODS: { id: Method; label: string; sub: string; icon: any; needsPhone?: boolean; hiddenOnIOS?: boolean; disabled?: boolean }[] = [
-  { id: "paypal", label: "PayPal", sub: "Live — Visa/Mastercard or PayPal balance", icon: "logo-paypal", hiddenOnIOS: true },
-  { id: "stripe", label: "Card (Stripe)", sub: "Live — Visa, Mastercard, Amex, Apple Pay & Google Pay", icon: "card-outline", hiddenOnIOS: true },
-  { id: "mtn_momo", label: "MTN Mobile Money", sub: "Live — Rwanda MTN MoMo via BeSoft Pay", icon: "phone-portrait-outline", needsPhone: true, hiddenOnIOS: true },
+// ALL platforms — including iOS — get the same payment options. Payment pages
+// open in the EXTERNAL browser (Safari on iOS, Chrome on Android) so users
+// pay through the same central backend flow regardless of device.
+const METHODS: { id: Method; label: string; sub: string; icon: any; needsPhone?: boolean; disabled?: boolean }[] = [
+  { id: "paypal", label: "PayPal", sub: "Live — Visa/Mastercard or PayPal balance", icon: "logo-paypal" },
+  { id: "stripe", label: "Card (Stripe)", sub: "Live — Visa, Mastercard, Amex, Apple Pay & Google Pay", icon: "card-outline" },
+  { id: "mtn_momo", label: "MTN Mobile Money", sub: "Live — Rwanda MTN MoMo via BeSoft Pay", icon: "phone-portrait-outline", needsPhone: true },
 ];
-const METHODS = ALL_METHODS.filter((m) => !(isIOS && m.hiddenOnIOS));
 
 export default function Checkout() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { plan, amount } = useLocalSearchParams<{ plan: string; amount: string }>();
-  const { refresh } = useAuth();
+  const { refresh, syncSubscriptionFromBackend, hasActiveSubscription } = useAuth();
   const [method, setMethod] = useState<Method>("paypal");
   // NOTE: default to blank "+250 " prefix so the admin never accidentally pays THEMSELVES.
   // The customer's MoMo number MUST be entered explicitly; the collection account cannot be debited.
@@ -37,9 +40,34 @@ export default function Checkout() {
   const [suggestStripe, setSuggestStripe] = useState(false);
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [terms, setTerms] = useState<{ version?: string; url?: string; privacyUrl?: string }>({});
+  // "External browser" flow — when the user pays via Safari/Chrome we show a
+  // waiting prompt on top of the checkout page. Cleared when the app foregrounds
+  // and reconcile confirms the subscription.
+  const [awaitingReturn, setAwaitingReturn] = useState<null | { provider: "stripe" | "paypal"; sessionId?: string; subscriptionId?: string }>(null);
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
 
   // Fetch current Terms & Conditions version once for the page
   useEffect(() => { void api<typeof terms>("/legal/terms/current").then(setTerms).catch(() => {}); }, []);
+
+  // Backend-first precheck — if the user already has an active subscription
+  // on ANY platform, redirect them straight to the app. Never charge twice.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const status = await syncSubscriptionFromBackend();
+        if (!cancelled && status?.active) {
+          router.replace("/(tabs)");
+        }
+      } catch { /* fall through */ }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (hasActiveSubscription) router.replace("/(tabs)");
+  }, [hasActiveSubscription, router]);
 
   const onPayPalNav = async (nav: WebViewNavigation) => {
     const url = nav.url || "";
@@ -76,17 +104,14 @@ export default function Checkout() {
         );
         // STRICT: only count as success when Stripe confirmed payment_status='paid'.
         if (r.paid === true || r.paymentStatus === "paid") {
-          await refresh();
-          // Belt-and-suspenders: re-fetch /auth/me and confirm the tier actually flipped.
-          // If the backend hasn't granted (e.g. race with webhook), keep polling.
-          try {
-            const me = await api<{ tier?: string }>("/auth/me", { auth: true });
-            if (me?.tier && me.tier !== "free") {
-              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-              setSuccess(true);
-              return;
-            }
-          } catch { /* fall through to keep polling */ }
+          // Central backend is the source of truth. Reconcile before flipping UI.
+          const status = await syncSubscriptionFromBackend();
+          if (status?.active) {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+            setSuccess(true);
+            return;
+          }
+          // Backend hasn't applied the entitlement yet — keep polling.
         }
         // Session ended but payment failed / was cancelled by Stripe → surface immediately.
         if (r.status === "complete" && r.paymentStatus !== "paid") {
@@ -127,10 +152,14 @@ export default function Checkout() {
         const r = await api<{ status: string }>(`/billing/momo/${reference}`, { auth: true });
         setMomoStatus(r.status);
         if (r.status === "success") {
-          await refresh();
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-          setSuccess(true);
-          return;
+          // Reconcile with the central backend — this is what actually flips
+          // the user to premium; never trust a local status alone.
+          const status = await syncSubscriptionFromBackend();
+          if (status?.active) {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+            setSuccess(true);
+            return;
+          }
         }
         if (r.status === "failed") {
           setErr("Payment failed or was cancelled on your phone.");
@@ -140,6 +169,61 @@ export default function Checkout() {
       await new Promise((res) => setTimeout(res, 3000));
     }
     setErr("Timed out waiting for confirmation. Check Payment History or try again.");
+  };
+
+  // When the app returns to foreground while we're waiting for an external
+  // browser payment to complete, immediately reconcile subscription status
+  // from the central backend. If the backend confirms an active subscription,
+  // the checkout flips to the success state without any user action.
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", async (next) => {
+      const prev = appStateRef.current;
+      appStateRef.current = next;
+      if (prev === "active" || next !== "active") return;
+      if (!awaitingReturn) return;
+      try {
+        // Try provider-specific verify first (fast path).
+        if (awaitingReturn.provider === "paypal" && awaitingReturn.subscriptionId) {
+          try {
+            const v = await api<{ status: string }>(`/billing/paypal/verify/${awaitingReturn.subscriptionId}`, { method: "POST", auth: true });
+            if (v.status !== "success") {
+              // fallthrough — backend reconcile might still know
+            }
+          } catch { /* ignore */ }
+        }
+        const status = await syncSubscriptionFromBackend();
+        if (status?.active) {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+          setSuccess(true);
+          setAwaitingReturn(null);
+        }
+      } catch { /* keep waiting — user can retry */ }
+    });
+    return () => { try { sub?.remove?.(); } catch {} };
+  }, [awaitingReturn, syncSubscriptionFromBackend]);
+
+  const manualCheckReturn = async () => {
+    setLoading(true);
+    try {
+      if (awaitingReturn?.provider === "paypal" && awaitingReturn.subscriptionId) {
+        try {
+          await api(`/billing/paypal/verify/${awaitingReturn.subscriptionId}`, { method: "POST", auth: true });
+        } catch { /* ignore */ }
+      } else if (awaitingReturn?.provider === "stripe" && awaitingReturn.sessionId) {
+        // Kick off the poll fresh in case the initial poll timed out.
+        void pollStripe(awaitingReturn.sessionId);
+      }
+      const status = await syncSubscriptionFromBackend();
+      if (status?.active) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+        setSuccess(true);
+        setAwaitingReturn(null);
+      } else {
+        setErr("We couldn't confirm the payment yet. If you completed it, please wait a moment and tap Check again.");
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   const pay = async () => {
@@ -169,6 +253,32 @@ export default function Checkout() {
           { method: "POST", auth: true, body: { plan } }
         );
         setPaypalSubId(r.subscriptionId);
+        if (isIOS) {
+          // iOS: open in Safari (external browser), show "Return to app" prompt
+          // and auto-verify when the app comes back to foreground.
+          setAwaitingReturn({ provider: "paypal", subscriptionId: r.subscriptionId });
+          await WebBrowser.openBrowserAsync(r.approveUrl, {
+            presentationStyle: WebBrowser.WebBrowserPresentationStyle.FULL_SCREEN,
+          }).catch(() => {
+            // If WebBrowser isn't available, fall back to system browser.
+            return RNLinking.openURL(r.approveUrl);
+          });
+          // When openBrowserAsync resolves, the sheet closed — try verifying immediately.
+          try {
+            const v = await api<{ status: string }>(`/billing/paypal/verify/${r.subscriptionId}`, { method: "POST", auth: true });
+            if (v.status === "success") {
+              const st = await syncSubscriptionFromBackend();
+              if (st?.active) {
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+                setSuccess(true);
+                setAwaitingReturn(null);
+                return;
+              }
+            }
+          } catch { /* keep awaitingReturn — AppState listener will retry */ }
+          return;
+        }
+        // Web + Android → in-app WebView
         setPaypalUrl(r.approveUrl);
         return;
       }
@@ -182,6 +292,15 @@ export default function Checkout() {
           // On web, open in a new tab and poll status
           try { (window as any).open(r.checkoutUrl, "_blank"); } catch { /* ignore */ }
           await pollStripe(r.sessionId);
+        } else if (isIOS) {
+          // iOS: open in Safari (external browser). AppState listener + poll
+          // together re-sync from backend as soon as the user returns.
+          setAwaitingReturn({ provider: "stripe", sessionId: r.sessionId });
+          const p = pollStripe(r.sessionId);
+          await WebBrowser.openBrowserAsync(r.checkoutUrl, {
+            presentationStyle: WebBrowser.WebBrowserPresentationStyle.FULL_SCREEN,
+          }).catch(() => RNLinking.openURL(r.checkoutUrl));
+          await p;
         } else {
           setStripeUrl(r.checkoutUrl);
         }
@@ -247,38 +366,26 @@ export default function Checkout() {
 
   return (
     <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1, backgroundColor: colors.surface }}>
-      {isIOS && (
-        <View style={styles.iosGate}>
-          <View style={[styles.top, { paddingTop: insets.top + spacing.md }]}>
-            <Pressable onPress={() => router.back()} hitSlop={12} testID="ios-gate-close">
-              <Ionicons name="chevron-back" size={26} color={colors.onSurface} />
-            </Pressable>
-            <Text style={styles.topTitle}>SUBSCRIBE</Text>
-            <View style={{ width: 26 }} />
-          </View>
-          <ScrollView contentContainerStyle={styles.iosGateBody}>
-            <View style={styles.iosGateIconWrap}>
-              <Ionicons name="logo-apple" size={44} color={colors.onSurface} />
-            </View>
-            <Text style={styles.iosGateTitle}>SUBSCRIBE WITH APPLE PAY</Text>
-            <Text style={styles.iosGateSub}>
-              On iPhone we use Apple&apos;s in-app purchase system. Tap Subscribe on the previous
-              screen to buy Premium in one tap with your Apple ID — no card entry, no re-login.
+      {/* Return-to-app prompt shown while an external Safari/Chrome payment is in progress. */}
+      <Modal transparent visible={!!awaitingReturn && !success} animationType="fade" onRequestClose={() => { /* stay open until reconciled or manually dismissed */ }}>
+        <View style={styles.awaitOverlay}>
+          <View style={styles.awaitCard}>
+            <Ionicons name="hourglass-outline" size={44} color={colors.brandPrimary} />
+            <Text style={styles.awaitTitle}>Complete payment in your browser</Text>
+            <Text style={styles.awaitBody}>
+              Your browser has opened {awaitingReturn?.provider === "paypal" ? "PayPal" : "Stripe"}.
+              Finish the payment there, then return to this app — we&apos;ll unlock your subscription automatically.
             </Text>
-            <View style={styles.iosGateFeatureCard}>
-              <Text style={styles.iosGateFeatureTitle}>Everything you already get free on iOS:</Text>
-              <View style={styles.iosGateFeatureRow}><Ionicons name="checkmark-circle" size={18} color={colors.success} /><Text style={styles.iosGateFeatureText}>Live BB FM 89.7 radio 24/7</Text></View>
-              <View style={styles.iosGateFeatureRow}><Ionicons name="checkmark-circle" size={18} color={colors.success} /><Text style={styles.iosGateFeatureText}>Full news feed with external sources</Text></View>
-              <View style={styles.iosGateFeatureRow}><Ionicons name="checkmark-circle" size={18} color={colors.success} /><Text style={styles.iosGateFeatureText}>Today&apos;s schedule + reminders</Text></View>
-              <View style={styles.iosGateFeatureRow}><Ionicons name="checkmark-circle" size={18} color={colors.success} /><Text style={styles.iosGateFeatureText}>Free public podcasts</Text></View>
-            </View>
-            <Pressable onPress={() => router.replace("/paywall")} style={styles.iosGateBtn} testID="ios-gate-continue">
-              <Text style={styles.iosGateBtnText}>OPEN APPLE SUBSCRIPTIONS</Text>
+            <Pressable onPress={manualCheckReturn} style={styles.awaitBtn} testID="awaiting-check">
+              {loading ? <ActivityIndicator color={colors.onBrandPrimary} /> : <Text style={styles.awaitBtnText}>I&apos;VE COMPLETED PAYMENT — CHECK NOW</Text>}
             </Pressable>
-          </ScrollView>
+            <Pressable onPress={() => { setAwaitingReturn(null); setErr(null); }} style={styles.awaitCancel}>
+              <Text style={styles.awaitCancelText}>Cancel</Text>
+            </Pressable>
+          </View>
         </View>
-      )}
-      {!isIOS && (
+      </Modal>
+
       <>
       <Modal visible={!!stripeUrl} animationType="slide" onRequestClose={() => setStripeUrl(null)} presentationStyle="fullScreen">
         <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1, backgroundColor: "#fff" }}>
@@ -527,7 +634,6 @@ export default function Checkout() {
         </Pressable>
       </View>
       </>
-      )}
     </KeyboardAvoidingView>
   );
 }
@@ -611,4 +717,13 @@ const styles = StyleSheet.create({
   iosGateFeatureText: { ...type.body, fontSize: 13, color: colors.onSurface, flex: 1 },
   iosGateBtn: { backgroundColor: colors.brandPrimary, paddingHorizontal: spacing.xxl, paddingVertical: spacing.md, borderRadius: radius.pill, marginTop: spacing.md },
   iosGateBtnText: { ...type.h2, color: "#000", letterSpacing: 1.8, fontSize: 15, fontFamily: "BarlowCondensed-Bold" },
+  // Return-to-app prompt shown while external Safari/Chrome payment is in progress.
+  awaitOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.85)", alignItems: "center", justifyContent: "center", padding: spacing.lg },
+  awaitCard: { width: "100%", maxWidth: 380, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.xl, alignItems: "center", gap: spacing.md, borderWidth: 1, borderColor: colors.border },
+  awaitTitle: { ...type.h1, fontSize: 20, textAlign: "center" },
+  awaitBody: { ...type.body, textAlign: "center", color: colors.onSurfaceTertiary, lineHeight: 20 },
+  awaitBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: spacing.sm, backgroundColor: colors.brandPrimary, paddingHorizontal: spacing.xl, paddingVertical: spacing.md, borderRadius: radius.pill, minHeight: 48 },
+  awaitBtnText: { ...type.h2, color: colors.onBrandPrimary, letterSpacing: 1.2, fontSize: 12, textAlign: "center" },
+  awaitCancel: { paddingVertical: spacing.sm },
+  awaitCancelText: { ...type.caption, color: colors.onSurfaceSecondary, textDecorationLine: "underline" },
 });

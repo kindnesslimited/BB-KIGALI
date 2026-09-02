@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable, Modal, Platform, ActivityIndicator } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -9,9 +9,18 @@ import { useSubscription, rcEnabled } from "@/src/lib/revenuecat";
 import { useAuth } from "@/src/context/auth";
 import { api } from "@/src/api";
 
-/** iOS uses Apple IAP via RevenueCat (Apple guideline 3.1.1); web + Android keep
- *  Stripe/PayPal/MoMo. This flag decides which flow runs when the user taps CONTINUE. */
-const USE_RC_ON_THIS_PLATFORM = Platform.OS === "ios";
+/**
+ * Cross-platform payment routing.
+ *
+ * Business rule (per product owner Sep 2026):
+ * "If a user has already paid on ANY platform (web/Android/iOS/previously),
+ *  give them full access immediately. Never charge them again."
+ *
+ * Therefore ALL platforms route through /checkout (Stripe/PayPal/MoMo) — no
+ * IAP-only gating on iOS. RevenueCat identity binding is kept so historical
+ * Apple IAP purchases can still be RESTORED, but new purchases on iOS go
+ * through the same central backend flow as web/Android.
+ */
 
 type Plan = { id: string; tier: "basic" | "premium"; label: string; monthly: number; yearly: number; monthlyEur: number; yearlyEur: number; benefits: string[]; recommended?: boolean };
 
@@ -42,7 +51,7 @@ const PLANS: Plan[] = [
 export default function Paywall() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { user, purchaseIdentityError } = useAuth();
+  const { user, purchaseIdentityError, syncSubscriptionFromBackend, hasActiveSubscription } = useAuth();
   const {
     offerings,
     isSubscribed,
@@ -56,6 +65,35 @@ export default function Paywall() {
   const [period, setPeriod] = useState<"monthly" | "yearly">("monthly");
   const [rcConfirm, setRcConfirm] = useState<{ visible: boolean; error?: string; success?: boolean }>({ visible: false });
   const [rcBusyLabel, setRcBusyLabel] = useState<string | null>(null);
+  const [prechecking, setPrechecking] = useState(true);
+
+  // Backend-first precheck: if the central backend already reports an active
+  // subscription (paid on ANY platform — web/Android/iOS/prior device), skip
+  // the paywall entirely. Runs on every mount so cached local state can't
+  // trick us into charging someone twice.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!user) { setPrechecking(false); return; }
+      try {
+        const status = await syncSubscriptionFromBackend();
+        if (!cancelled && status?.active) {
+          router.replace("/(tabs)");
+          return;
+        }
+      } catch { /* fall through — show the paywall */ }
+      if (!cancelled) setPrechecking(false);
+    })();
+    return () => { cancelled = true; };
+    // Only run once on mount (or when user changes identity).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
+  // Extra safety: if hasActiveSubscription becomes true after any refresh
+  // (e.g. AppState listener reconciled a webhook), bounce out immediately.
+  useEffect(() => {
+    if (hasActiveSubscription) router.replace("/(tabs)");
+  }, [hasActiveSubscription, router]);
 
   const plan = PLANS.find((p) => p.tier === selectedTier)!;
   const price = period === "monthly" ? plan.monthly : plan.yearly;
@@ -64,7 +102,11 @@ export default function Paywall() {
 
   const savings = plan.monthly * 12 - plan.yearly;
 
-  // Resolve the RevenueCat package matching the current selection (iOS only).
+  // Resolve the RevenueCat package matching the current selection.
+  // NOTE: We no longer force iOS through RevenueCat — per the product-owner
+  // directive, all platforms route through the central backend (Stripe/PayPal/
+  // MoMo). RevenueCat identity + package data are only kept so historical
+  // Apple IAP subscribers can RESTORE their previous purchase on iOS.
   const rcOffering = offerings?.current;
   const rcPackage = (() => {
     if (!rcOffering) return null;
@@ -73,69 +115,56 @@ export default function Paywall() {
       : rcOffering.availablePackages.find((p) => p.identifier === "$rc_annual");
   })();
 
-  const rcPriceString = rcPackage?.product.priceString;
-  // iOS Basic tier is not offered natively (Apple requires a single "pro" entitlement);
-  // native iOS subscribers get Premium features regardless of chosen tier.
-  const rcAvailable = USE_RC_ON_THIS_PLATFORM && rcEnabled && !!rcPackage;
-
-  const notifyBackendAfterRC = async () => {
-    // Best-effort — mark backend subscription tier so premium content unlocks
-    // immediately in-session while server-to-server webhooks catch up.
-    try {
-      await api("/subscription/rc-sync", {
-        method: "POST",
-        auth: true,
-        body: {
-          plan: `premium_${period}`,
-          entitlement: "pro",
-        },
-      });
-    } catch (e) {
-      if (__DEV__) console.log("[rc-sync] failed (non-fatal)", e);
-    }
-  };
+  // Restore button is only useful on iOS where legacy Apple IAP receipts exist.
+  const rcRestoreAvailable = Platform.OS === "ios" && rcEnabled && !!rcPackage;
+  // All new purchases (any platform) go through /checkout — never RC.
+  const rcAvailable = false;
+  const rcPriceString: string | undefined = undefined;
 
   const proceed = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
 
-    // iOS → Apple IAP via RevenueCat
-    if (rcAvailable && rcPackage) {
-      if (!user) {
-        router.replace("/auth/phone");
-        return;
-      }
-      if (!identityReady) {
-        setRcConfirm({ visible: true, error: purchaseIdentityError || "Preparing your account for purchase…" });
-        return;
-      }
-      try {
-        setRcBusyLabel("Confirming purchase with Apple…");
-        await purchase(rcPackage);
-        await notifyBackendAfterRC();
-        setRcConfirm({ visible: true, success: true });
-      } catch (e: any) {
-        const msg = String(e?.message || e);
-        if (msg.toLowerCase().includes("cancel")) {
-          // silent user cancellation
-        } else {
-          setRcConfirm({ visible: true, error: msg });
-        }
-      } finally {
-        setRcBusyLabel(null);
-      }
+    if (!user) {
+      router.replace("/auth/phone");
       return;
     }
 
-    // Web + Android → existing Stripe/PayPal/MoMo checkout
+    // Belt-and-suspenders: re-check backend one more time RIGHT before the
+    // payment screen opens. If the user got granted access via a webhook in
+    // the last few seconds, we don't want to charge them again.
+    try {
+      const status = await syncSubscriptionFromBackend();
+      if (status?.active) {
+        router.replace("/(tabs)");
+        return;
+      }
+    } catch { /* proceed to checkout */ }
+
+    // ALL platforms (iOS, Android, Web) → central checkout page with the same
+    // Stripe/PayPal/MoMo options. On iOS the checkout page opens the provider
+    // in the external browser (Safari) rather than an in-app WebView.
     router.push({ pathname: "/checkout", params: { plan: planKey, amount: String(price) } });
   };
 
   const onRestore = async () => {
     try {
       setRcBusyLabel("Restoring purchases…");
-      await restore();
-      await notifyBackendAfterRC();
-      setRcConfirm({ visible: true, success: true });
+      // 1) Restore legacy Apple IAP receipts through RevenueCat (iOS only).
+      if (Platform.OS === "ios" && rcEnabled) {
+        try { await restore(); } catch { /* non-fatal — fall through to backend sync */ }
+      }
+      // 2) ALWAYS reconcile with the central backend — this is the source of
+      //    truth for cross-platform subscriptions (web/Android/iOS/prior).
+      await api("/subscription/rc-sync", {
+        method: "POST", auth: true,
+        body: { plan: `premium_${period}`, entitlement: "pro" },
+      }).catch(() => { /* rc-sync is best-effort; reconcile below is authoritative */ });
+      const status = await syncSubscriptionFromBackend();
+      if (status?.active) {
+        setRcConfirm({ visible: true, success: true });
+      } else {
+        setRcConfirm({ visible: true, error: "No active subscription found on this account. If you paid recently, please wait a moment and try again." });
+      }
     } catch (e: any) {
       setRcConfirm({ visible: true, error: String(e?.message || e) });
     } finally {
@@ -145,6 +174,12 @@ export default function Paywall() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.surface }} testID="paywall-screen">
+      {prechecking && (
+        <View style={styles.precheckOverlay} testID="paywall-precheck">
+          <ActivityIndicator size="large" color={colors.brandPrimary} />
+          <Text style={styles.precheckText}>Checking your subscription…</Text>
+        </View>
+      )}
       <View style={[styles.top, { paddingTop: insets.top + spacing.md }]}>
         <Pressable onPress={() => router.back()} hitSlop={12} testID="paywall-close">
           <Ionicons name="close" size={28} color={colors.onSurface} />
@@ -254,8 +289,9 @@ export default function Paywall() {
         </Pressable>
       </View>
 
-      {/* iOS-only: Apple requires a Restore Purchases entry point */}
-      {rcAvailable && (
+      {/* iOS-only: Apple requires a Restore Purchases entry point for legacy IAP receipts.
+          For non-iOS platforms, this same button reconciles with the central backend. */}
+      {rcRestoreAvailable && (
         <Pressable
           onPress={onRestore}
           disabled={isPurchasing || isRestoring}
@@ -350,4 +386,10 @@ const styles = StyleSheet.create({
   modalBtnText: { ...type.h2, color: colors.onBrandPrimary, letterSpacing: 1.5, fontSize: 13 },
   toast: { position: "absolute", top: 80, left: spacing.lg, right: spacing.lg, backgroundColor: "rgba(0,0,0,0.85)", borderRadius: radius.sm, padding: spacing.md, alignItems: "center" },
   toastText: { ...type.caption, color: "#fff" },
+  precheckOverlay: {
+    position: "absolute", top: 0, left: 0, right: 0, bottom: 0, zIndex: 100,
+    backgroundColor: colors.surface,
+    alignItems: "center", justifyContent: "center", gap: spacing.md,
+  },
+  precheckText: { ...type.bodyMuted, color: colors.onSurfaceSecondary, letterSpacing: 0.5 },
 });
