@@ -447,7 +447,7 @@ const styles = StyleSheet.create({
   section: { marginBottom: spacing.xl },
   sectionHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: spacing.lg, marginBottom: spacing.md },
   sectionTitle: { ...type.label, letterSpacing: 1.5, color: colors.onSurfaceSecondary, fontSize: 12 },
-  seeAll: { color: colors.brandPrimary, fontFamily: "System", fontSize: 13 },
+  seeAll: { color: colors.brandPrimary, fontFamily: "Poppins-Regular", fontSize: 13 },
   schedCard: { width: 200, height: 180, backgroundColor: colors.surfaceSecondary, borderRadius: radius.md, padding: spacing.md, borderWidth: 1, borderColor: colors.border, overflow: "hidden" },
   schedCardLive: { borderColor: colors.brandPrimary, backgroundColor: colors.brandTertiary },
   schedCardFeatured: { borderColor: colors.brandPrimary },

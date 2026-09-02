@@ -73,7 +73,7 @@ export default function TabsLayout() {
           },
           tabBarActiveTintColor: colors.brandPrimary,
           tabBarInactiveTintColor: colors.onSurfaceSecondary,
-          tabBarLabelStyle: { fontSize: 11, fontFamily: "System", marginTop: 2 },
+          tabBarLabelStyle: { fontSize: 11, fontFamily: "Poppins-Regular", marginTop: 2 },
         }}
       >
         <Tabs.Screen name="index" options={{

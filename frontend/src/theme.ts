@@ -37,9 +37,12 @@ export const spacing = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32, xxxl: 48
 export const radius = { sm: 6, md: 12, lg: 20, pill: 999 };
 
 export const fonts = {
-  display: "BarlowCondensed-Bold",
-  displayMedium: "BarlowCondensed-Medium",
-  body: "System",
+  // Global brand font — Poppins across the entire app (headings, body,
+  // buttons, menus). Weights map to the four TTF files loaded in _layout.tsx.
+  display: "Poppins-Bold",
+  displayMedium: "Poppins-SemiBold",
+  body: "Poppins-Regular",
+  bodyMedium: "Poppins-Medium",
 };
 
 export const type = {

@@ -1,7 +1,7 @@
 import { Stack, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect } from "react";
-import { LogBox, View } from "react-native";
+import { LogBox, Text as RNText, TextInput as RNTextInput, View } from "react-native";
 import { useFonts } from "expo-font";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -22,6 +22,20 @@ import {
 
 LogBox.ignoreAllLogs(true);
 SplashScreen.preventAutoHideAsync();
+
+// Global font default — makes Poppins the base font for every <Text> and
+// <TextInput> across the app without touching each individual style. Any
+// explicit fontFamily set on a component still wins.
+(RNText as any).defaultProps = (RNText as any).defaultProps || {};
+(RNText as any).defaultProps.style = [
+  { fontFamily: "Poppins-Regular" },
+  (RNText as any).defaultProps.style,
+];
+(RNTextInput as any).defaultProps = (RNTextInput as any).defaultProps || {};
+(RNTextInput as any).defaultProps.style = [
+  { fontFamily: "Poppins-Regular" },
+  (RNTextInput as any).defaultProps.style,
+];
 
 // Module-scope: RevenueCat SDK must initialize exactly once before any
 // component renders. If keys are missing or the SDK is unavailable we log a
@@ -70,8 +84,14 @@ export default function RootLayout() {
   useGlobalScreenCaptureBlock();
   const [iconsLoaded, iconsError] = useIconFonts();
   const [fontsLoaded, fontsError] = useFonts({
-    "BarlowCondensed-Bold": "https://cdn.jsdelivr.net/npm/@fontsource/barlow-condensed@5.0.13/files/barlow-condensed-latin-700-normal.woff",
-    "BarlowCondensed-Medium": "https://cdn.jsdelivr.net/npm/@fontsource/barlow-condensed@5.0.13/files/barlow-condensed-latin-500-normal.woff",
+    "Poppins-Regular": require("../assets/fonts/Poppins-Regular.ttf"),
+    "Poppins-Medium": require("../assets/fonts/Poppins-Medium.ttf"),
+    "Poppins-SemiBold": require("../assets/fonts/Poppins-SemiBold.ttf"),
+    "Poppins-Bold": require("../assets/fonts/Poppins-Bold.ttf"),
+    // Legacy aliases — keeps any pre-existing fontFamily references working
+    // while we transition the whole app to Poppins.
+    "BarlowCondensed-Bold": require("../assets/fonts/Poppins-Bold.ttf"),
+    "BarlowCondensed-Medium": require("../assets/fonts/Poppins-SemiBold.ttf"),
   });
 
   useEffect(() => {
