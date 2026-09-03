@@ -6,6 +6,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { colors, spacing, type, radius } from "@/src/theme";
 import { useAuth } from "@/src/context/auth";
+import { toE164, isLikelyE164 } from "@/src/utils/phone";
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || "";
 const PRIVACY_URL = `${BACKEND_URL}/api/privacy`;
@@ -23,15 +24,14 @@ export default function PhoneEntry() {
 
   const submit = async () => {
     setErr(null);
-    const p = phone.trim();
-    if (p.replace(/\D/g, "").length < 9) { setErr("Enter a valid phone number"); return; }
+    if (!isLikelyE164(phone)) { setErr("Enter a valid phone number"); return; }
+    // Always send the backend the STRICT E.164 form so it matches web-side
+    // records regardless of how the user typed the number.
+    const p = toE164(phone);
     setLoading(true);
     try {
       const r = await requestOtp(p);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      // Only forward `testCode` when the backend actually returned one (dev/admin phones).
-      // Otherwise the OTP screen falsely suggested "use 123456" for regular users
-      // who receive their real code by SMS/WhatsApp.
       router.push({ pathname: "/auth/otp", params: r?.testCode ? { phone: p, testCode: r.testCode } : { phone: p } });
     } catch (e: any) {
       setErr(e.message || "Failed to send code");

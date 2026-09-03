@@ -71,24 +71,50 @@ export default function Checkout() {
 
   const onPayPalNav = async (nav: WebViewNavigation) => {
     const url = nav.url || "";
-    // Detect return / cancel URLs (both go to bbkigali.com/paypal/...)
-    if (url.includes("bbkigali.com/paypal/success") || url.includes("/paypal/success")) {
+    const lower = url.toLowerCase();
+    // Broaden success detection: cover ALL known PayPal return paths across
+    // sandbox/live + our custom domain. If ANY of these markers appear we
+    // assume the user completed the flow and verify against PayPal.
+    const successMarkers = [
+      "/paypal/success",
+      "/paypal/return",
+      "billing/paypal/return",
+      "paymentaction=commit",
+      "checkoutnow?token=",  // classic PayPal one-time
+      "webscr?cmd=_express-checkout",
+      "return_from_paypal=1",
+      "returnurl=",
+      "payerid=",  // PayPal appends ?PayerID=... on approval
+      "subscription_id=",
+    ];
+    const cancelMarkers = [
+      "/paypal/cancel",
+      "billing/paypal/cancel",
+      "?cancel=1",
+      "cancel_return",
+    ];
+    if (cancelMarkers.some((m) => lower.includes(m))) {
+      setPaypalUrl(null);
+      setErr("Payment cancelled.");
+      return;
+    }
+    if (successMarkers.some((m) => lower.includes(m))) {
       setPaypalUrl(null);
       setLoading(true);
       try {
         const r = await api<{ status: string }>(`/billing/paypal/verify/${paypalSubId}`, { method: "POST", auth: true });
         if (r.status === "success") {
-          await refresh();
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-          setSuccess(true);
-        } else {
-          setErr("PayPal reported the subscription is not yet active. It may take a moment — check your Profile.");
+          // Backend is source of truth — reconcile before flipping UI.
+          const status = await syncSubscriptionFromBackend();
+          if (status?.active) {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+            setSuccess(true);
+            return;
+          }
         }
+        setErr("PayPal reported the subscription is not yet active. It may take a moment — check your Profile.");
       } catch (e: any) { setErr(e.message || "Verification failed"); }
       finally { setLoading(false); }
-    } else if (url.includes("bbkigali.com/paypal/cancel") || url.includes("/paypal/cancel")) {
-      setPaypalUrl(null);
-      setErr("Payment cancelled.");
     }
   };
 
@@ -130,13 +156,28 @@ export default function Checkout() {
 
   const onStripeNav = async (nav: WebViewNavigation) => {
     const url = nav.url || "";
-    if (url.includes("/billing/stripe/return") || url.includes("/billing/stripe/cancel")) {
-      const cancelled = url.includes("/cancel");
+    const lower = url.toLowerCase();
+    // Broaden Stripe success/cancel detection: cover our custom return URL,
+    // Stripe's hosted success page, and any URL carrying a completed session id.
+    const cancelMarkers = [
+      "/billing/stripe/cancel",
+      "checkout.stripe.com/pay/cs_test_cancel",  // hosted-cancel edge case
+      "?cancel=1",
+    ];
+    const successMarkers = [
+      "/billing/stripe/return",
+      "/billing/stripe/success",
+      "checkout/success",
+      "session_id=cs_",
+      "checkout_status=complete",
+    ];
+    if (cancelMarkers.some((m) => lower.includes(m))) {
       setStripeUrl(null);
-      if (cancelled) {
-        setErr("Payment cancelled.");
-        return;
-      }
+      setErr("Payment cancelled.");
+      return;
+    }
+    if (successMarkers.some((m) => lower.includes(m))) {
+      setStripeUrl(null);
       if (stripeSessionId) {
         setLoading(true);
         await pollStripe(stripeSessionId);

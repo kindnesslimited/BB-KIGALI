@@ -26,11 +26,20 @@ export const REVENUECAT_ENTITLEMENT_IDENTIFIER = "pro";
 // during development for testing. It is disabled in production web builds.
 export const rcEnabled = Platform.OS !== "web" || __DEV__;
 
-function getRevenueCatApiKey(): string {
+// Tracks whether Purchases.configure() has actually succeeded. All SDK calls
+// (getCustomerInfo, getOfferings, purchasePackage, restore, logIn, listener)
+// throw on Android if the SDK isn't configured — so we guard every call
+// behind this flag and no-op cleanly if the SDK failed to init. This is the
+// difference between "app opens on Android" and "app crashes at cold start".
+let rcConfigured = false;
+export function isRevenueCatConfigured(): boolean { return rcConfigured; }
+
+function getRevenueCatApiKey(): string | null {
   if (!REVENUECAT_TEST_API_KEY || !REVENUECAT_IOS_API_KEY || !REVENUECAT_ANDROID_API_KEY) {
-    throw new Error(
-      "RevenueCat public API keys not found — check EXPO_PUBLIC_REVENUECAT_* env vars",
+    console.warn(
+      "RevenueCat public API keys not fully set — check EXPO_PUBLIC_REVENUECAT_* env vars",
     );
+    return null;
   }
   // Expo Go / dev / web preview → Test Store
   if (Platform.OS === "web" || __DEV__) return REVENUECAT_TEST_API_KEY;
@@ -39,11 +48,23 @@ function getRevenueCatApiKey(): string {
   return REVENUECAT_TEST_API_KEY;
 }
 
-/** MUST be called ONCE at module scope from app/_layout.tsx before any component renders. */
+/** MUST be called ONCE at module scope from app/_layout.tsx before any component renders.
+ *  Failures are non-fatal — the app must still boot even if RevenueCat is down. */
 export function initializeRevenueCat(): void {
   if (!rcEnabled) return;
-  Purchases.setLogLevel(__DEV__ ? LOG_LEVEL.DEBUG : LOG_LEVEL.WARN);
-  Purchases.configure({ apiKey: getRevenueCatApiKey() });
+  const key = getRevenueCatApiKey();
+  if (!key) {
+    // No keys → skip init. All SDK calls will no-op via rcConfigured guard.
+    return;
+  }
+  try {
+    Purchases.setLogLevel(__DEV__ ? LOG_LEVEL.DEBUG : LOG_LEVEL.WARN);
+    Purchases.configure({ apiKey: key });
+    rcConfigured = true;
+  } catch (e) {
+    console.warn("[RevenueCat] configure failed — SDK calls will no-op", e);
+    rcConfigured = false;
+  }
 }
 
 // ---------- QueryClient (used by the SubscriptionProvider) ----------
@@ -60,33 +81,42 @@ export function AppQueryClientProvider({ children }: { children: React.ReactNode
 // ---------- Subscription context ----------
 function useSubscriptionContext() {
   const qc = useQueryClient();
+  // Guard every SDK call by BOTH `rcEnabled` (platform-permitted) AND the
+  // module-scope `rcConfigured` flag (init actually succeeded). On Android
+  // if configure() threw, calling Purchases.getCustomerInfo() would crash.
+  const rcReady = rcEnabled && isRevenueCatConfigured();
 
   const customerInfoQuery = useQuery({
     queryKey: ["revenuecat", "customer-info"],
     queryFn: () => Purchases.getCustomerInfo(),
-    enabled: rcEnabled,
+    enabled: rcReady,
     staleTime: 60 * 1000,
+    retry: false,
   });
 
   const offeringsQuery = useQuery({
     queryKey: ["revenuecat", "offerings"],
     queryFn: () => Purchases.getOfferings(),
-    enabled: rcEnabled,
+    enabled: rcReady,
     staleTime: 5 * 60 * 1000,
+    retry: false,
   });
 
   useEffect(() => {
-    if (!rcEnabled) return;
+    if (!rcReady) return;
     const listener = (info: CustomerInfo) =>
       qc.setQueryData(["revenuecat", "customer-info"], info);
-    Purchases.addCustomerInfoUpdateListener(listener);
+    try {
+      Purchases.addCustomerInfoUpdateListener(listener);
+    } catch { /* SDK not ready — nothing to unsubscribe */ }
     return () => {
       try { Purchases.removeCustomerInfoUpdateListener(listener); } catch { /* noop */ }
     };
-  }, [qc]);
+  }, [qc, rcReady]);
 
   const purchaseMutation = useMutation({
     mutationFn: async (packageToPurchase: PurchasesPackage) => {
+      if (!rcReady) throw new Error("In-app purchases are unavailable on this device.");
       const id = (await Purchases.getCustomerInfo()).originalAppUserId;
       if (id.startsWith("$RCAnonymousID:")) throw new Error("identity_not_ready");
 
@@ -117,7 +147,10 @@ function useSubscriptionContext() {
   });
 
   const restoreMutation = useMutation({
-    mutationFn: () => Purchases.restorePurchases(),
+    mutationFn: async () => {
+      if (!rcReady) throw new Error("Restore is unavailable on this device.");
+      return Purchases.restorePurchases();
+    },
   });
 
   const isSubscribed =
@@ -169,6 +202,10 @@ export function useBindRevenueCatIdentity(userId: string | null | undefined): st
 
   useEffect(() => {
     if (!rcEnabled) return;
+    // If SDK failed to configure (Android edge case), skip identity binding
+    // silently — we don't want the "app couldn't sign in" error banner to
+    // pop up just because IAP is unavailable.
+    if (!isRevenueCatConfigured()) return;
     (async () => {
       try {
         if (userId && bound.current !== userId) {

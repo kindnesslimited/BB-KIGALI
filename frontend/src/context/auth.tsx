@@ -4,6 +4,7 @@ import * as WebBrowser from "expo-web-browser";
 import * as Linking from "expo-linking";
 import { api, saveToken, getToken, clearToken } from "../api";
 import { useBindRevenueCatIdentity } from "../lib/revenuecat";
+import { toE164 } from "../utils/phone";
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -191,11 +192,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [refresh]);
 
   const requestOtp = async (phone: string) =>
-    api<{ testCode?: string }>("/auth/otp/start", { method: "POST", body: { phone } });
+    api<{ testCode?: string }>("/auth/otp/start", { method: "POST", body: { phone: toE164(phone) } });
 
   const verifyOtp = async (phone: string, code: string) => {
     const r = await api<{ accessToken: string; user: User }>("/auth/otp/verify", {
-      method: "POST", body: { phone, code },
+      method: "POST", body: { phone: toE164(phone), code },
     });
     await saveToken(r.accessToken);
     setUser(r.user);

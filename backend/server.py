@@ -547,23 +547,27 @@ async def _send_payment_receipt(*, user_id: Optional[str], phone: Optional[str],
 
 
 def _canonicalize_phone(raw: str) -> str:
-    """Normalize a phone string so that '+250 794 230 137', '250794230137' and
-    '+250794230137' all map to the same canonical form '+250794230137'.
+    """Normalize a phone string to strict E.164 form (always leading '+').
 
-    Rules:
-      - strip whitespace, dashes, dots, parentheses
-      - preserve a leading '+' if present
-      - fall back to '+' + digits if no plus was given but the number is
-        long enough to look like an msisdn
+    So '+250 794 230 137', '250794230137', '(250) 794-230-137' all map to
+    the same canonical form '+250794230137'. Empty input returns ''.
+
+    This is used everywhere we look up users by phone — OTP challenge storage,
+    OTP verify, admin allow-list, /subscription/reconcile, cross-platform
+    account linking. Consistency here is what lets a user who signed up on
+    the web with `250...` also match on mobile with `+250 ...`.
     """
     if not raw:
-        return raw
-    s = raw.strip()
-    plus = s.startswith("+")
+        return ""
+    s = str(raw).strip()
     digits = "".join(ch for ch in s if ch.isdigit())
     if not digits:
-        return s
-    return ("+" + digits) if plus else digits
+        return ""
+    # Always E.164 (leading '+'). If the user typed `00...` we treat those
+    # digits as the international prefix and drop the double zero.
+    if digits.startswith("00"):
+        digits = digits[2:]
+    return "+" + digits
 
 
 @api.post("/auth/otp/start")
@@ -1893,6 +1897,36 @@ async def get_current_terms():
 
 
 # ---------- Payment reconciliation (safety net) ----------
+async def _find_linked_user_ids(user: dict) -> list:
+    """Return every user._id that shares this user's real-world identity
+    (phone, email, appleSub, googleSub) so we can reconcile subscriptions
+    that were paid on a DIFFERENT platform under a DIFFERENT sign-in.
+
+    Example:
+      * Alice signed up on the web with `alice@x.com` (Google) and paid via Stripe.
+      * She installs the mobile app, signs in via phone OTP `+250 123`.
+      * The web-side and mobile-side user rows have different `id`s but the
+        same phone (once linking runs) — this helper surfaces BOTH so the
+        reconcile grants access to the mobile row too.
+    """
+    ids: set[str] = {user.get("id")} if user.get("id") else set()
+    or_terms: list[dict] = []
+    if user.get("phone"):
+        or_terms.append({"phone": user["phone"]})
+    if user.get("email"):
+        or_terms.append({"email": (user["email"] or "").lower()})
+    if user.get("appleSub"):
+        or_terms.append({"appleSub": user["appleSub"]})
+    if user.get("googleSub"):
+        or_terms.append({"googleSub": user["googleSub"]})
+    if not or_terms:
+        return list(ids)
+    async for u in db.users.find({"$or": or_terms}, {"_id": 0, "id": 1}):
+        if u.get("id"):
+            ids.add(u["id"])
+    return list(ids)
+
+
 async def _reconcile_user_payments(user_id: str) -> dict:
     """Idempotent — walks every non-final payment for this user and asks each
     provider if it's now completed. Grants access when a provider confirms
@@ -2000,14 +2034,61 @@ async def _reconcile_user_payments(user_id: str) -> dict:
 async def subscription_reconcile(user = Depends(get_current_user)):
     """Public reconciliation endpoint — safe to call anytime.
 
-    The mobile / web client calls this on app boot AND after any payment flow
-    completes, so a customer who paid but lost the callback still lands with
-    `tier=basic|premium` before the paywall re-renders."""
-    result = await _reconcile_user_payments(user["id"])
+    Cross-platform account linking: if this user's phone / email / appleSub /
+    googleSub matches ANY other user record (e.g. they paid on web, now signed
+    into the mobile app with the same phone), we reconcile payments across
+    ALL linked user records and grant the highest active tier back to the
+    currently-authenticated caller. This prevents double-charging when a
+    single real person has multiple auth identities.
+    """
+    linked_ids = await _find_linked_user_ids(user)
+    aggregate = {"checked": 0, "granted": [], "at": _now_iso()}
+    for uid in linked_ids:
+        r = await _reconcile_user_payments(uid)
+        aggregate["checked"] += r.get("checked", 0)
+        aggregate["granted"].extend(r.get("granted") or [])
+
+    # Also copy any ALREADY-ACTIVE subscription from a linked account onto
+    # this caller's user row. This is what handles the "paid on web, signing
+    # in on mobile for the first time" flow: the mobile row was just created
+    # with tier=free — we lift the paid tier from the linked web row.
+    now = datetime.now(timezone.utc)
+    best_expires: Optional[datetime] = None
+    best_tier: Optional[str] = None
+    best_plan: Optional[str] = None
+    best_provider: Optional[str] = None
+    for uid in linked_ids:
+        u = await db.users.find_one({"id": uid}, {"_id": 0}) or {}
+        exp_str = u.get("subscriptionExpiresAt")
+        if not exp_str:
+            continue
+        try:
+            exp = datetime.fromisoformat(exp_str.replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if exp <= now:
+            continue
+        if best_expires is None or exp > best_expires:
+            best_expires = exp
+            best_tier = u.get("tier")
+            best_plan = u.get("currentPlan")
+            best_provider = u.get("provider")
+    if best_tier and best_tier != "free" and best_expires:
+        await db.users.update_one(
+            {"id": user["id"]},
+            {"$set": {
+                "tier": best_tier,
+                "subscriptionExpiresAt": best_expires.isoformat(),
+                "currentPlan": best_plan,
+                "provider": best_provider or "linked",
+                "linkedFrom": [uid for uid in linked_ids if uid != user["id"]],
+            }},
+        )
+
     u = await db.users.find_one({"id": user["id"]}, {"_id": 0})
     u = await _tier_refresh(u)
     return {
-        **result,
+        **aggregate,
         "user": {
             "tier": u.get("tier", "free"),
             "subscriptionExpiresAt": u.get("subscriptionExpiresAt"),
