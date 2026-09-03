@@ -121,6 +121,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
+    // iOS TestFlight hardening: nothing in this effect may block the
+    // "app finishes booting" signal for longer than a couple of seconds.
+    // Anything that calls out to the network or a native SDK is wrapped in
+    // a Promise.race with a timeout, and setLoading(false) fires no later
+    // than 4 seconds after mount — the auth state will keep updating in the
+    // background as calls resolve, but the UI is unblocked immediately.
+    const bootTimeout = setTimeout(() => setLoading(false), 4000);
+
+    const withTimeout = <T,>(p: Promise<T>, ms: number, fallback: T): Promise<T> =>
+      new Promise((resolve) => {
+        let done = false;
+        const t = setTimeout(() => { if (!done) { done = true; resolve(fallback); } }, ms);
+        p.then((v) => { if (!done) { done = true; clearTimeout(t); resolve(v); } })
+         .catch(() => { if (!done) { done = true; clearTimeout(t); resolve(fallback); } });
+      });
+
     (async () => {
       // Handle Google Sign-In callback FIRST (before checking existing session)
       if (Platform.OS === "web") {
@@ -140,12 +156,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       } else {
         try {
-          const initial = await Linking.getInitialURL();
+          // Wrap in a 1.5s race — Linking.getInitialURL() has been observed
+          // to hang indefinitely on cold iOS TestFlight builds when universal
+          // links aren't fully wired up. We don't want cold-start to depend
+          // on it resolving.
+          const initial = await withTimeout(Linking.getInitialURL(), 1500, null);
           const sid = extractSessionId(initial);
           if (sid) await completeGoogle(sid, setUser);
         } catch (e) { console.log("initial url err", e); }
       }
       await refresh();
+      clearTimeout(bootTimeout);
       setLoading(false);
     })();
 

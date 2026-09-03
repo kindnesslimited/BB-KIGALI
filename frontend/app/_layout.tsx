@@ -21,7 +21,14 @@ import {
 } from "@/src/lib/revenuecat";
 
 LogBox.ignoreAllLogs(true);
-SplashScreen.preventAutoHideAsync();
+// Wrap in try/catch — on iOS TestFlight, if SplashScreen native module isn't
+// initialised at this exact millisecond (rare race on React 19), the Promise
+// rejects and would otherwise show as an unhandled promise warning and, on
+// some devices, freeze the JS bridge. We ignore because if it's already
+// hidden or not yet available, we don't care.
+try {
+  SplashScreen.preventAutoHideAsync().catch(() => { /* ignore */ });
+} catch { /* module not ready — splash will auto-hide */ }
 
 // Global font default — makes Poppins the base font for every <Text> and
 // <TextInput> across the app without touching each individual style. Any
@@ -94,11 +101,28 @@ export default function RootLayout() {
     "BarlowCondensed-Medium": require("../assets/fonts/Poppins-SemiBold.ttf"),
   });
 
+  // iOS TestFlight hardening: on cold start we MUST unblock the render tree
+  // as quickly as possible. Previously we `return null` while fonts loaded
+  // AND kept the splash up until they resolved — if either useFonts hook
+  // stalled on iOS (which we've seen happen in TestFlight builds when the
+  // .ttf asset resolver races against React 19 concurrent rendering) the app
+  // hung on the splash forever. Now:
+  //   * The tree ALWAYS mounts (no more `return null`).
+  //   * The splash is force-hidden after 3 seconds regardless of font state,
+  //     so a stalled font load never traps the user on a black screen.
   useEffect(() => {
-    if ((iconsLoaded || iconsError) && (fontsLoaded || fontsError)) SplashScreen.hideAsync();
+    if ((iconsLoaded || iconsError) && (fontsLoaded || fontsError)) {
+      SplashScreen.hideAsync().catch(() => { /* already hidden */ });
+    }
   }, [iconsLoaded, iconsError, fontsLoaded, fontsError]);
 
-  if ((!iconsLoaded && !iconsError) || (!fontsLoaded && !fontsError)) return null;
+  useEffect(() => {
+    // Absolute safety net — after 3s, kill the splash no matter what.
+    const t = setTimeout(() => {
+      SplashScreen.hideAsync().catch(() => { /* already hidden */ });
+    }, 3000);
+    return () => clearTimeout(t);
+  }, []);
 
   return (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.surface }}>
