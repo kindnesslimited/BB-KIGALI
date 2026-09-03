@@ -1908,23 +1908,117 @@ async def _find_linked_user_ids(user: dict) -> list:
       * The web-side and mobile-side user rows have different `id`s but the
         same phone (once linking runs) — this helper surfaces BOTH so the
         reconcile grants access to the mobile row too.
+
+    We ALSO scan the `payments` collection directly for records whose
+    contact fields (phone/email) match this user, and add those payment
+    owners to the linked set. This covers the case where the web user row
+    only has an email and the mobile user row only has a phone, but the
+    payment record carries BOTH (Stripe collects both at checkout).
     """
     ids: set[str] = {user.get("id")} if user.get("id") else set()
     or_terms: list[dict] = []
-    if user.get("phone"):
-        or_terms.append({"phone": user["phone"]})
-    if user.get("email"):
-        or_terms.append({"email": (user["email"] or "").lower()})
+    phone = user.get("phone")
+    email = (user.get("email") or "").lower() if user.get("email") else None
+    if phone:
+        or_terms.append({"phone": phone})
+    if email:
+        or_terms.append({"email": email})
     if user.get("appleSub"):
         or_terms.append({"appleSub": user["appleSub"]})
     if user.get("googleSub"):
         or_terms.append({"googleSub": user["googleSub"]})
-    if not or_terms:
-        return list(ids)
-    async for u in db.users.find({"$or": or_terms}, {"_id": 0, "id": 1}):
-        if u.get("id"):
-            ids.add(u["id"])
+    if or_terms:
+        async for u in db.users.find({"$or": or_terms}, {"_id": 0, "id": 1}):
+            if u.get("id"):
+                ids.add(u["id"])
+
+    # Walk the payments collection by contact fields — these are stored at
+    # checkout time (Stripe customer email, PayPal payer email, MoMo phone)
+    # so a subscription paid under a DIFFERENT user row still surfaces here.
+    payment_or: list[dict] = []
+    if phone:
+        payment_or.append({"phone": phone})
+    if email:
+        payment_or.append({"email": email})
+        # Stripe stores the customer email under `customerEmail` on some records
+        payment_or.append({"customerEmail": email})
+    if payment_or:
+        async for p in db.payments.find(
+            {"$or": payment_or, "status": "success"},
+            {"_id": 0, "userId": 1},
+        ):
+            if p.get("userId"):
+                ids.add(p["userId"])
     return list(ids)
+
+
+async def _lift_active_subscription_from_payments(user: dict) -> bool:
+    """Look for an ACTIVE paid subscription in the payments collection whose
+    contact fields match this user's phone/email — regardless of which
+    `userId` owned the payment. If found, copy the tier + expiry onto the
+    caller so they get instant access without paying again.
+
+    Returns True if a subscription was lifted."""
+    now = datetime.now(timezone.utc)
+    phone = user.get("phone")
+    email = (user.get("email") or "").lower() if user.get("email") else None
+    if not phone and not email:
+        return False
+    or_terms: list[dict] = []
+    if phone:
+        or_terms.append({"phone": phone})
+    if email:
+        or_terms.append({"email": email})
+        or_terms.append({"customerEmail": email})
+    # Only consider PAID subscription plans (not one-off VOD purchases).
+    query: dict = {
+        "$or": or_terms,
+        "status": "success",
+        "plan": {"$in": list(PLAN_CATALOG.keys())},
+    }
+    best_expires: Optional[datetime] = None
+    best_plan: Optional[str] = None
+    best_provider: Optional[str] = None
+    async for p in db.payments.find(query, {"_id": 0}):
+        plan_key = p.get("plan")
+        plan_def = PLAN_CATALOG.get(plan_key) if plan_key else None
+        if not plan_def:
+            continue
+        # Prefer the actual expiry stored on the payment; else derive from
+        # (createdAt + plan.days).
+        exp: Optional[datetime] = None
+        exp_str = p.get("expiresAt") or p.get("subscriptionExpiresAt")
+        if exp_str:
+            try:
+                exp = datetime.fromisoformat(exp_str.replace("Z", "+00:00"))
+            except Exception:
+                exp = None
+        if exp is None:
+            created_str = p.get("createdAt") or ""
+            try:
+                created = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
+                exp = created + timedelta(days=plan_def["days"])
+            except Exception:
+                continue
+        if exp <= now:
+            continue
+        if best_expires is None or exp > best_expires:
+            best_expires = exp
+            best_plan = plan_key
+            best_provider = p.get("provider") or p.get("method")
+    if not best_expires or not best_plan:
+        return False
+    plan_def = PLAN_CATALOG.get(best_plan) or {}
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {
+            "tier": plan_def.get("tier", "premium"),
+            "subscriptionExpiresAt": best_expires.isoformat(),
+            "currentPlan": best_plan,
+            "provider": best_provider or "linked",
+        }},
+    )
+    return True
 
 
 async def _reconcile_user_payments(user_id: str) -> dict:
@@ -2047,6 +2141,16 @@ async def subscription_reconcile(user = Depends(get_current_user)):
         r = await _reconcile_user_payments(uid)
         aggregate["checked"] += r.get("checked", 0)
         aggregate["granted"].extend(r.get("granted") or [])
+
+    # Cross-platform grant: scan the payments collection directly for an
+    # active paid subscription that matches this user's phone/email — no
+    # matter which `userId` owned that payment on the web. This handles
+    # the exact "paid on web, signing in on mobile for the first time"
+    # scenario the product owner reported.
+    try:
+        await _lift_active_subscription_from_payments(user)
+    except Exception:
+        logger.exception("[reconcile] lift-from-payments failed")
 
     # Also copy any ALREADY-ACTIVE subscription from a linked account onto
     # this caller's user row. This is what handles the "paid on web, signing
@@ -3107,8 +3211,22 @@ async def subscription_status(user = Depends(get_current_user)):
     """Fresh check for the client — returns the current tier + expiry.
     Client should call this before showing an Apple/Google purchase sheet so a
     user who already has an active sub from ANY platform isn't re-charged.
+
+    Cross-platform lift: if the caller's LOCAL user row shows free but the
+    payments collection contains a paid subscription against their phone or
+    email (paid on another platform / different user row), we lift that
+    subscription onto the caller now — no charge, immediate access.
     """
-    u = await _tier_refresh(await db.users.find_one({"id": user["id"]}, {"_id": 0}) or user)
+    u = await db.users.find_one({"id": user["id"]}, {"_id": 0}) or user
+    # Lift any web-paid subscription onto this account before returning status.
+    # Best-effort — never blocks the response.
+    if u.get("tier") == "free":
+        try:
+            if await _lift_active_subscription_from_payments(u):
+                u = await db.users.find_one({"id": user["id"]}, {"_id": 0}) or u
+        except Exception:
+            logger.exception("[subscription-status] lift-from-payments failed")
+    u = await _tier_refresh(u)
     now_iso = datetime.now(timezone.utc).isoformat()
     active = u.get("tier") in ("basic", "premium") and (u.get("subscriptionExpiresAt") or "") > now_iso
     return {

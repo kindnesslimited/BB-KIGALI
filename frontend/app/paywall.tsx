@@ -141,9 +141,15 @@ export default function Paywall() {
     } catch { /* proceed to checkout */ }
 
     // ALL platforms (iOS, Android, Web) → central checkout page with the same
-    // Stripe/PayPal/MoMo options. On iOS the checkout page opens the provider
-    // in the external browser (Safari) rather than an in-app WebView.
-    router.push({ pathname: "/checkout", params: { plan: planKey, amount: String(price) } });
+    // Stripe/PayPal/MoMo options.
+    //
+    // Android modal-on-modal bug: expo-router `push()` from an already-open
+    // modal (paywall) to another modal (checkout) is silently ignored on
+    // Android in some cases (the second modal never appears). Using
+    // `router.replace()` swaps the paywall out for the checkout screen so
+    // the transition is a single modal push, which is reliable on all
+    // platforms.
+    router.replace({ pathname: "/checkout", params: { plan: planKey, amount: String(price) } });
   };
 
   const onRestore = async () => {
