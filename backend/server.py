@@ -4,6 +4,9 @@ import uuid
 import asyncio
 import logging
 import base64
+import hmac
+import hashlib
+import json
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Optional, Literal
@@ -583,11 +586,15 @@ async def otp_start(body: OTPStartIn):
         WHATSAPP_API_URL and WHATSAPP_API_TOKEN,
     ])
 
-    # Generate a fresh 6-digit code. Admin phones + missing SMS credentials => keep the universal test code 123456.
-    if is_admin_phone or not any_provider_ready:
+    # SECURITY (SEC-001): NEVER use the constant "123456" mock code for admin
+    # phones. Admin numbers get a random, single-use, expiring OTP just like
+    # everyone else. The MOCK_OTP_CODE is ONLY allowed in true dev environments
+    # where no SMS provider is configured AND we are not in production.
+    import secrets as _secrets
+    is_dev_env = os.environ.get("APP_ENV", "development").lower() in ("dev", "development", "local")
+    if not any_provider_ready and is_dev_env and not is_admin_phone:
         code = MOCK_OTP_CODE
     else:
-        import secrets as _secrets
         code = f"{_secrets.randbelow(1_000_000):06d}"
 
     await db.otp_challenges.update_one(
@@ -604,15 +611,16 @@ async def otp_start(body: OTPStartIn):
     # Attempt to send via the SMS provider chain. Non-fatal — falls through to dev code if all fail.
     sms_sent = False
     provider_resp = "sms_not_attempted"
-    if not is_admin_phone and any_provider_ready:
+    if any_provider_ready:
         message = f"BB Kigali 89.7 FM: your verification code is {code}. Valid 10 min."
         sms_sent, provider_resp = await _send_sms(normalized, message)
 
     resp: dict = {"ok": True, "smsSent": sms_sent}
-    if is_admin_phone:
-        resp["message"] = "Admin phone — use 123456"
-        resp["testCode"] = MOCK_OTP_CODE
-    elif not sms_sent and SMS_DEV_RETURN_CODE:
+    # SECURITY (SEC-001, SEC-004): NEVER echo the code to the caller in production.
+    # Only surface `testCode` when we are BOTH in a dev environment AND no provider
+    # sent the code — this preserves local-dev ergonomics without leaking codes
+    # from prod SMS-failure paths.
+    if not sms_sent and SMS_DEV_RETURN_CODE and is_dev_env and not is_admin_phone:
         resp["message"] = f"SMS delivery failed ({provider_resp[:60]}) — dev mode: use the code below."
         resp["testCode"] = code
     elif sms_sent:
@@ -625,6 +633,11 @@ async def otp_start(body: OTPStartIn):
     return resp
 
 
+# SECURITY (SEC-004): OTP lifetime + attempt policy.
+OTP_TTL_SECONDS = int(os.environ.get("OTP_TTL_SECONDS", "600"))       # 10 minutes
+OTP_MAX_ATTEMPTS = int(os.environ.get("OTP_MAX_ATTEMPTS", "5"))       # per challenge
+
+
 @api.post("/auth/otp/verify", response_model=AuthOut)
 async def otp_verify(body: OTPVerifyIn):
     # Same canonicalisation as /auth/otp/start — otherwise 'admin phone typed
@@ -633,8 +646,33 @@ async def otp_verify(body: OTPVerifyIn):
     challenge = await db.otp_challenges.find_one({"phone": phone}, {"_id": 0})
     if not challenge:
         raise HTTPException(401, "No OTP challenge. Request a new code.")
+
+    # SECURITY (SEC-004): enforce OTP expiry (default 10 min).
+    try:
+        issued = datetime.fromisoformat((challenge.get("createdAt") or "").replace("Z", "+00:00"))
+        if (datetime.now(timezone.utc) - issued).total_seconds() > OTP_TTL_SECONDS:
+            await db.otp_challenges.delete_one({"phone": phone})
+            raise HTTPException(401, "Code expired. Request a new one.")
+    except HTTPException:
+        raise
+    except Exception:
+        # If we can't parse createdAt, treat as expired for safety.
+        await db.otp_challenges.delete_one({"phone": phone})
+        raise HTTPException(401, "Code expired. Request a new one.")
+
+    # SECURITY (SEC-004): brute-force protection.
+    attempts = int(challenge.get("attempts") or 0)
+    if attempts >= OTP_MAX_ATTEMPTS:
+        await db.otp_challenges.delete_one({"phone": phone})
+        raise HTTPException(429, "Too many attempts. Request a new code.")
+
     submitted = body.code.strip()
-    expected = challenge.get("code") or MOCK_OTP_CODE
+    expected = challenge.get("code")
+    # SECURITY (SEC-001): NEVER fall back to MOCK_OTP_CODE. If no code was
+    # stored, force the user to request a fresh challenge.
+    if not expected:
+        await db.otp_challenges.delete_one({"phone": phone})
+        raise HTTPException(401, "No OTP challenge. Request a new code.")
     if submitted != expected:
         await db.otp_challenges.update_one({"phone": phone}, {"$inc": {"attempts": 1}})
         raise HTTPException(401, "Invalid code")
@@ -1980,30 +2018,70 @@ async def subscription_reconcile(user = Depends(get_current_user)):
 
 @api.post("/subscription/rc-sync")
 async def rc_sync(body: RcSyncIn, current = Depends(get_current_user)):
-    """Best-effort in-session unlock after a successful RevenueCat purchase on iOS.
+    """Server-verified unlock after a successful RevenueCat purchase.
 
-    The RevenueCat SDK is the SOURCE OF TRUTH for `customerInfo.entitlements.active`
-    on-device — this endpoint just mirrors that state into MongoDB so backend-gated
-    endpoints (VOD, /live/status) recognise the user as premium immediately, without
-    waiting for RevenueCat's server-to-server webhook.
-
-    Security: this endpoint accepts a client hint. A malicious client can fake this
-    call, so we ALWAYS reconcile against RevenueCat's authoritative state via the
-    webhook (or on next SDK `getCustomerInfo`). Do NOT rely on this endpoint alone
-    for lifetime revenue reporting.
+    SECURITY (SEC-002): This endpoint MUST NOT trust the caller. It queries
+    RevenueCat's REST API for the CURRENT `customerInfo.entitlements.active`
+    for this user and only grants a subscription if RevenueCat confirms an
+    ACTIVE entitlement (default `pro`). Without a valid RC v1 API key, or
+    without an active RC entitlement, the request is rejected — no free grants.
     """
     plan = PLAN_CATALOG.get(body.plan)
     if not plan:
         raise HTTPException(400, "Invalid plan")
 
+    rc_api_key = (os.environ.get("REVENUECAT_API_KEY_V1")
+                  or os.environ.get("REVENUECAT_REST_API_KEY")
+                  or "").strip()
+    if not rc_api_key:
+        # Fail closed: without a way to verify with RevenueCat, we cannot grant.
+        logger.error("[rc-sync] REVENUECAT_API_KEY_V1 not configured — refusing to grant entitlement")
+        raise HTTPException(503, "Subscription verification unavailable. Try again shortly.")
+
+    # RevenueCat REST: subscriber is looked up by `app_user_id`. Our Expo app
+    # calls `Purchases.logIn(user.id)` so the RC subscriber id equals our
+    # backend user id. Fetch the CURRENT subscriber state.
+    entitlement_key = "pro"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as c:
+            r = await c.get(
+                f"https://api.revenuecat.com/v1/subscribers/{current['id']}",
+                headers={
+                    "Authorization": f"Bearer {rc_api_key}",
+                    "X-Platform": "ios",
+                },
+            )
+    except Exception as e:
+        logger.exception("[rc-sync] RevenueCat REST call failed: %s", e)
+        raise HTTPException(502, "Could not verify with RevenueCat. Try again.")
+
+    if r.status_code == 404:
+        raise HTTPException(403, "No RevenueCat purchase found on this account.")
+    if r.status_code != 200:
+        logger.warning("[rc-sync] RevenueCat responded %s: %s", r.status_code, r.text[:200])
+        raise HTTPException(502, "RevenueCat verification failed.")
+
+    subscriber = ((r.json() or {}).get("subscriber") or {})
+    active_ents = (subscriber.get("entitlements") or {})
+    ent = active_ents.get(entitlement_key)
+    if not ent:
+        raise HTTPException(403, "No active RevenueCat entitlement found.")
+    # `expires_date` is UTC ISO. `None` means non-consumable/lifetime — treat as active.
+    expires_str = ent.get("expires_date")
+    rc_expires_at: Optional[datetime] = None
+    if expires_str:
+        try:
+            rc_expires_at = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
+        except Exception:
+            rc_expires_at = None
+        if rc_expires_at and rc_expires_at <= datetime.now(timezone.utc):
+            raise HTTPException(403, "RevenueCat entitlement has expired.")
+
+    # Authoritative expiry comes from RC. If RC returned an explicit expiry, use it.
+    # If not (lifetime), fall back to the plan window.
     now = datetime.now(timezone.utc)
-    expires = now + timedelta(days=plan["days"])
+    expires = rc_expires_at or (now + timedelta(days=plan["days"]))
     payment_id = str(uuid.uuid4())
-    # Apple IAP + Google Play IAP both bill in the user's local currency but we
-    # priced the RevenueCat products in EUR (€3 / €30), so record EUR in the
-    # payment log — that's what the customer sees on their receipt and what
-    # matches the Stripe/PayPal Premium price. This keeps mixed-currency totals
-    # honest instead of silently converting to RWF.
     plan_amount_eur = 3.0 if body.plan == "premium_monthly" else 30.0
     payment = {
         "id": payment_id,
@@ -2015,7 +2093,9 @@ async def rc_sync(body: RcSyncIn, current = Depends(get_current_user)):
         "method": "apple_iap",
         "provider": "revenuecat",
         "status": "success",
-        "note": "client_hint_pending_webhook",
+        "note": "verified_via_rc_rest",
+        "rcEntitlement": entitlement_key,
+        "rcExpiresAt": expires_str,
         "createdAt": now.isoformat(),
     }
     await db.payments.insert_one(payment.copy())
@@ -2299,9 +2379,39 @@ async def momo_initiate(body: MoMoInitiateIn, user = Depends(get_current_user)):
 
 @api.post("/billing/momo/callback")
 async def momo_callback(request: Request):
-    """Webhook receiver for BeSoft Pay. Configure this URL as your merchant webhook_url on BeSoft."""
+    """Webhook receiver for BeSoft Pay. Configure this URL as your merchant webhook_url on BeSoft.
+
+    SECURITY (SEC-003): Requests are authenticated via HMAC-SHA256 over the raw
+    request body, using `BESOFT_WEBHOOK_SECRET`. If the secret is not configured
+    we FAIL CLOSED — an unauthenticated request MUST NOT be able to grant a
+    paid subscription.
+    """
+    raw_body = await request.body()
+
+    besoft_secret = (os.environ.get("BESOFT_WEBHOOK_SECRET") or "").strip()
+    if not besoft_secret:
+        logger.error("[momo-callback] BESOFT_WEBHOOK_SECRET not configured — rejecting webhook")
+        raise HTTPException(503, "Webhook signature verification not configured.")
+
+    # BeSoft docs vary between deployments. Accept several conventional header names.
+    provided_sig = (
+        request.headers.get("X-BeSoft-Signature")
+        or request.headers.get("X-Besoft-Signature")
+        or request.headers.get("x-besoft-signature")
+        or request.headers.get("X-Signature")
+        or request.headers.get("Signature")
+        or ""
+    ).strip().lower()
+    if provided_sig.startswith("sha256="):
+        provided_sig = provided_sig[len("sha256="):]
+
+    computed = hmac.new(besoft_secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest().lower()
+    if not provided_sig or not hmac.compare_digest(computed, provided_sig):
+        logger.warning("[momo-callback] signature mismatch (provided=%s…)", provided_sig[:12])
+        raise HTTPException(401, "Invalid webhook signature.")
+
     try:
-        payload = await request.json()
+        payload = json.loads(raw_body.decode("utf-8") or "{}")
     except Exception:
         return {"ok": False, "error": "invalid_json"}
     logger.info("BeSoft webhook: %s", payload)
