@@ -11,7 +11,7 @@
     "jsEngine": "hermes",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.bbkigali.fm",
+      "bundleIdentifier": "com.bbkigalifm.app",
       "jsEngine": "hermes",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
@@ -38,7 +38,7 @@
       },
       "edgeToEdgeEnabled": true,
       "softwareKeyboardLayoutMode": "pan",
-      "package": "com.bbkigali.fm",
+      "package": "com.bbkigalifm.app",
       "jsEngine": "hermes",
       "usesCleartextTraffic": true,
       "permissions": [
