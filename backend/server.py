@@ -1106,6 +1106,21 @@ async def live_status(refresh: bool = False, user = Depends(get_optional_user)):
         result = await _yt_live_refresh(db)
     else:
         result = await _yt_live_get_cached(db)
+    # New multi-channel cache stores {channels: [...], anyLive, checkedAt}.
+    # Coerce to the legacy single-channel shape for this endpoint.
+    if isinstance(result, dict) and "channels" in result:
+        first_live = next((c for c in result.get("channels") or [] if c.get("isLive")), None)
+        primary = (result.get("channels") or [{}])[0]
+        result = {
+            "isLive": bool(first_live),
+            "videoId": (first_live or {}).get("videoId"),
+            "title": (first_live or {}).get("title"),
+            "thumbnail": (first_live or {}).get("thumbnail"),
+            "startedAt": (first_live or {}).get("startedAt"),
+            "channelTitle": (first_live or primary).get("channelName"),
+            "checkedAt": result.get("checkedAt"),
+            "error": None,
+        }
     if not (result.get("isLive") and result.get("videoId")):
         # Not live — nothing to protect. Strip protected fields defensively anyway.
         return {k: v for k, v in result.items() if k not in _PROTECTED_LIVE_FIELDS}
@@ -1116,6 +1131,73 @@ async def live_status(refresh: bool = False, user = Depends(get_optional_user)):
         result["requiresSubscription"] = False
         return result
     return _sanitize_live_for_public(result)
+
+
+@api.get("/live/channels")
+async def live_channels(refresh: bool = False, user = Depends(get_optional_user)):
+    """Multi-channel live status. One card per configured channel, each with
+    its own name + live badge + video ID when broadcasting.
+
+    Response:
+    ```json
+    {
+      "channels": [
+        { "key": "bbkigalifm", "channelName": "BB Kigali FM",
+          "channelId": "UC...", "isLive": true, "videoId": "abc",
+          "title": "...", "thumbnail": "...",
+          "watchUrl": "https://...", "embedUrl": "https://...",
+          "requiresSubscription": false }
+      ],
+      "anyLive": true,
+      "checkedAt": "2026-09-05T..."
+    }
+    ```
+
+    Playback URLs (`watchUrl`, `embedUrl`, `videoId`) are gated behind an
+    active paid subscription. Non-subscribers still get `isLive` + `title` +
+    `thumbnail` + `channelName` so the LIVE badge can render without
+    exposing the stream URL.
+    """
+    if refresh:
+        result = await _yt_live_refresh(db)
+    else:
+        result = await _yt_live_get_cached(db)
+    # Old single-channel cache → wrap into new shape.
+    if not isinstance(result, dict) or "channels" not in result:
+        result = {"channels": [{
+            "key": "bbkigalifm", "handle": "@bbkigalifm",
+            "channelId": None, "channelName": (result or {}).get("channelTitle"),
+            "isLive": (result or {}).get("isLive", False),
+            "videoId": (result or {}).get("videoId"),
+            "title": (result or {}).get("title"),
+            "thumbnail": (result or {}).get("thumbnail"),
+            "startedAt": (result or {}).get("startedAt"),
+            "checkedAt": (result or {}).get("checkedAt"),
+            "error": (result or {}).get("error"),
+        }], "anyLive": bool((result or {}).get("isLive")), "checkedAt": (result or {}).get("checkedAt")}
+
+    subscribed = _has_active_paid_sub(user)
+    out_channels: list[dict] = []
+    for ch in result.get("channels") or []:
+        c = dict(ch)  # shallow copy
+        if c.get("isLive") and c.get("videoId"):
+            if subscribed:
+                vid = c["videoId"]
+                c["watchUrl"] = f"https://www.youtube.com/watch?v={vid}"
+                c["embedUrl"] = f"https://www.youtube.com/embed/{vid}?autoplay=1&playsinline=1&rel=0&modestbranding=1&enablejsapi=1&origin=https%3A%2F%2Fweb.bbkigali.com"
+                c["requiresSubscription"] = False
+            else:
+                # Non-subscriber: keep isLive + title + thumbnail + channelName,
+                # strip anything that leaks the stream URL.
+                for k in ("videoId", "watchUrl", "embedUrl"):
+                    c[k] = None
+                c["requiresSubscription"] = True
+        out_channels.append(c)
+    return {
+        "channels": out_channels,
+        "anyLive": any(c.get("isLive") for c in out_channels),
+        "checkedAt": result.get("checkedAt"),
+    }
 
 
 @api.get("/live/session")

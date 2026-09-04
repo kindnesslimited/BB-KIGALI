@@ -1,25 +1,36 @@
-"""YouTube LIVE detection for BB Kigali FM — OAuth-only, zero search.list quota.
+"""YouTube LIVE detection for BB Kigali FM — multi-channel, API-key based.
 
-Fixes applied (Iter 39):
-  * REMOVED: `search.list` calls (100 quota units/call, hit daily cap quickly).
-  * REMOVED: channel-handle lookups via `forHandle`.
-  * ADDED: OAuth channel-id resolution — `GET /youtube/v3/channels?part=id&mine=true`
-    using the stored access_token (auto-refreshed from refresh_token).
-  * ADDED: OAuth live-status probe — `GET /youtube/v3/liveBroadcasts?part=snippet,status&broadcastStatus=active`
-    which costs only 1 quota unit and returns every active broadcast the OAuth
-    user owns. Channel is live when any item has `status.lifeCycleStatus == 'live'`.
-  * ADDED: 401 auto-recovery — access_token is refreshed once on 401, then retried.
-  * ADDED: Multi-channel support — checks BB Kigali FM main + UCJ0ATFj2Hp03v-kXxh4fV6w
-    (B&B Kigali Official) and returns the first one found live.
+Design (Iter 47):
+  * Supports N configured channels, each monitored INDEPENDENTLY.
+  * Live-detection strategy: fetch `https://www.youtube.com/channel/{CID}/live`
+    which YouTube redirects to the ACTIVE broadcast's watch URL when live, or
+    to the channel's home page when not. This costs ZERO YouTube Data API
+    quota — perfect for polling every 60 seconds across many channels.
+  * Channel-ID resolution: one-time `channels?forHandle=@handle&key=API_KEY`
+    call per handle (1 quota unit, cached in DB forever).
+  * Video metadata (title / thumbnail): `videos?id={vid}&part=snippet` — 1
+    quota unit, ONLY when the channel is actually live.
 
-Response shape is unchanged so the existing frontend keeps working:
-  {isLive, videoId, title, thumbnail, startedAt, channelTitle, checkedAt, error}
+Response shape:
+  { channels: [
+      { key, handle, channelId, channelName, isLive, videoId, title,
+        thumbnail, startedAt, watchUrl, embedUrl, checkedAt, error }
+    ],
+    anyLive: bool,
+    checkedAt: iso8601 }
+
+Legacy single-channel shape (kept for old mobile builds that still hit the
+old endpoint):
+  { isLive, videoId, title, thumbnail, startedAt, channelTitle, checkedAt,
+    error, requiresSubscription }
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -28,258 +39,264 @@ import httpx
 logger = logging.getLogger(__name__)
 
 YT_API = "https://www.googleapis.com/youtube/v3"
-GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
+YT_LIVE_REDIRECT_TMPL = "https://www.youtube.com/channel/{cid}/live"
 
-# Env fallbacks — server.py stores the effective client_id/secret in
-# integration_state.youtube_config, but we accept env overrides too.
-GOOGLE_OAUTH_CLIENT_ID = (
-    os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
-    or os.environ.get("YOUTUBE_OAUTH_CLIENT_ID")
-    or ""
-).strip()
-GOOGLE_OAUTH_CLIENT_SECRET = (
-    os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
-    or os.environ.get("YOUTUBE_OAUTH_CLIENT_SECRET")
-    or ""
-).strip()
-
-# Channels we care about — user directive: main BB Kigali FM channel + B&B Kigali Official.
-# Main channel id resolves dynamically via `channels?mine=true` (kept in DB).
-# Second one is pinned by explicit channel id.
-SECONDARY_CHANNEL_ID = "UCJ0ATFj2Hp03v-kXxh4fV6w"  # B&B Kigali Official
-
+YOUTUBE_API_KEY = (os.environ.get("YOUTUBE_API_KEY") or "").strip()
 YOUTUBE_LIVE_POLL_SECONDS = int(os.environ.get("YOUTUBE_LIVE_POLL_SECONDS", "600"))
 
+# ---------------------------------------------------------------------------
+# Channels supported by the BB Kigali app. Order matters — the aggregate
+# `anyLive` picks the first one currently live, so the primary channel goes
+# first. Add or remove entries here to change the app's live-detection set.
+# ---------------------------------------------------------------------------
+CHANNELS: list[dict] = [
+    {"key": "bbkigalifm",  "handle": "@bbkigalifm",       "displayName": "BB Kigali FM"},
+    {"key": "bandb2t6",    "handle": "@BANDB2T6OFFICIAL", "displayName": "B&B 2T6 Official"},
+    {"key": "bbsportsbar", "handle": "@BBSPORTSBAR",      "displayName": "BB Sports Bar"},
+]
+
 
 # ---------------------------------------------------------------------------
-# OAuth token helpers
+# Channel-ID resolution — cached forever in `integration_state.youtube_channels`.
 # ---------------------------------------------------------------------------
-async def _get_oauth_creds(db) -> tuple[Optional[str], Optional[str], Optional[str]]:
-    """Return (refresh_token, client_id, client_secret) from DB, falling back
-    to env vars for client_id/secret."""
-    cfg = await db.integration_state.find_one({"key": "youtube_config"}, {"_id": 0}) or {}
-    rt = (cfg.get("oauthRefreshToken") or "").strip() or None
-    cid = (cfg.get("oauthClientId") or GOOGLE_OAUTH_CLIENT_ID or "").strip() or None
-    csec = (cfg.get("oauthClientSecret") or GOOGLE_OAUTH_CLIENT_SECRET or "").strip() or None
-    return rt, cid, csec
+async def _get_channel_cache(db) -> dict:
+    doc = await db.integration_state.find_one({"key": "youtube_channels"}, {"_id": 0}) or {}
+    return doc.get("cache") or {}
 
 
-async def _refresh_access_token(db) -> Optional[str]:
-    """Exchange the stored refresh_token for a fresh access_token."""
-    rt, cid, csec = await _get_oauth_creds(db)
-    if not (rt and cid and csec):
+async def _save_channel_cache(db, cache: dict) -> None:
+    await db.integration_state.update_one(
+        {"key": "youtube_channels"},
+        {"$set": {"key": "youtube_channels", "cache": cache,
+                  "updatedAt": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+
+
+async def _resolve_channel_by_handle(handle: str) -> Optional[dict]:
+    """One-time `channels?forHandle=` lookup (1 quota unit). Returns
+    {id, title} on success, None on any failure."""
+    if not YOUTUBE_API_KEY or not handle:
         return None
     try:
         async with httpx.AsyncClient(timeout=10.0) as c:
-            r = await c.post(GOOGLE_OAUTH_TOKEN_URL, data={
-                "client_id": cid,
-                "client_secret": csec,
-                "refresh_token": rt,
-                "grant_type": "refresh_token",
+            r = await c.get(f"{YT_API}/channels", params={
+                "part": "id,snippet",
+                "forHandle": handle,
+                "key": YOUTUBE_API_KEY,
             })
-        if r.status_code == 200:
-            tok = (r.json() or {}).get("access_token")
-            if tok:
-                # Cache in DB for other request-handlers to reuse before expiry.
-                await db.integration_state.update_one(
-                    {"key": "youtube_config"},
-                    {"$set": {
-                        "oauthAccessToken": tok,
-                        "oauthAccessTokenAt": datetime.now(timezone.utc).isoformat(),
-                    }},
-                )
-                return tok
-        logger.warning("[youtube-live] refresh_token exchange %s: %s", r.status_code, r.text[:200])
+        if r.status_code != 200:
+            logger.warning("[yt-live] resolve %s → %s: %s", handle, r.status_code, r.text[:200])
+            return None
+        items = (r.json() or {}).get("items") or []
+        if not items:
+            return None
+        it = items[0]
+        return {"id": it.get("id"), "title": (it.get("snippet") or {}).get("title")}
     except Exception:
-        logger.exception("[youtube-live] refresh_token exchange failed")
-    return None
+        logger.exception("[yt-live] resolve %s failed", handle)
+        return None
 
 
-async def _get_access_token(db, force_refresh: bool = False) -> Optional[str]:
-    """Return a usable access_token. Reuses the DB-cached one if <50 min old,
-    otherwise refreshes."""
-    if not force_refresh:
-        cfg = await db.integration_state.find_one({"key": "youtube_config"}, {"_id": 0}) or {}
-        tok = cfg.get("oauthAccessToken")
-        at = cfg.get("oauthAccessTokenAt")
-        if tok and at:
-            try:
-                issued = datetime.fromisoformat(at.replace("Z", "+00:00"))
-                age = (datetime.now(timezone.utc) - issued).total_seconds()
-                if age < 3000:  # <50min — well under Google's 1h token lifetime
-                    return tok
-            except Exception:
-                pass
-    return await _refresh_access_token(db)
-
-
-async def _yt_get(db, path: str, params: dict) -> tuple[int, dict]:
-    """Authenticated YouTube API GET with automatic 401→refresh→retry."""
-    async def _do(token: str):
-        async with httpx.AsyncClient(timeout=15.0) as c:
-            return await c.get(f"{YT_API}{path}", params=params,
-                               headers={"Authorization": f"Bearer {token}"})
-
-    tok = await _get_access_token(db)
-    if not tok:
-        return 0, {"error": "oauth_not_connected"}
-    r = await _do(tok)
-    if r.status_code == 401:
-        # access_token expired mid-flight — refresh once and retry.
-        tok = await _get_access_token(db, force_refresh=True)
-        if not tok:
-            return 401, {"error": "oauth_refresh_failed"}
-        r = await _do(tok)
-    try:
-        return r.status_code, r.json() if r.content else {}
-    except Exception:
-        return r.status_code, {"raw": r.text[:300]}
+async def ensure_channel_ids(db) -> dict:
+    """Resolve every configured channel's ID (once) and return the cache map
+    { key: {handle, channelId, channelName} }. Idempotent."""
+    cache = await _get_channel_cache(db)
+    dirty = False
+    for ch in CHANNELS:
+        key = ch["key"]
+        entry = cache.get(key) or {}
+        # Re-resolve if the cache is missing an ID or the handle changed.
+        if not entry.get("channelId") or entry.get("handle") != ch["handle"]:
+            info = await _resolve_channel_by_handle(ch["handle"])
+            if info and info.get("id"):
+                cache[key] = {
+                    "handle": ch["handle"],
+                    "channelId": info["id"],
+                    "channelName": info.get("title") or ch["displayName"],
+                    "resolvedAt": datetime.now(timezone.utc).isoformat(),
+                }
+                dirty = True
+    if dirty:
+        await _save_channel_cache(db, cache)
+    return cache
 
 
 # ---------------------------------------------------------------------------
-# Channel + live-broadcast probes
+# Live probe — HTML-only, zero API quota.
 # ---------------------------------------------------------------------------
-async def _list_mine_channels(db) -> list[dict]:
-    """`channels?part=id,snippet&mine=true` — every channel the OAuth user manages."""
-    status, body = await _yt_get(db, "/channels", {"part": "id,snippet", "mine": "true"})
-    if status != 200:
-        return []
-    return (body.get("items") or [])
+_VIDEO_ID_RE = re.compile(r'"videoId":"([A-Za-z0-9_-]{11})"')
+_CANONICAL_RE = re.compile(r'<link\s+rel="canonical"\s+href="([^"]+)"')
+_TITLE_RE = re.compile(r'<meta\s+name="title"\s+content="([^"]+)"')
+_IS_LIVE_RE = re.compile(r'"isLiveNow":\s*true|"isLive":\s*true|"isUpcoming":\s*false[^"]*"isLive":\s*true')
 
 
-async def _list_active_broadcasts(db) -> list[dict]:
-    """`liveBroadcasts?broadcastStatus=active&part=snippet,status&mine=true` —
-    every active broadcast across the OAuth user's channels. 1 quota unit."""
-    status, body = await _yt_get(db, "/liveBroadcasts", {
-        "part": "snippet,status",
-        "broadcastStatus": "active",
-        "broadcastType": "all",
-        "mine": "true",
-        "maxResults": 10,
-    })
-    if status != 200:
-        return []
-    return (body.get("items") or [])
-
-
-def _pick_thumbnail(thumbs: dict) -> Optional[str]:
-    for k in ("maxres", "standard", "high", "medium", "default"):
-        v = (thumbs or {}).get(k)
-        if v and v.get("url"):
-            return v["url"]
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Public entrypoint
-# ---------------------------------------------------------------------------
-async def check_live_now(handle: Optional[str] = None, db=None) -> dict:
-    """Return the current LIVE status for BB Kigali. Same shape as before.
-
-    Strategy (100% OAuth, zero search.list):
-      1. Resolve `channels?mine=true` → collect all channel IDs the OAuth user
-         owns. Cache the primary one in `integration_state.youtube_config.channelId`.
-      2. Fetch `liveBroadcasts?broadcastStatus=active&mine=true` — returns every
-         active broadcast the OAuth user is running.
-      3. For each active broadcast, check `status.lifeCycleStatus == 'live'`.
-      4. Prefer broadcasts on the target channels (main BB Kigali FM + secondary
-         UCJ0ATFj2Hp03v-kXxh4fV6w). Return the first match.
-    """
-    now_iso = datetime.now(timezone.utc).isoformat()
+async def _probe_channel_live(channel_id: str) -> dict:
+    """Returns {isLive, videoId, title, thumbnail, watchUrl, embedUrl}.
+    Zero quota — plain HTTP fetch of the /channel/{id}/live redirect page."""
+    url = YT_LIVE_REDIRECT_TMPL.format(cid=channel_id)
     out: dict = {
-        "isLive": False, "videoId": None, "title": None, "thumbnail": None,
-        "startedAt": None, "channelTitle": None, "checkedAt": now_iso, "error": None,
+        "isLive": False, "videoId": None, "title": None,
+        "thumbnail": None, "watchUrl": None, "embedUrl": None,
     }
-    if db is None:
-        out["error"] = "db_not_provided"
-        return out
+    try:
+        async with httpx.AsyncClient(
+            timeout=8.0, follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (BB-Kigali-LiveProbe)",
+                     "Accept-Language": "en-US,en;q=0.9"},
+        ) as c:
+            r = await c.get(url)
+    except Exception as e:
+        return {**out, "error": f"probe_failed:{e.__class__.__name__}"}
+    if r.status_code != 200:
+        return {**out, "error": f"probe_http_{r.status_code}"}
 
-    # Confirm OAuth is connected
-    rt, cid, csec = await _get_oauth_creds(db)
-    if not (rt and cid and csec):
-        out["error"] = "OAuth not connected — connect the admin YouTube account in /admin/settings"
-        return out
+    html = r.text
+    final = str(r.url)
 
-    # 1) Refresh channel-id cache from OAuth (cheap: 1 quota unit)
-    channels = await _list_mine_channels(db)
-    owned_channel_ids: list[str] = []
-    primary_title: Optional[str] = None
-    for it in channels:
-        cid_ = it.get("id")
-        if cid_:
-            owned_channel_ids.append(cid_)
-        snip = it.get("snippet") or {}
-        if not primary_title:
-            primary_title = snip.get("title")
+    # 1) If YouTube redirected to a /watch?v=... page, the channel is live.
+    m = re.search(r"[?&]v=([A-Za-z0-9_-]{11})", final)
+    video_id: Optional[str] = m.group(1) if m else None
 
-    if owned_channel_ids:
-        # Persist primary channel_id for other callers/reporting.
-        await db.integration_state.update_one(
-            {"key": "youtube_config"},
-            {"$set": {"channelId": owned_channel_ids[0], "channelName": primary_title}},
-        )
+    # 2) Fallback: some regions redirect to the channel home with the live
+    #    video embedded — parse the videoId from the canonical link or from
+    #    the ytInitialPlayerResponse blob.
+    if not video_id:
+        cm = _CANONICAL_RE.search(html)
+        if cm and "watch?v=" in cm.group(1):
+            m2 = re.search(r"v=([A-Za-z0-9_-]{11})", cm.group(1))
+            if m2:
+                video_id = m2.group(1)
 
-    # Target channel filter (main + explicit secondary from spec)
-    target_ids = set(owned_channel_ids) | {SECONDARY_CHANNEL_ID}
-
-    # 2) Ask YouTube for active broadcasts
-    broadcasts = await _list_active_broadcasts(db)
-
-    # 3) Find the first LIVE broadcast that belongs to a target channel
-    for b in broadcasts:
-        status_obj = b.get("status") or {}
-        if status_obj.get("lifeCycleStatus") != "live":
-            continue
-        snippet = b.get("snippet") or {}
-        ch_id = snippet.get("channelId")
-        # Filter to our target channels (main + UCJ0AT…). If channel_id isn't
-        # in the target set, skip — keeps unrelated broadcasts out.
-        if target_ids and ch_id and ch_id not in target_ids:
-            continue
+    # 3) Confirm it's actually LIVE (not a scheduled premiere) — look for
+    #    the isLive marker inside the player response payload.
+    is_live_flag = bool(_IS_LIVE_RE.search(html))
+    if video_id and (is_live_flag or "hlsManifestUrl" in html):
+        # Pull the title from the meta tag (cheap, no extra API call).
+        tm = _TITLE_RE.search(html)
+        title = tm.group(1) if tm else None
         out.update({
             "isLive": True,
-            "videoId": b.get("id"),  # liveBroadcast.id IS the videoId
-            "title": snippet.get("title"),
-            "thumbnail": _pick_thumbnail(snippet.get("thumbnails") or {}),
-            "startedAt": snippet.get("actualStartTime") or snippet.get("scheduledStartTime") or snippet.get("publishedAt"),
-            "channelTitle": snippet.get("channelTitle") or primary_title,
+            "videoId": video_id,
+            "title": title,
+            "thumbnail": f"https://i.ytimg.com/vi/{video_id}/hqdefault_live.jpg",
+            "watchUrl": f"https://www.youtube.com/watch?v={video_id}",
+            "embedUrl": f"https://www.youtube.com/embed/{video_id}?autoplay=1&playsinline=1",
         })
-        return out
-
-    # No live broadcast — still report channelTitle so the UI can show branding.
-    out["channelTitle"] = primary_title
     return out
 
 
 # ---------------------------------------------------------------------------
-# DB-cached wrappers (compat layer — server.py imports these names)
+# Public API — multi-channel status
+# ---------------------------------------------------------------------------
+async def check_all_channels(db) -> dict:
+    """Return the live status for EVERY configured channel."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    cache = await ensure_channel_ids(db)
+    results: list[dict] = []
+    any_live = False
+
+    # Probe channels in parallel — each probe is a single HTTP fetch.
+    async def _probe_one(ch: dict) -> dict:
+        entry = cache.get(ch["key"]) or {}
+        cid = entry.get("channelId")
+        if not cid:
+            return {
+                "key": ch["key"], "handle": ch["handle"],
+                "channelId": None, "channelName": ch["displayName"],
+                "isLive": False, "videoId": None, "title": None,
+                "thumbnail": None, "startedAt": None,
+                "watchUrl": None, "embedUrl": None,
+                "checkedAt": now_iso,
+                "error": "channel_id_unresolved",
+            }
+        probe = await _probe_channel_live(cid)
+        return {
+            "key": ch["key"], "handle": ch["handle"],
+            "channelId": cid,
+            "channelName": entry.get("channelName") or ch["displayName"],
+            "isLive": probe.get("isLive", False),
+            "videoId": probe.get("videoId"),
+            "title": probe.get("title"),
+            "thumbnail": probe.get("thumbnail"),
+            "watchUrl": probe.get("watchUrl"),
+            "embedUrl": probe.get("embedUrl"),
+            "startedAt": None,  # not available from the HTML probe
+            "checkedAt": now_iso,
+            "error": probe.get("error"),
+        }
+
+    probes = await asyncio.gather(*[_probe_one(ch) for ch in CHANNELS], return_exceptions=True)
+    for r in probes:
+        if isinstance(r, Exception):
+            logger.exception("[yt-live] probe raised: %s", r)
+            continue
+        results.append(r)
+        if r.get("isLive"):
+            any_live = True
+
+    return {"channels": results, "anyLive": any_live, "checkedAt": now_iso}
+
+
+# ---------------------------------------------------------------------------
+# Legacy single-channel wrapper — kept for backward compatibility with any
+# clients still calling the old endpoint.
+# ---------------------------------------------------------------------------
+async def check_live_now(handle: Optional[str] = None, db=None) -> dict:
+    """Return the FIRST live channel in the aggregate result, or a not-live
+    payload with metadata from the primary channel."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if db is None:
+        return {"isLive": False, "videoId": None, "title": None, "thumbnail": None,
+                "startedAt": None, "channelTitle": None, "checkedAt": now_iso,
+                "error": "db_not_provided"}
+    agg = await check_all_channels(db)
+    for ch in agg["channels"]:
+        if ch.get("isLive"):
+            return {
+                "isLive": True, "videoId": ch.get("videoId"), "title": ch.get("title"),
+                "thumbnail": ch.get("thumbnail"), "startedAt": ch.get("startedAt"),
+                "channelTitle": ch.get("channelName"),
+                "checkedAt": now_iso, "error": None,
+            }
+    # Nothing live — return the primary channel's branding.
+    primary = agg["channels"][0] if agg["channels"] else {}
+    return {
+        "isLive": False, "videoId": None, "title": None, "thumbnail": None,
+        "startedAt": None, "channelTitle": primary.get("channelName"),
+        "checkedAt": now_iso, "error": None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# DB-cached wrappers — server.py imports these names.
 # ---------------------------------------------------------------------------
 _CACHE_KEY = "youtube_live_cache"
-_CACHE_TTL = 60  # seconds — server-side cache tames quota use
+_CACHE_TTL = 60  # seconds — cheap HTML probes, but no need to hammer YouTube
 
 
 async def refresh_and_store(db, handle: Optional[str] = None) -> dict:
-    """Force a fresh live-status check and persist the result."""
-    result = await check_live_now(handle=handle, db=db)
+    """Force a fresh multi-channel status refresh and persist it."""
+    agg = await check_all_channels(db)
     try:
         await db.integration_state.update_one(
             {"key": _CACHE_KEY},
-            {"$set": {"key": _CACHE_KEY, "result": result,
+            {"$set": {"key": _CACHE_KEY, "result": agg,
                       "cachedAt": datetime.now(timezone.utc).isoformat()}},
             upsert=True,
         )
     except Exception:
-        logger.exception("[youtube-live] cache persist failed")
-    return result
+        logger.exception("[yt-live] cache persist failed")
+    return agg
 
 
 async def get_cached_or_refresh(db) -> dict:
-    """Return the cached live status if <60s old; otherwise refresh."""
+    """Return cached multi-channel status if <60s old, else refresh."""
     try:
         doc = await db.integration_state.find_one({"key": _CACHE_KEY}, {"_id": 0}) or {}
         result = doc.get("result")
         cached_at = doc.get("cachedAt")
-        if result and cached_at:
+        if result and cached_at and isinstance(result, dict) and "channels" in result:
             try:
                 cached_dt = datetime.fromisoformat(cached_at.replace("Z", "+00:00"))
                 age = (datetime.now(timezone.utc) - cached_dt).total_seconds()
@@ -288,15 +305,15 @@ async def get_cached_or_refresh(db) -> dict:
             except Exception:
                 pass
     except Exception:
-        logger.exception("[youtube-live] cache read failed")
+        logger.exception("[yt-live] cache read failed")
     return await refresh_and_store(db)
 
 
 async def periodic_live_loop(db) -> None:
-    """Background task: refreshes the cache every YOUTUBE_LIVE_POLL_SECONDS."""
+    """Background task — refresh the multi-channel cache periodically."""
     while True:
         try:
             await refresh_and_store(db)
         except Exception:
-            logger.exception("[youtube-live] periodic refresh failed")
+            logger.exception("[yt-live] periodic refresh failed")
         await asyncio.sleep(YOUTUBE_LIVE_POLL_SECONDS)

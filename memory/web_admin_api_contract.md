@@ -351,3 +351,88 @@ Open the admin panel in Chrome DevTools device toolbar at these viewport sizes a
 - **No fixed viewport heights** (`100vh`) inside admin content — iOS Safari's dynamic toolbar makes those clip.
 
 Once these ship, no mobile-app rebuild is needed — the WebView will render the responsive admin correctly on iOS + Android + desktop web from the same URL.
+
+
+---
+
+## 7 — Multi-Channel YouTube Live (Iter 47)
+
+The app now monitors **three** YouTube channels independently. All UI (Live TV in the subscriber app, Live Control card grid in the admin panel) must render one card per channel.
+
+### 7.1 `GET /api/live/channels`
+Public endpoint (auth optional — stream URLs are gated to paid subscribers only, but everyone can see the LIVE badge + title + thumbnail + channel name).
+
+Query params:
+- `refresh=true` — bypass the 60-second server cache and force a fresh probe.
+
+Response:
+```json
+{
+  "channels": [
+    {
+      "key": "bbkigalifm",
+      "handle": "@bbkigalifm",
+      "channelId": "UC-6FrLSB7eFVXqEeDNADaQg",
+      "channelName": "BB Kigali FM",
+      "isLive": true,
+      "videoId": "abc123XYZ_1",              // subscribers only, else null
+      "title": "MURI SPORTS N' IGITEGO",
+      "thumbnail": "https://i.ytimg.com/vi/abc/hqdefault_live.jpg",
+      "watchUrl": "https://www.youtube.com/watch?v=abc123XYZ_1",   // subs only
+      "embedUrl": "https://www.youtube.com/embed/abc123XYZ_1?...", // subs only
+      "startedAt": null,
+      "checkedAt": "2026-09-04T21:52:20Z",
+      "error": null,
+      "requiresSubscription": false          // present when isLive === true
+    },
+    { "key": "bandb2t6",    "channelName": "B&B 2T6 Official", "...": "..." },
+    { "key": "bbsportsbar", "channelName": "BB Sports Bar",    "...": "..." }
+  ],
+  "anyLive": true,
+  "checkedAt": "2026-09-04T21:52:20Z"
+}
+```
+
+**Cards always exist for all 3 channels**, even when not live — so the admin can see "not live now" status per channel. Under 768px the cards stack vertically (see § 6.2).
+
+Channel keys are stable — they'll never change:
+- `bbkigalifm` → BB Kigali FM (@bbkigalifm) — primary
+- `bandb2t6` → B&B 2T6 Official (@BANDB2T6OFFICIAL)
+- `bbsportsbar` → BB Sports Bar (@BBSPORTSBAR)
+
+### 7.2 Non-subscribers vs subscribers
+| Field | Non-subscriber (or no auth) | Active subscription |
+|---|---|---|
+| `isLive`, `title`, `thumbnail`, `channelName` | ✅ visible | ✅ visible |
+| `videoId`, `watchUrl`, `embedUrl` | 🚫 `null` | ✅ populated |
+| `requiresSubscription` | `true` when live | `false` |
+
+Rendering rules for the Web Agent:
+- Non-subscribers still see the "LIVE" badge + title + thumbnail — this is what drives the paywall CTA ("Subscribe to watch").
+- Subscribers see the same UI PLUS a "Watch Live" button that opens `embedUrl` in an inline player.
+
+### 7.3 `GET /api/live/status` (legacy, kept for backward compat)
+Returns the FIRST live channel from the aggregate above, coerced to the old single-channel shape used by pre-Iter-47 clients. New UIs should use `/api/live/channels`.
+
+### 7.4 `GET /api/live/session` (subscribers only)
+Unchanged. Returns the fresh signed playback URL for the current live broadcast (whichever channel is live first). Returns HTTP 402 if the caller has no active subscription.
+
+### 7.5 Quota + refresh behavior
+- Each channel is monitored by fetching `https://www.youtube.com/channel/{ID}/live` and parsing the HTML — this costs **zero** YouTube Data API quota.
+- Channel-ID resolution (`channels?forHandle=`) runs once per channel and is cached in `integration_state.youtube_channels` forever (1 quota unit each on first boot).
+- Live status is cached server-side for 60 seconds. The web admin should call `/api/live/channels` (without `refresh=true`) at 60-second intervals — anything faster just hits the cache.
+- The admin panel may pass `refresh=true` when the user clicks a "Refresh now" button — this ignores the cache for one call.
+
+### 7.6 Admin panel — Live Control cards
+Render one card per channel from the `channels[]` array. Each card must show:
+- Channel name (bold, top of card)
+- LIVE badge (red pill) when `isLive: true`; grey "OFFLINE" pill otherwise
+- Current video title when live
+- Thumbnail (falls back to placeholder when null)
+- Timestamp of last check (`checkedAt`)
+- Actions: "Open in YouTube" (uses `watchUrl`), "Refresh" (refetches with `refresh=true`)
+
+Under 768px, the cards stack vertically per § 6.2. Do not use a fixed grid — use `display: flex; flex-direction: column; gap: 12px;` on mobile.
+
+### 7.7 Subscriber Live TV section
+Iterate `channels[]` and show a card ONLY for the ones with `isLive: true`. If none is live (`anyLive: false`), fall back to a "No live broadcasts right now — check the schedule" message.
