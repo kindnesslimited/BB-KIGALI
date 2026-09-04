@@ -24,8 +24,9 @@ import {
   Alert,
   Pressable,
   Platform,
+  StatusBar as RNStatusBar,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
 import type { WebView as WebViewType } from "react-native-webview";
 import * as SplashScreen from "expo-splash-screen";
@@ -97,6 +98,7 @@ function OfflineScreen({ onRetry }: { onRetry: () => void }) {
 // ---------------------------------------------------------------------------
 export default function App() {
   const webRef = useRef<WebViewType>(null);
+  const insets = useSafeAreaInsets();
   const [showSplash, setShowSplash] = useState(true);
   const [loading, setLoading] = useState(true);
   const [online, setOnline] = useState(true);
@@ -104,6 +106,48 @@ export default function App() {
   // Nonce forces the WebView to fully remount on retry (source={{ uri: WEB_URL }}
   // alone won't reload after a network failure).
   const [retryNonce, setRetryNonce] = useState(0);
+
+  // -----------------------------------------------------------------------
+  // Viewport injector — runs BEFORE the site's own <head> executes so the
+  // mobile browser lays the page out at the phone's device-pixel width from
+  // frame 0. Without this, sites that ship a desktop-first stylesheet render
+  // at their fixed CSS width (usually 1024–1440 px) and the WebView shrinks
+  // the result down, which is why "the text is too big and the top menu is
+  // cut off" — the page is actually WIDER than the phone and content that
+  // sits at the top-right is scrolled off-screen.
+  //
+  // We also enable pinch-to-zoom (user-scalable=yes) as requested.
+  // -----------------------------------------------------------------------
+  const injectedBeforeLoad = `
+    (function () {
+      try {
+        var META_ID = "bbfm-viewport";
+        function ensureMeta() {
+          if (document.getElementById(META_ID)) return;
+          var m = document.createElement("meta");
+          m.id = META_ID;
+          m.name = "viewport";
+          m.content = "width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover";
+          // Replace any existing viewport tag the site shipped
+          var existing = document.querySelectorAll('meta[name="viewport"]');
+          for (var i = 0; i < existing.length; i++) existing[i].parentNode.removeChild(existing[i]);
+          (document.head || document.documentElement).appendChild(m);
+        }
+        ensureMeta();
+        // Some SPAs (React Native Web + Next.js in particular) rewrite <head>
+        // AFTER first paint. Watch for that and re-assert the viewport tag.
+        var mo = new MutationObserver(function () { ensureMeta(); });
+        mo.observe(document.documentElement, { childList: true, subtree: true });
+        // Belt-and-suspenders: also inject a CSS reset that guarantees the
+        // page body itself is capped at the device width, so a rogue element
+        // with fixed 100vw can't blow the layout out horizontally.
+        var s = document.createElement("style");
+        s.textContent = "html,body{max-width:100vw !important;overflow-x:hidden !important;-webkit-text-size-adjust:100% !important;text-size-adjust:100% !important;}";
+        (document.head || document.documentElement).appendChild(s);
+      } catch (e) { /* non-fatal */ }
+    })();
+    true;
+  `;
 
   // --- Web fallback: on the web platform (RN-Web), the react-native-webview
   //     package is a stub. Redirect straight to the target URL so opening
@@ -183,13 +227,36 @@ export default function App() {
 
   return (
     <View style={styles.fill} testID="webview-container">
+      {/* Safe-area top padding — status bar + notch reserved so the site's
+          top navigation is fully visible. Bottom is left flush so the site
+          can render its own footer or nothing (WebView content extends to
+          the home-indicator area on iOS — matches native mobile browsers). */}
+      <View
+        style={{
+          height:
+            Platform.OS === "ios"
+              ? insets.top
+              : (RNStatusBar.currentHeight || 0),
+          backgroundColor: SPLASH_BG,
+        }}
+      />
       <WebView
         key={retryNonce}
         ref={webRef}
         source={{ uri: WEB_URL }}
         style={styles.fill}
-        // No browser chrome — Expo WebView doesn't render a URL bar by
-        // default; we only need to guarantee full-bleed and no top nav.
+        // Viewport fix — inject meta viewport BEFORE the page's <head> runs
+        // so the site lays out at device-width. This is the fix for the
+        // "text is too big / top menu cut off" report.
+        injectedJavaScriptBeforeContentLoaded={injectedBeforeLoad}
+        // Also inject after content loads in case the page rewrote <head>.
+        injectedJavaScript={injectedBeforeLoad}
+        // Pinch-to-zoom: users can zoom in/out as requested.
+        scalesPageToFit
+        // iOS-only: use compact vertical scroll indicator and don't let the
+        // system add invisible content insets that push the top nav out of view.
+        automaticallyAdjustContentInsets={false}
+        contentInsetAdjustmentBehavior="never"
         // Camera + microphone: grant automatically so the web app can request
         // getUserMedia() without a permission race.
         mediaPlaybackRequiresUserAction={false}
@@ -199,23 +266,18 @@ export default function App() {
         onLoadEnd={() => setLoading(false)}
         onError={() => setLoading(false)}
         onHttpError={() => setLoading(false)}
-        // Android-specific media permission auto-grant. The `webview-android`
-        // `onPermissionRequest` prop maps to WebChromeClient.onPermissionRequest;
-        // returning `grant` unlocks camera/mic without a system prompt.
+        // Android-specific media permission auto-grant.
         onPermissionRequest={(request: any) => {
           try { request.grant(request.resources); } catch { /* older RN-WebView */ }
         }}
-        // iOS/Android — allow file uploads (avatars, images in comments)
         allowsFullscreenVideo
         javaScriptEnabled
         domStorageEnabled
         thirdPartyCookiesEnabled
         sharedCookiesEnabled
         originWhitelist={["*"]}
-        // Allow the web app to open external tel:/mailto:/whatsapp:// links.
         setSupportMultipleWindows={false}
         pullToRefreshEnabled
-        // Keep session alive across app backgrounding.
         cacheEnabled
       />
       {loading && <LoadingOverlay />}
