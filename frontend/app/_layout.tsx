@@ -17,8 +17,8 @@ try {
 export default function RootLayout() {
   return (
     <SafeAreaProvider>
-      <StatusBar style="light" backgroundColor="#000000" />
-      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#000000" } }}>
+      <StatusBar style="dark" backgroundColor="#FFFFFF" />
+      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#FFFFFF" } }}>
         <Stack.Screen name="index" />
       </Stack>
     </SafeAreaProvider>

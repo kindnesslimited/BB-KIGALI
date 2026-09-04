@@ -32,23 +32,23 @@ import * as SplashScreen from "expo-splash-screen";
 import NetInfo, { NetInfoState } from "@react-native-community/netinfo";
 
 const WEB_URL = "https://web.bbkigali.com";
-const BRAND_COLOR = "#E10600";
-const SURFACE = "#000000";
+const BRAND_RED = "#E10600";
+const SPLASH_BG = "#FFFFFF";
 const SPLASH_MS = 2000;
 
 // ---------------------------------------------------------------------------
-// Brand splash — held for exactly 2 seconds on cold start.
+// Brand splash — held for exactly 2 seconds on cold start. The BB Kigali FM
+// logo already contains the station name, frequency and tagline so we just
+// display the artwork centered on the brand-white background.
 // ---------------------------------------------------------------------------
 function BBSplash() {
   return (
-    <View style={styles.center} testID="bb-splash">
+    <View style={styles.splash} testID="bb-splash">
       <Image
-        source={require("../assets/images/icon.png")}
-        style={styles.brandLogo}
+        source={require("../assets/images/bbfm-logo-transparent.png")}
+        style={styles.splashLogo}
         resizeMode="contain"
       />
-      <Text style={styles.brandTitle}>BB KIGALI FM</Text>
-      <Text style={styles.brandTagline}>MURI SPORTS, NI IGITEGO!</Text>
     </View>
   );
 }
@@ -60,11 +60,11 @@ function LoadingOverlay() {
   return (
     <View style={styles.overlay} pointerEvents="none" testID="webview-loader">
       <Image
-        source={require("../assets/images/icon.png")}
+        source={require("../assets/images/bbfm-logo-transparent.png")}
         style={styles.overlayLogo}
         resizeMode="contain"
       />
-      <ActivityIndicator size="large" color={BRAND_COLOR} style={{ marginTop: 18 }} />
+      <ActivityIndicator size="large" color={BRAND_RED} style={{ marginTop: 18 }} />
     </View>
   );
 }
@@ -74,13 +74,12 @@ function LoadingOverlay() {
 // ---------------------------------------------------------------------------
 function OfflineScreen({ onRetry }: { onRetry: () => void }) {
   return (
-    <SafeAreaView style={styles.center} testID="offline-screen">
+    <SafeAreaView style={styles.splash} testID="offline-screen">
       <Image
-        source={require("../assets/images/icon.png")}
-        style={styles.brandLogo}
+        source={require("../assets/images/bbfm-logo-transparent.png")}
+        style={styles.offlineLogo}
         resizeMode="contain"
       />
-      <Text style={styles.brandTitle}>BB KIGALI FM</Text>
       <Text style={styles.offlineTitle}>You&apos;re offline</Text>
       <Text style={styles.offlineBody}>
         We can&apos;t reach the internet right now. Check your Wi-Fi or mobile
@@ -225,47 +224,34 @@ export default function App() {
 }
 
 // ---------------------------------------------------------------------------
-// Styles — brand palette only. All copy strings stay in English.
+// Styles — brand palette only.
 // ---------------------------------------------------------------------------
 const styles = StyleSheet.create({
-  fill: { flex: 1, backgroundColor: SURFACE },
-  center: {
+  fill: { flex: 1, backgroundColor: "#000000" },
+  splash: {
     flex: 1,
-    backgroundColor: SURFACE,
+    backgroundColor: SPLASH_BG,
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 24,
   },
-  brandLogo: { width: 120, height: 120 },
-  brandTitle: {
-    color: "#FFFFFF",
-    fontSize: 24,
-    letterSpacing: 3,
-    fontWeight: "800",
-    marginTop: 20,
-  },
-  brandTagline: {
-    color: BRAND_COLOR,
-    fontSize: 12,
-    letterSpacing: 2.5,
-    fontWeight: "700",
-    marginTop: 8,
-  },
+  splashLogo: { width: 280, height: 200 },
   overlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: SURFACE,
+    backgroundColor: SPLASH_BG,
     alignItems: "center",
     justifyContent: "center",
   },
-  overlayLogo: { width: 96, height: 96 },
+  overlayLogo: { width: 200, height: 140 },
+  offlineLogo: { width: 220, height: 150, marginBottom: 8 },
   offlineTitle: {
-    color: "#FFFFFF",
+    color: "#111111",
     fontSize: 20,
     fontWeight: "700",
-    marginTop: 32,
+    marginTop: 24,
   },
   offlineBody: {
-    color: "#B7B7B7",
+    color: "#555555",
     fontSize: 14,
     textAlign: "center",
     lineHeight: 20,
@@ -274,7 +260,7 @@ const styles = StyleSheet.create({
   },
   retryBtn: {
     marginTop: 28,
-    backgroundColor: BRAND_COLOR,
+    backgroundColor: BRAND_RED,
     paddingHorizontal: 40,
     paddingVertical: 14,
     borderRadius: 999,
