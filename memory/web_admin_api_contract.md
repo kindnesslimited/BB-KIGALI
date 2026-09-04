@@ -272,3 +272,82 @@ curl -sH "Authorization: Bearer $JWT" -o report.pdf \
 ```
 
 If any of these return anything other than a 2xx JSON / PDF, the Web agent should NOT ship — file the issue against this backend, not against a new one.
+
+
+---
+
+## 6 — Admin UI Responsive Requirements
+
+**Reported issue (Sept 2026)**: On phone-sized screens, the admin dashboard charts and cards take up the full viewport and there is no room for navigation — the top nav is cut off, tables overflow horizontally, and no menu is reachable. The mobile shell (native app at `com.bbkigali.fm`) is a fullscreen WebView loading `https://web.bbkigali.com`, so this is 100% a web-side responsive design fix.
+
+The mobile WebView already handles its side of the contract:
+- Injects `<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover">` **before** the site's own `<head>` runs and re-asserts it via `MutationObserver` on every DOM mutation.
+- Reserves the notch / status bar height above the WebView so the site's top nav is never physically covered.
+- Enables pinch-to-zoom.
+- Auto-grants camera + microphone.
+
+The web admin must meet these requirements so the WebView renders correctly:
+
+### 6.1 Breakpoint
+Everything below applies at `@media (max-width: 768px)`. Above that, keep the current desktop layout.
+
+### 6.2 Layout — stacked, single column
+- All KPI cards and charts stack **vertically, one per row** (`grid-template-columns: 1fr`).
+- No horizontal grid columns, no side-by-side charts.
+- Card min-height under 768px: max ~200px so multiple cards fit in one viewport scroll.
+- Charts: cap height at `200px–240px`, never `100vh` or unconstrained `aspect-ratio`.
+- Charts must render at `width: 100%` of their parent card — no fixed pixel widths.
+
+### 6.3 Navigation — collapsible sidebar via hamburger
+- The current left sidebar must **hide by default** under 768px (`transform: translateX(-100%)` or `display: none` — off-canvas).
+- Add a **hamburger button** in the top-left of the admin header (WCAG-accessible: `<button aria-label="Open menu" aria-expanded="false">`).
+- Tapping the hamburger slides the sidebar in as an overlay (`position: fixed; inset: 0 auto 0 0; width: 82vw; max-width: 320px; transform: translateX(0);`).
+- A translucent scrim covers the rest of the screen; tapping the scrim closes the sidebar.
+- After navigating to a section, close the sidebar automatically.
+- Menu items stay full-width, minimum 44px tap target, matching the desktop menu items 1:1 — no hidden sections.
+
+### 6.4 Tables — horizontally scrollable
+Payment history, users, subscriptions, audit log, etc. must NOT overflow the viewport.
+- Wrap every table in `<div style="overflow-x: auto; -webkit-overflow-scrolling: touch;">`.
+- Keep the header row sticky at the top of the scroll container (`position: sticky; top: 0;`) so column meaning is always visible while scrolling horizontally.
+- Consider a "card view" fallback for the smallest screens (< 380px) where each row renders as a stacked mini-card of `label: value` pairs — same data, no horizontal scroll needed.
+
+### 6.5 Top-nav / header
+- Header height under 768px: fixed 56px (Material-style), sticky at `top: 0`.
+- Contents (left → right): hamburger button, BB Kigali logo (compact 32px), spacer, one utility icon max (e.g. sign-out).
+- Do NOT stack secondary controls in the header on mobile — move them into the sidebar drawer.
+
+### 6.6 Typography
+- Base font-size: 14px on mobile (down from 16px desktop).
+- Card titles: 13px, uppercase, letter-spacing 1px.
+- Big KPI numbers: `clamp(24px, 6vw, 32px)` — never let them exceed one viewport column.
+- Never rely on `-webkit-text-size-adjust: none` — the WebView explicitly overrides it to `100%` for accessibility.
+
+### 6.7 Buttons & inputs
+- Minimum touch target 44 × 44 px.
+- Filter chips wrap onto multiple rows; never a horizontal scroll strip.
+- Date-range picker: use the native `<input type="date">` on mobile so users get the OS picker (much better UX than a custom desktop calendar in a 320px column).
+
+### 6.8 Charts (Recharts / Chart.js / whatever you use)
+- Set `<ResponsiveContainer width="100%" height={220}>` — never a fixed pixel width.
+- Legend goes BELOW the chart on mobile (`legend={{ position: 'bottom' }}` or equivalent).
+- Reduce X-axis tick count so labels don't overlap: `tickCount={4}` under 768px.
+- Tooltip should render **inside** the viewport bounds — some libraries need `allowEscapeViewBox={{ x: false, y: false }}`.
+
+### 6.9 Testing checklist for the Web Agent before shipping
+Open the admin panel in Chrome DevTools device toolbar at these viewport sizes and confirm each requirement:
+
+| Device                  | Width | Must show                                                                 |
+|-------------------------|------:|---------------------------------------------------------------------------|
+| iPhone SE               | 375px | Hamburger visible, cards stacked, tables scroll horizontally, no clipping |
+| iPhone 15 Pro           | 393px | Same as above                                                             |
+| Pixel 8                 | 412px | Same as above                                                             |
+| iPad Mini (portrait)    | 768px | Just above the breakpoint — desktop layout kicks in                       |
+| Small Android (Nokia 2) | 360px | Everything remains usable, header stays at 56px, KPI numbers don't wrap   |
+
+### 6.10 Non-negotiables
+- **Nothing overflows the viewport horizontally.** `body { overflow-x: hidden }` is the mobile WebView's belt-and-suspenders — but the web app must not rely on it. Fix the actual layout.
+- **Every admin action must be reachable** without pinch-zoom. Pinch is a bonus for reading fine print, not a required navigation gesture.
+- **No fixed viewport heights** (`100vh`) inside admin content — iOS Safari's dynamic toolbar makes those clip.
+
+Once these ship, no mobile-app rebuild is needed — the WebView will render the responsive admin correctly on iOS + Android + desktop web from the same URL.
