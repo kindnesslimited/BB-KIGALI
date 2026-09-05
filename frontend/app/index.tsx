@@ -128,31 +128,38 @@ export default function App() {
   // screenshot won't contain the protected content (defensive on iOS where
   // screenshots of DRM'd content are already blank).
   // -----------------------------------------------------------------------
+  // -----------------------------------------------------------------------
+  // Screen capture / recording protection.
+  //
+  // ⚠️ Android: we DELIBERATELY do NOT call `preventScreenCaptureAsync` on
+  // Android because `FLAG_SECURE` breaks HTML5 <video> playback inside
+  // WebView — the SurfaceView / TextureView the video renderer needs
+  // cannot allocate under FLAG_SECURE on many devices, so the spinner
+  // rotates forever and the video never appears. Since this is a
+  // WebView-first app where video playback IS the primary use case,
+  // native anti-screenshot is incompatible. The web app must handle any
+  // Android-side content-protection via DRM (Widevine) inside the player
+  // itself if required.
+  //
+  // ✅ iOS: `preventScreenCaptureAsync` is safe here — it blanks recorded
+  //    pixels at the compositor level, ABOVE the WebView, without
+  //    interfering with video surface allocation. iOS video plays
+  //    normally while the OS still blocks screen recording output.
+  //
+  // A screenshot listener is registered on BOTH platforms so we can
+  // reinforce the Terms-of-Service policy via an alert.
+  // -----------------------------------------------------------------------
   useEffect(() => {
     let removeShotSub: (() => void) | null = null;
     (async () => {
-      try {
-        // Applies APP-WIDE — screenshots and screen recordings are hard-blocked:
-        //   • Android: FLAG_SECURE is set on the current activity, so any
-        //     screenshot or screen recording renders as pure black. Also
-        //     hides the app content from the recent-apps preview.
-        //   • iOS 11+: iOS itself blanks the recorded video output when this
-        //     is active, so screen recordings show a black frame instead of
-        //     the app pixels — equivalent protection to FLAG_SECURE.
-        //   • iOS 13+: screenshots of the app content are also blanked.
-        await ScreenCapture.preventScreenCaptureAsync("bbfm-primary");
-      } catch { /* expo-screen-capture unavailable (Expo Go dev) — safe no-op */ }
-      // iOS-only: also blur the app when it enters the app switcher /
-      // background, so the app preview thumbnail leaks nothing sensitive.
       if (Platform.OS === "ios") {
+        try {
+          await ScreenCapture.preventScreenCaptureAsync("bbfm-primary");
+        } catch { /* module unavailable in Expo Go — safe no-op */ }
         try {
           await ScreenCapture.enableAppSwitcherProtectionAsync?.(0.9);
         } catch { /* API not available on older iOS — safe no-op */ }
       }
-      // Screenshot attempt listener — warn the user that BB Kigali content
-      // is protected. On iOS the actual pixel content is already blanked
-      // thanks to preventScreenCaptureAsync above; the alert reinforces
-      // the Terms & Conditions policy in-app.
       try {
         const sub = ScreenCapture.addScreenshotListener(() => {
           Alert.alert(
@@ -168,8 +175,9 @@ export default function App() {
     })();
     return () => {
       removeShotSub?.();
-      // Re-allow capture on unmount so the OS returns to default state.
-      ScreenCapture.allowScreenCaptureAsync("bbfm-primary").catch(() => { /* noop */ });
+      if (Platform.OS === "ios") {
+        ScreenCapture.allowScreenCaptureAsync("bbfm-primary").catch(() => { /* noop */ });
+      }
     };
   }, []);
 
@@ -209,23 +217,23 @@ export default function App() {
         // with fixed 100vw can't blow the layout out horizontally.
         var s = document.createElement("style");
         s.textContent = "html,body{max-width:100vw !important;overflow-x:hidden !important;-webkit-text-size-adjust:100% !important;text-size-adjust:100% !important;}"
-          // Video-player logo overlay killer — hides BB Kigali logo watermarks
-          // that appear ON TOP of the video and block content on mobile. Targets
-          // any image / logo / watermark element positioned inside or right next
-          // to a <video>, or inside anything with a "player" class. The main
-          // app-shell logo (outside these containers) is untouched.
-          + " video ~ img, video + img, video ~ .logo, video ~ [class*='logo' i],"
-          + " video ~ [class*='watermark' i], video ~ [class*='brand' i],"
-          + " video ~ [class*='overlay' i]:not([class*='control' i]):not([class*='caption' i]):not([class*='subtitle' i]),"
-          + " [class*='player' i] > img[src*='logo' i],"
-          + " [class*='player' i] > img[alt*='logo' i],"
-          + " [class*='player' i] [class*='watermark' i],"
-          + " [class*='player' i] [class*='brand-overlay' i],"
-          + " [class*='videoplayer' i] img[src*='bbfm' i],"
-          + " [class*='videoplayer' i] img[alt*='bb kigali' i],"
-          + " .vjs-watermark, .plyr__logo, .jw-logo,"
-          + " [data-testid*='player-logo' i], [data-testid*='watermark' i]"
-          + " { display: none !important; visibility: hidden !important; opacity: 0 !important; }";
+          // Video-player logo watermark killer — hides BB Kigali branding
+          // that some players overlay ON TOP of the video pixels.
+          //
+          // ⚠️ IMPORTANT: this selector list is intentionally NARROW so it
+          // cannot hit legitimate player parts (loading spinner, play
+          // controls, big-play-button, buffering indicator, poster image,
+          // captions). Only elements whose class or src explicitly says
+          // "watermark", "brand-overlay" or contains "bbfm" / "bb kigali"
+          // are removed. This is the fix for "logo keeps rotating
+          // infinitely" — the previous, broader selector was hiding the
+          // player's own overlay elements and blocking playback.
+          + " [class*='watermark' i], .vjs-watermark, .plyr__logo, .jw-logo,"
+          + " [class*='brand-overlay' i], [class*='player-watermark' i],"
+          + " img[src*='bbfm-logo' i], img[alt='BB Kigali FM' i],"
+          + " img[src*='bb-kigali' i][class*='logo' i],"
+          + " [data-testid*='player-watermark' i], [data-testid='video-logo']"
+          + " { display: none !important; visibility: hidden !important; opacity: 0 !important; pointer-events: none !important; }";
         (document.head || document.documentElement).appendChild(s);
       } catch (e) { /* non-fatal */ }
     })();
@@ -328,6 +336,12 @@ export default function App() {
         ref={webRef}
         source={{ uri: WEB_URL }}
         style={styles.fill}
+        // Some video CDNs reject default Android WebView user-agents (which
+        // contain `; wv` and get treated as bots). Override with a stock
+        // Chrome Mobile UA so HLS/DASH/MP4 streaming works reliably.
+        userAgent={Platform.OS === "android"
+          ? "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+          : undefined}
         // Viewport fix — inject meta viewport BEFORE the page's <head> runs
         // so the site lays out at device-width. This is the fix for the
         // "text is too big / top menu cut off" report.
