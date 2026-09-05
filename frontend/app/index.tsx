@@ -34,7 +34,7 @@ import * as ScreenCapture from "expo-screen-capture";
 import NetInfo, { NetInfoState } from "@react-native-community/netinfo";
 import { useRouter } from "expo-router";
 
-const WEB_URL = "https://web.bbkigali.com";
+const WEB_URL = process.env.EXPO_PUBLIC_WEB_URL || "https://web.bbkigali.com";
 const BRAND_RED = "#E10600";
 const SPLASH_BG = "#FFFFFF";
 const SPLASH_MS = 2000;

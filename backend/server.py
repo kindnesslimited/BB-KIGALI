@@ -240,8 +240,70 @@ async def get_optional_user(authorization: Optional[str] = Header(None)):
         return None
 
 
+# ---------------------------------------------------------------------------
+# Service-to-service authentication for the vod-platform-access controller.
+#
+# `vod-platform-access` is the central controller of the whole platform
+# (web frontend + admin + orchestration). When it calls this backend on
+# behalf of a specific end-user, it sends the user's normal Bearer JWT.
+# When it needs to run backend-side jobs (admin dashboards, cron, cross-
+# user analytics, bulk exports, migrations) it sends BOTH:
+#
+#   Authorization:    Bearer <SERVICE_TOKEN>          ← proves it's the controller
+#   X-Impersonate:    <user_id or admin_phone>         ← optional, which user to act as
+#
+# If SERVICE_TOKEN is not set in env, service-token auth is disabled and
+# only end-user JWT/session-token auth works (backward-compatible default).
+# ---------------------------------------------------------------------------
+SERVICE_TOKEN = (os.environ.get("SERVICE_TOKEN") or "").strip()
 
-async def get_current_user(authorization: Optional[str] = Header(None)):
+
+async def _resolve_service_impersonation(impersonate: Optional[str]) -> dict:
+    """When the service token calls us, materialise a user object to act as.
+    Defaults to a synthetic admin service user if no impersonation is given."""
+    if impersonate:
+        # Look up by id first, fall back to phone or email.
+        u = await db.users.find_one({"id": impersonate}, {"_id": 0})
+        if not u:
+            phone_can = _canonicalize_phone(impersonate)
+            if phone_can:
+                u = await db.users.find_one({"phone": phone_can}, {"_id": 0})
+        if not u and "@" in impersonate:
+            u = await db.users.find_one({"email": impersonate.lower()}, {"_id": 0})
+        if u:
+            u["role"] = "admin"  # controller is trusted — always admin scope
+            return u
+    # No impersonation → synthetic service admin. Never persisted.
+    return {
+        "id": "__service__vod-platform-access",
+        "phone": None,
+        "email": None,
+        "role": "admin",
+        "tier": "premium",
+        "isServiceAccount": True,
+    }
+
+
+async def get_current_user(
+    authorization: Optional[str] = Header(None),
+    x_service_token: Optional[str] = Header(None),
+    x_impersonate: Optional[str] = Header(None),
+):
+    # 0) Service-token path — checked FIRST so vod-platform-access can act as
+    # admin even if its own end-user JWT is stale. Only unlocked when the
+    # SERVICE_TOKEN env is set AND the caller presents the matching value
+    # via EITHER the dedicated X-Service-Token header OR
+    # Authorization: Bearer <SERVICE_TOKEN>. Uses hmac.compare_digest to
+    # avoid timing-side-channel leaks of the token.
+    if SERVICE_TOKEN:
+        candidate = ""
+        if x_service_token:
+            candidate = x_service_token.strip()
+        elif authorization and authorization.lower().startswith("bearer "):
+            candidate = authorization.split(" ", 1)[1].strip()
+        if candidate and hmac.compare_digest(candidate, SERVICE_TOKEN):
+            return await _resolve_service_impersonation(x_impersonate)
+
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(401, "Missing bearer token")
     token = authorization.split(" ", 1)[1].strip()
@@ -5371,10 +5433,17 @@ async def api_terms():
     if not path.exists():
         raise HTTPException(404, "Terms not published yet")
     return HTMLResponse(path.read_text(encoding="utf-8"))
+# ---------------------------------------------------------------------------
+# CORS — env-configurable so vod-platform-access can lock this backend down
+# to its own web frontend + mobile shell once its hostnames are stable.
+# Default: allow all (unchanged behaviour to prevent production disruption).
+# ---------------------------------------------------------------------------
+_cors_env = (os.environ.get("CORS_ALLOWED_ORIGINS") or "*").strip()
+_cors_origins = ["*"] if _cors_env == "*" else [o.strip() for o in _cors_env.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
