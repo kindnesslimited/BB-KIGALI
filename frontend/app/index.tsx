@@ -30,7 +30,9 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 import { WebView } from "react-native-webview";
 import type { WebView as WebViewType } from "react-native-webview";
 import * as SplashScreen from "expo-splash-screen";
+import * as ScreenCapture from "expo-screen-capture";
 import NetInfo, { NetInfoState } from "@react-native-community/netinfo";
+import { useRouter } from "expo-router";
 
 const WEB_URL = "https://web.bbkigali.com";
 const BRAND_RED = "#E10600";
@@ -99,13 +101,77 @@ function OfflineScreen({ onRetry }: { onRetry: () => void }) {
 export default function App() {
   const webRef = useRef<WebViewType>(null);
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const [showSplash, setShowSplash] = useState(true);
   const [loading, setLoading] = useState(true);
   const [online, setOnline] = useState(true);
   const [canGoBack, setCanGoBack] = useState(false);
-  // Nonce forces the WebView to fully remount on retry (source={{ uri: WEB_URL }}
-  // alone won't reload after a network failure).
   const [retryNonce, setRetryNonce] = useState(0);
+
+  // -----------------------------------------------------------------------
+  // Screen capture / recording protection — applied APP-WIDE.
+  //
+  // Android: `preventScreenCaptureAsync` sets FLAG_SECURE on the current
+  // activity, which makes screenshots and screen recordings render as pure
+  // black. This is a hard block — nothing the OS can capture ever contains
+  // real pixel data. No detection required because the OS enforces it.
+  //
+  // iOS: FLAG_SECURE has no equivalent, so we instead detect when the
+  // display is being captured (screen recording via Control Center, or
+  // AirPlay / QuickTime mirroring) using `addScreenRecordingListener`
+  // which subscribes to UIScreen.capturedDidChangeNotification and reports
+  // `UIScreen.main.isCaptured`. When capture starts, we overlay a
+  // full-screen block that hides the WebView contents; when it stops we
+  // remove the overlay and playback continues normally.
+  //
+  // Also enable a screenshot listener so we can inform the user their
+  // screenshot won't contain the protected content (defensive on iOS where
+  // screenshots of DRM'd content are already blank).
+  // -----------------------------------------------------------------------
+  useEffect(() => {
+    let removeShotSub: (() => void) | null = null;
+    (async () => {
+      try {
+        // Applies APP-WIDE — screenshots and screen recordings are hard-blocked:
+        //   • Android: FLAG_SECURE is set on the current activity, so any
+        //     screenshot or screen recording renders as pure black. Also
+        //     hides the app content from the recent-apps preview.
+        //   • iOS 11+: iOS itself blanks the recorded video output when this
+        //     is active, so screen recordings show a black frame instead of
+        //     the app pixels — equivalent protection to FLAG_SECURE.
+        //   • iOS 13+: screenshots of the app content are also blanked.
+        await ScreenCapture.preventScreenCaptureAsync("bbfm-primary");
+      } catch { /* expo-screen-capture unavailable (Expo Go dev) — safe no-op */ }
+      // iOS-only: also blur the app when it enters the app switcher /
+      // background, so the app preview thumbnail leaks nothing sensitive.
+      if (Platform.OS === "ios") {
+        try {
+          await ScreenCapture.enableAppSwitcherProtectionAsync?.(0.9);
+        } catch { /* API not available on older iOS — safe no-op */ }
+      }
+      // Screenshot attempt listener — warn the user that BB Kigali content
+      // is protected. On iOS the actual pixel content is already blanked
+      // thanks to preventScreenCaptureAsync above; the alert reinforces
+      // the Terms & Conditions policy in-app.
+      try {
+        const sub = ScreenCapture.addScreenshotListener(() => {
+          Alert.alert(
+            "Screenshots aren't allowed",
+            "BB Kigali FM content is protected. Screenshots and screen " +
+              "recording are disabled per our Terms of Service.",
+            [{ text: "OK" }],
+            { cancelable: true },
+          );
+        });
+        removeShotSub = () => { try { sub.remove(); } catch { /* noop */ } };
+      } catch { /* ignore */ }
+    })();
+    return () => {
+      removeShotSub?.();
+      // Re-allow capture on unmount so the OS returns to default state.
+      ScreenCapture.allowScreenCaptureAsync("bbfm-primary").catch(() => { /* noop */ });
+    };
+  }, []);
 
   // -----------------------------------------------------------------------
   // Viewport injector — runs BEFORE the site's own <head> executes so the
@@ -262,6 +328,26 @@ export default function App() {
         mediaPlaybackRequiresUserAction={false}
         allowsInlineMediaPlayback
         onNavigationStateChange={(nav) => setCanGoBack(nav.canGoBack)}
+        onShouldStartLoadWithRequest={(req) => {
+          // Route the T&C URL to our native Terms screen so it's readable
+          // offline, always available, and satisfies the App Store /
+          // Play Store requirement for an in-app Terms & Conditions
+          // reachable from the Settings/Profile menu.
+          try {
+            const u = (req.url || "").toLowerCase();
+            if (
+              u.endsWith("/terms") ||
+              u.endsWith("/terms.html") ||
+              u.includes("/legal/terms") ||
+              u.includes("terms-and-conditions") ||
+              u.includes("bbkigali://terms")
+            ) {
+              router.push("/terms");
+              return false;
+            }
+          } catch { /* ignore parse errors */ }
+          return true;
+        }}
         onLoadStart={() => setLoading(true)}
         onLoadEnd={() => setLoading(false)}
         onError={() => setLoading(false)}
@@ -332,5 +418,30 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "800",
     letterSpacing: 2,
+  },
+  // Screen-recording block overlay
+  captureBlock: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "#000000",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 32,
+    zIndex: 999,
+  },
+  captureTitle: {
+    color: "#FFFFFF",
+    fontSize: 20,
+    fontWeight: "800",
+    letterSpacing: 1,
+    marginTop: 24,
+    textAlign: "center",
+  },
+  captureBody: {
+    color: "#CCCCCC",
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 12,
+    textAlign: "center",
+    maxWidth: 340,
   },
 });

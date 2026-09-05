@@ -20,6 +20,10 @@ export default function RootLayout() {
       <StatusBar style="dark" backgroundColor="#FFFFFF" />
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#FFFFFF" } }}>
         <Stack.Screen name="index" />
+        <Stack.Screen
+          name="terms"
+          options={{ presentation: "modal", animation: "slide_from_bottom" }}
+        />
       </Stack>
     </SafeAreaProvider>
   );

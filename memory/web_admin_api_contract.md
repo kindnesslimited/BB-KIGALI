@@ -436,3 +436,48 @@ Under 768px, the cards stack vertically per § 6.2. Do not use a fixed grid — 
 
 ### 7.7 Subscriber Live TV section
 Iterate `channels[]` and show a card ONLY for the ones with `isLive: true`. If none is live (`anyLive: false`), fall back to a "No live broadcasts right now — check the schedule" message.
+
+---
+
+## 8 — Native App Additions (Iter 48) — Coordination Required
+
+Two items in the product-owner's Iter 48 spec touch UI that lives in the web app and cannot be applied from the native shell. The native app has already done its half; the web app must ship the other half.
+
+### 8.1 Remove the BB Kigali logo overlay from the VOD video player
+**Status: PENDING on web app.**
+When a subscriber plays a VOD video, the BB Kigali logo is currently rendered ON TOP of the video and blocks the content. Per product owner:
+> "Remove the logo overlay completely from the video player screen. The player must show only the video in full screen with standard playback controls."
+
+Web-side change:
+- Delete the `<img class="player-overlay">` (or equivalent watermark component) from the VOD player component.
+- Keep the logo ONLY on the app shell / thumbnails / non-player screens — not on the player itself.
+- Standard playback controls (play/pause, seek, volume, fullscreen, quality picker) remain unchanged.
+
+The native app already protects the video output at the OS level (Android FLAG_SECURE + iOS `preventScreenCaptureAsync` — screen recordings show a black frame), so the watermark is no longer needed as an anti-piracy device.
+
+### 8.2 Settings / Profile → Terms & Conditions link
+**Status: PENDING on web app.**
+The native app now ships a full Terms & Conditions screen at `bbkigali://terms` (see `/app/frontend/app/terms.tsx` in this repo). The Terms screen covers:
+1. Subscription (auto-renewal, cancellation)
+2. Content Ownership
+3. No-Screenshot & No-Recording Policy (matches the FLAG_SECURE + iOS recording block)
+4. Refund Policy (App Store, Google Play, web)
+5. Acceptable Use
+6. Privacy pointer
+7. Limitation of Liability
+8. Changes to Terms
+9. Contact
+
+Web-side change: in the Settings and/or Profile menu on `web.bbkigali.com`, add a "Terms & Conditions" link with `href="/terms"` OR `href="bbkigali://terms"`. The native WebView shell intercepts BOTH of these and opens the native Terms screen (see `onShouldStartLoadWithRequest` in `app/index.tsx`). On the desktop web (where there's no native shell), `/terms` should render an HTML version of the same text — the backend already serves `/api/legal/terms/current` with `url = <PUBLIC_WEB_URL>/terms.html`, so pointing the link there works.
+
+### 8.3 Screen capture / recording protection
+**Status: LIVE in native app. No web-side action required.**
+- Android: `FLAG_SECURE` set app-wide via `preventScreenCaptureAsync()` — screenshots and screen recordings render as pure black; the app is also hidden from the recent-apps preview.
+- iOS 11+: `preventScreenCaptureAsync()` blanks the recorded pixel output natively. iOS 13+: screenshots are blanked too. `enableAppSwitcherProtectionAsync(0.9)` blurs the app switcher preview.
+- Both platforms: `addScreenshotListener` fires on any screenshot attempt and shows an alert reinforcing the Terms of Service.
+- Applied APP-WIDE — Live TV, VOD, and every other screen inside the WebView is protected.
+
+### 8.4 App icon + Splash screen (already applied in Iter 45)
+**Status: LIVE.**
+Icon (`icon.png`, `adaptive-icon.png`, `splash-image.png`, `favicon.png`) all regenerated from the BB Kigali FM master logo. Splash background is white to match the logo's white background. No Emergent placeholder anywhere.
+
