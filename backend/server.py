@@ -345,7 +345,12 @@ PLAN_CATALOG = {
 
 # ---------- Auth ----------
 async def _sms_route_mobile(destination: str, message: str) -> tuple[bool, str]:
-    """Route Mobile SMSPLUS Bulk HTTP API. Returns (ok, provider_response)."""
+    """Route Mobile SMSPLUS Bulk HTTP API. Returns (ok, provider_response).
+
+    Route Mobile returns a pipe-delimited response like `1701|dest` where the
+    numeric prefix is the delivery status. We decode the common codes so
+    operators see actionable errors in the log/response instead of a raw code.
+    """
     if not SMS_API_URL or not SMS_USERNAME or not SMS_PASSWORD:
         return False, "not_configured"
     params = {
@@ -364,7 +369,31 @@ async def _sms_route_mobile(destination: str, message: str) -> tuple[bool, str]:
         return False, f"network:{e}"
     body = (r.text or "").strip()
     logger.info("[route_mobile] %s %s", r.status_code, body[:200])
-    return (body.startswith("1701") and r.status_code < 400), body
+    # Decode the leading status code so the /auth/otp/start response and the
+    # sms_deliveries log both surface a human-readable reason for failure.
+    ROUTE_MOBILE_CODES = {
+        "1701": ("ok", "submitted"),
+        "1702": ("fail", "invalid_url"),
+        "1703": ("fail", "invalid_username_or_password"),
+        "1704": ("fail", "invalid_type_field"),
+        "1705": ("fail", "invalid_message"),
+        "1706": ("fail", "invalid_destination"),
+        "1707": ("fail", "invalid_source_sender_id"),
+        "1708": ("fail", "invalid_dlr"),
+        "1709": ("fail", "user_authentication_failed"),
+        "1710": ("fail", "internal_error"),
+        "1025": ("fail", "insufficient_balance"),
+        "1715": ("fail", "spamming_prevention"),
+    }
+    code = body.split("|", 1)[0].strip()
+    verdict, reason = ROUTE_MOBILE_CODES.get(code, ("unknown", f"code_{code}"))
+    ok = (verdict == "ok") and (r.status_code < 400)
+    if not ok:
+        # Loud log so operator dashboards catch credential/balance failures.
+        logger.error("[route_mobile] SMS delivery failed: code=%s reason=%s body=%s",
+                     code, reason, body[:200])
+    tagged_body = f"{code}:{reason}|{body[:100]}"
+    return ok, tagged_body
 
 
 async def _sms_twilio(destination: str, message: str) -> tuple[bool, str]:
@@ -546,6 +575,41 @@ async def _send_payment_receipt(*, user_id: Optional[str], phone: Optional[str],
         logger.exception("[payment-sms] failed for user=%s", user_id)
 
 
+# -----------------------------------------------------------------------
+# Static test account — always accepts a fixed OTP, always premium.
+# Used for App Store / Play Store review and for product-owner QA.
+# All other numbers continue through the real SMS/WhatsApp OTP flow.
+# -----------------------------------------------------------------------
+STATIC_TEST_PHONE = _canonicalize_phone_bootstrap = (
+    os.environ.get("STATIC_TEST_ACCOUNT_PHONE") or "+250794230137"
+).strip()
+STATIC_TEST_CODE = (os.environ.get("STATIC_TEST_ACCOUNT_CODE") or "123456").strip()
+
+
+def _canonicalize_phone_early(raw: str) -> str:
+    """Inline mini-canonicaliser used ONLY inside _is_static_test_phone
+    below (the full _canonicalize_phone is defined further down). Keeps
+    both '+250794230137' and '250794230137' matching the test account."""
+    if not raw:
+        return ""
+    d = "".join(ch for ch in str(raw) if ch.isdigit())
+    if not d:
+        return ""
+    if d.startswith("00"):
+        d = d[2:]
+    return "+" + d
+
+
+def _is_static_test_phone(phone_e164: str) -> bool:
+    """True when the caller's canonical phone matches the static test
+    account. Comparison is done on strict E.164 form so any input format
+    ('+250 794 230 137', '250794230137', etc.) resolves the same way."""
+    target = _canonicalize_phone_early(STATIC_TEST_PHONE)
+    return bool(target) and phone_e164 == target
+
+
+
+
 def _canonicalize_phone(raw: str) -> str:
     """Normalize a phone string to strict E.164 form (always leading '+').
 
@@ -581,6 +645,30 @@ async def otp_start(body: OTPStartIn):
 
     normalized = phone.lstrip("+").strip()
     is_admin_phone = phone in ADMIN_PHONES or normalized in ADMIN_PHONES
+
+    # -----------------------------------------------------------------------
+    # Static test account (App Store / Play Store review + product-owner QA).
+    # A single fixed phone number always accepts a single fixed code, gets
+    # premium access, and NEVER triggers SMS / WhatsApp delivery. All other
+    # numbers continue through the real OTP + SMS chain below.
+    #
+    # Configurable via env so we can rotate the test credentials without a
+    # code deploy — defaults match the product-owner spec.
+    # -----------------------------------------------------------------------
+    if _is_static_test_phone(phone):
+        await db.otp_challenges.update_one(
+            {"phone": phone},
+            {"$set": {"phone": phone, "code": STATIC_TEST_CODE, "attempts": 0,
+                      "createdAt": datetime.now(timezone.utc).isoformat(),
+                      "isStaticTest": True}},
+            upsert=True,
+        )
+        return {
+            "ok": True,
+            "smsSent": False,
+            "message": "Test account — enter the pre-configured code to continue.",
+            "provider": "static_test",
+        }
 
     # Any provider configured?
     any_provider_ready = any([
@@ -680,6 +768,12 @@ async def otp_verify(body: OTPVerifyIn):
     if submitted != expected:
         await db.otp_challenges.update_one({"phone": phone}, {"$inc": {"attempts": 1}})
         raise HTTPException(401, "Invalid code")
+
+    # Static test account — accept the fixed code AND land the user with
+    # a fresh premium subscription so App Store / Play Store reviewers can
+    # explore every gated feature without paying.
+    is_static_test = bool(challenge.get("isStaticTest")) and phone == _canonicalize_phone_early(STATIC_TEST_PHONE)
+
     user = await db.users.find_one({"phone": phone}, {"_id": 0})
     normalized_phone = phone.lstrip("+").strip()
     is_admin_phone = phone in ADMIN_PHONES or normalized_phone in ADMIN_PHONES
@@ -688,7 +782,7 @@ async def otp_verify(body: OTPVerifyIn):
         user = {
             "id": str(uuid.uuid4()),
             "phone": phone,
-            "displayName": None,
+            "displayName": "BB Kigali Test Account" if is_static_test else None,
             "tier": "free",
             "role": role,
             "subscriptionExpiresAt": None,
@@ -700,6 +794,26 @@ async def otp_verify(body: OTPVerifyIn):
         if is_admin_phone and user.get("role") != "admin":
             await db.users.update_one({"id": user["id"]}, {"$set": {"role": "admin"}})
             user["role"] = "admin"
+
+    # Static test account: always leave with a valid premium subscription
+    # (30-day rolling window so the account never expires between reviews).
+    if is_static_test:
+        exp = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+        await db.users.update_one(
+            {"id": user["id"]},
+            {"$set": {
+                "tier": "premium",
+                "currentPlan": "premium_monthly",
+                "subscriptionExpiresAt": exp,
+                "provider": "static_test",
+                "isStaticTestAccount": True,
+            }},
+        )
+        user["tier"] = "premium"
+        user["currentPlan"] = "premium_monthly"
+        user["subscriptionExpiresAt"] = exp
+        user["provider"] = "static_test"
+
     await db.otp_challenges.delete_one({"phone": phone})
     return {"accessToken": sign_jwt(user["id"]), "user": user_public(user)}
 
