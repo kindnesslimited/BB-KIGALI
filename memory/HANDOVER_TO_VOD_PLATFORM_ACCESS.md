@@ -47,7 +47,7 @@
 ## What was changed IN THIS WORKSPACE (radio-vod-platform) today
 
 ### 1. Service-token authentication (`backend/server.py`)
-- New env `SERVICE_TOKEN` = **`svc_wuRaxMU_I81zxKn5i-GdDKisauZJE4rMh61vwXKsZ1yuqTyvcdqUIEWnwdIUKIt9`**
+- New env `SERVICE_TOKEN` = **`svc_XXXXXX_REDACTED_XXXXXX`**
 - `get_current_user` now checks the service token FIRST (via `X-Service-Token` header OR `Authorization: Bearer <SERVICE_TOKEN>`) using `hmac.compare_digest` (timing-safe).
 - Optional `X-Impersonate: <user_id | phone | email>` header lets the controller act on behalf of any user (admin-scoped).
 - Backward-compatible: user JWT + Emergent session-token paths still work unchanged. Verified end-to-end.
@@ -79,10 +79,10 @@ The following steps happen in the **vod-platform-access workspace** (I have no w
 In `vod-platform-access`'s server-side env (backend `.env` or its equivalent):
 ```
 RVP_BACKEND_URL=https://radio-vod-platform.emergent.host
-RVP_SERVICE_TOKEN=svc_wuRaxMU_I81zxKn5i-GdDKisauZJE4rMh61vwXKsZ1yuqTyvcdqUIEWnwdIUKIt9
+RVP_SERVICE_TOKEN=<retrieve from radio-vod-platform Secrets tab — variable name SERVICE_TOKEN>
 ```
 
-⚠️ **Never expose `RVP_SERVICE_TOKEN` to the browser** — server-side only. If you need the token in a Next.js app, use it in API routes / server actions / getServerSideProps only.
+⚠️ **NEVER expose `RVP_SERVICE_TOKEN` to the browser, chat logs, or frontend code** — it's effectively a master backend credential. Server-side only. If you need it in a Next.js app, use it in API routes / server actions / getServerSideProps only. Rotate immediately if you suspect exposure (in this backend: edit `SERVICE_TOKEN` in `.env` → restart backend → hand the new value to vod-platform-access out-of-band).
 
 ### Step B — All server-side calls go through a shared client
 Every server-side call from vod-platform-access to radio-vod-platform uses this helper:
