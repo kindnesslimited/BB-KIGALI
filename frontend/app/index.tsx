@@ -208,7 +208,24 @@ export default function App() {
         // page body itself is capped at the device width, so a rogue element
         // with fixed 100vw can't blow the layout out horizontally.
         var s = document.createElement("style");
-        s.textContent = "html,body{max-width:100vw !important;overflow-x:hidden !important;-webkit-text-size-adjust:100% !important;text-size-adjust:100% !important;}";
+        s.textContent = "html,body{max-width:100vw !important;overflow-x:hidden !important;-webkit-text-size-adjust:100% !important;text-size-adjust:100% !important;}"
+          // Video-player logo overlay killer — hides BB Kigali logo watermarks
+          // that appear ON TOP of the video and block content on mobile. Targets
+          // any image / logo / watermark element positioned inside or right next
+          // to a <video>, or inside anything with a "player" class. The main
+          // app-shell logo (outside these containers) is untouched.
+          + " video ~ img, video + img, video ~ .logo, video ~ [class*='logo' i],"
+          + " video ~ [class*='watermark' i], video ~ [class*='brand' i],"
+          + " video ~ [class*='overlay' i]:not([class*='control' i]):not([class*='caption' i]):not([class*='subtitle' i]),"
+          + " [class*='player' i] > img[src*='logo' i],"
+          + " [class*='player' i] > img[alt*='logo' i],"
+          + " [class*='player' i] [class*='watermark' i],"
+          + " [class*='player' i] [class*='brand-overlay' i],"
+          + " [class*='videoplayer' i] img[src*='bbfm' i],"
+          + " [class*='videoplayer' i] img[alt*='bb kigali' i],"
+          + " .vjs-watermark, .plyr__logo, .jw-logo,"
+          + " [data-testid*='player-logo' i], [data-testid*='watermark' i]"
+          + " { display: none !important; visibility: hidden !important; opacity: 0 !important; }";
         (document.head || document.documentElement).appendChild(s);
       } catch (e) { /* non-fatal */ }
     })();

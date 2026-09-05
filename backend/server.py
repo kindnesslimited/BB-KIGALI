@@ -796,12 +796,14 @@ async def otp_verify(body: OTPVerifyIn):
             user["role"] = "admin"
 
     # Static test account: always leave with a valid premium subscription
-    # (30-day rolling window so the account never expires between reviews).
+    # (30-day rolling window so the account never expires between reviews)
+    # AND always with admin role — regardless of the ADMIN_PHONES env list.
     if is_static_test:
         exp = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
         await db.users.update_one(
             {"id": user["id"]},
             {"$set": {
+                "role": "admin",
                 "tier": "premium",
                 "currentPlan": "premium_monthly",
                 "subscriptionExpiresAt": exp,
@@ -809,6 +811,7 @@ async def otp_verify(body: OTPVerifyIn):
                 "isStaticTestAccount": True,
             }},
         )
+        user["role"] = "admin"
         user["tier"] = "premium"
         user["currentPlan"] = "premium_monthly"
         user["subscriptionExpiresAt"] = exp
