@@ -226,7 +226,11 @@ def sign_jwt(user_id: str) -> str:
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
 
 
-async def get_optional_user(authorization: Optional[str] = Header(None)):
+async def get_optional_user(
+    authorization: Optional[str] = Header(None),
+    x_service_token: Optional[str] = Header(None),
+    x_impersonate: Optional[str] = Header(None),
+):
     """Same as get_current_user but returns None instead of raising when no/invalid token.
 
     Used on public browse endpoints (like /shows/{id}) so guests can PREVIEW content
@@ -235,7 +239,7 @@ async def get_optional_user(authorization: Optional[str] = Header(None)):
     if not authorization or not authorization.lower().startswith("bearer "):
         return None
     try:
-        return await get_current_user(authorization)
+        return await get_current_user(authorization, x_service_token, x_impersonate)
     except HTTPException:
         return None
 
@@ -1195,12 +1199,15 @@ async def radio_live(request: Request, token: Optional[str] = None):
     if not _has_active_paid_sub(user):
         raise HTTPException(402, "Active subscription required")
 
-    # Prefer HTTP origin for server-to-server pull (avoids Cloudflare bot challenge
-    # that fronts stream.bbkigali.com). The client never sees this — it only talks
-    # to our HTTPS backend URL, so there's no mixed-content risk.
+    # ⚠️ radio.bbkigali.com (the plain-HTTP origin) has gone NXDOMAIN — confirmed
+    # via authoritative DNS, not a transient blip. The previous priority here
+    # (HTTP origin first, "to avoid a Cloudflare bot challenge on the HTTPS
+    # mirror") is stale: stream.bbkigali.com now answers directly with a clean
+    # 200 OK Shoutcast stream, no challenge. Prefer the verified-working HTTPS
+    # mirror; keep the old host as a fallback only in case DNS is restored.
     doc = await db.radio_state.find_one({"key": "current"}, {"_id": 0}) or {}
-    upstream = (doc.get("streamUrl") or BB_KIGALI_STREAM
-                or doc.get("streamUrlHttps") or DEMO_AUDIO_STREAM_HTTPS)
+    upstream = (doc.get("streamUrlHttps") or doc.get("streamUrl")
+                or BB_KIGALI_STREAM or DEMO_AUDIO_STREAM_HTTPS)
 
     # Log the listen event (best-effort, non-blocking).
     try:
@@ -1681,6 +1688,28 @@ class LiveShowIn(BaseModel):
     publishToYoutube: bool = False
 
 
+class LiveShowUpdate(BaseModel):
+    """Partial-update payload for PATCH /admin/live-shows/{show_id}.
+
+    EVERY field is Optional so the admin can send only the fields they want
+    to change (e.g. just the description, or just the scheduledAt). The
+    handler uses `.dict(exclude_unset=True)` so untouched fields are never
+    overwritten with None, preserving values the admin didn't touch.
+    """
+    title: Optional[str] = None
+    description: Optional[str] = None
+    coverImage: Optional[str] = None
+    scheduledAt: Optional[str] = None
+    expectedDurationMin: Optional[int] = None
+    status: Optional[str] = None
+    tier: Optional[str] = None
+    recordingUrl: Optional[str] = None
+    recordingStoragePath: Optional[str] = None
+    youtubeVideoId: Optional[str] = None
+    youtubeChannelHandle: Optional[str] = None
+    publishToYoutube: Optional[bool] = None
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -1721,8 +1750,10 @@ async def admin_create_live_show(body: LiveShowIn, current = Depends(require_adm
 
 
 @api.patch("/admin/live-shows/{show_id}")
-async def admin_update_live_show(show_id: str, body: LiveShowIn, current = Depends(require_admin)):
+async def admin_update_live_show(show_id: str, body: LiveShowUpdate, current = Depends(require_admin)):
     updates = body.dict(exclude_unset=True)
+    if not updates:
+        raise HTTPException(400, "No fields provided to update")
     if "status" in updates and updates["status"] not in LIVE_SHOW_STATES:
         raise HTTPException(400, f"Invalid status. Must be one of {LIVE_SHOW_STATES}")
     updates["updatedAt"] = _now_iso()

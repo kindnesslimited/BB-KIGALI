@@ -107,6 +107,40 @@ export default function App() {
   const [online, setOnline] = useState(true);
   const [canGoBack, setCanGoBack] = useState(false);
   const [retryNonce, setRetryNonce] = useState(0);
+  // Tracks whether iOS screen-capture protection is currently ON, so we only
+  // toggle it when the protected/unprotected route boundary is crossed.
+  const iosCaptureProtectedRef = useRef(false);
+
+  // -----------------------------------------------------------------------
+  // Loading-overlay safety net.
+  //
+  // The full-screen "loading" overlay is driven by the WebView's
+  // onLoadStart/onLoadEnd, which map to Android's onPageStarted/
+  // onPageFinished. Those fire reliably for the initial real page load,
+  // but are INCONSISTENT for in-app SPA navigation (React Router
+  // pushState) — sometimes onLoadEnd never fires for a given navigation
+  // even though the page underneath loaded and works fine (confirmed:
+  // audio starts playing on Live TV while the screen stays stuck showing
+  // "loading"). Relying on those events alone can leave the overlay stuck
+  // forever. This timeout guarantees it always clears.
+  // -----------------------------------------------------------------------
+  const loadingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearLoadingTimeout = () => {
+    if (loadingTimeoutRef.current) {
+      clearTimeout(loadingTimeoutRef.current);
+      loadingTimeoutRef.current = null;
+    }
+  };
+  const beginLoading = () => {
+    setLoading(true);
+    clearLoadingTimeout();
+    loadingTimeoutRef.current = setTimeout(() => setLoading(false), 4000);
+  };
+  const endLoading = () => {
+    clearLoadingTimeout();
+    setLoading(false);
+  };
+  useEffect(() => clearLoadingTimeout, []);
 
   // -----------------------------------------------------------------------
   // Screen capture / recording protection — applied APP-WIDE.
@@ -153,9 +187,11 @@ export default function App() {
     let removeShotSub: (() => void) | null = null;
     (async () => {
       if (Platform.OS === "ios") {
-        try {
-          await ScreenCapture.preventScreenCaptureAsync("bbfm-primary");
-        } catch { /* module unavailable in Expo Go — safe no-op */ }
+        // preventScreenCaptureAsync is NOT called here anymore — it's now
+        // scoped to Premium/VOD/Live routes only, via onNavigationStateChange
+        // below (see updateIosCaptureProtection). Calling it app-wide risked
+        // interfering with video rendering, the same class of bug already
+        // found and fixed on Android's FLAG_SECURE usage.
         try {
           await ScreenCapture.enableAppSwitcherProtectionAsync?.(0.9);
         } catch { /* API not available on older iOS — safe no-op */ }
@@ -175,11 +211,34 @@ export default function App() {
     })();
     return () => {
       removeShotSub?.();
-      if (Platform.OS === "ios") {
+      if (Platform.OS === "ios" && iosCaptureProtectedRef.current) {
+        iosCaptureProtectedRef.current = false;
         ScreenCapture.allowScreenCaptureAsync("bbfm-primary").catch(() => { /* noop */ });
       }
     };
   }, []);
+
+  // -----------------------------------------------------------------------
+  // iOS screen-capture protection, scoped to Premium/VOD/Live routes only.
+  //
+  // preventScreenCaptureAsync used to run app-wide on mount. That's the same
+  // class of bug already found and fixed on Android (FLAG_SECURE breaking
+  // WebView <video> rendering) — unscoped, it risks the same interference on
+  // iOS. Instead we watch the WebView's navigation URL and only engage
+  // protection while the user is actually on a protected content route,
+  // releasing it everywhere else so normal browsing/video is never affected.
+  // -----------------------------------------------------------------------
+  const PROTECTED_ROUTE_RE = /\/(watch|vod|live)(\/|$|\?)/i;
+  const updateIosCaptureProtection = (url?: string | null) => {
+    if (Platform.OS !== "ios" || !url) return;
+    const shouldProtect = PROTECTED_ROUTE_RE.test(url);
+    if (shouldProtect === iosCaptureProtectedRef.current) return; // no boundary crossed
+    iosCaptureProtectedRef.current = shouldProtect;
+    const action = shouldProtect
+      ? ScreenCapture.preventScreenCaptureAsync("bbfm-primary")
+      : ScreenCapture.allowScreenCaptureAsync("bbfm-primary");
+    action.catch(() => { /* module unavailable in Expo Go — safe no-op */ });
+  };
 
   // -----------------------------------------------------------------------
   // Viewport injector — runs BEFORE the site's own <head> executes so the
@@ -210,8 +269,22 @@ export default function App() {
         ensureMeta();
         // Some SPAs (React Native Web + Next.js in particular) rewrite <head>
         // AFTER first paint. Watch for that and re-assert the viewport tag.
-        var mo = new MutationObserver(function () { ensureMeta(); });
-        mo.observe(document.documentElement, { childList: true, subtree: true });
+        //
+        // ⚠️ Scoped to <head> only (NOT documentElement+subtree) and guarded
+        // to install once per page. This script re-runs on every WebView load
+        // (injectedJavaScriptBeforeContentLoaded + injectedJavaScript, and again
+        // on every in-app navigation) — an unguarded documentElement+subtree
+        // observer stacks up one instance per run with NO disconnect, and on a
+        // content-heavy page (e.g. a grid of 40 show cards with images/hover
+        // states) every DOM mutation re-fires ALL of them. That cascade was
+        // severe enough to freeze the WebView JS thread and crash the renderer
+        // (Browse Shows hanging on the loading screen). We only ever need to
+        // know about <head> being rewritten, not every mutation in <body>.
+        if (!window.__bbfmViewportObserverInstalled) {
+          window.__bbfmViewportObserverInstalled = true;
+          var mo = new MutationObserver(function () { ensureMeta(); });
+          mo.observe(document.head || document.documentElement, { childList: true });
+        }
         // Belt-and-suspenders: also inject a CSS reset that guarantees the
         // page body itself is capped at the device width, so a rogue element
         // with fixed 100vw can't blow the layout out horizontally.
@@ -358,7 +431,13 @@ export default function App() {
         // getUserMedia() without a permission race.
         mediaPlaybackRequiresUserAction={false}
         allowsInlineMediaPlayback
-        onNavigationStateChange={(nav) => setCanGoBack(nav.canGoBack)}
+        onNavigationStateChange={(nav) => {
+          setCanGoBack(nav.canGoBack);
+          updateIosCaptureProtection(nav.url);
+          // More reliable than onLoadEnd for in-app SPA navigation — see
+          // the loading-overlay safety-net comment above.
+          if (!nav.loading) endLoading();
+        }}
         onShouldStartLoadWithRequest={(req) => {
           // Route the T&C URL to our native Terms screen so it's readable
           // offline, always available, and satisfies the App Store /
@@ -379,10 +458,10 @@ export default function App() {
           } catch { /* ignore parse errors */ }
           return true;
         }}
-        onLoadStart={() => setLoading(true)}
-        onLoadEnd={() => setLoading(false)}
-        onError={() => setLoading(false)}
-        onHttpError={() => setLoading(false)}
+        onLoadStart={beginLoading}
+        onLoadEnd={endLoading}
+        onError={endLoading}
+        onHttpError={endLoading}
         // Android-specific media permission auto-grant.
         onPermissionRequest={(request: any) => {
           try { request.grant(request.resources); } catch { /* older RN-WebView */ }
@@ -414,15 +493,16 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingHorizontal: 24,
   },
-  splashLogo: { width: 280, height: 200 },
+  // Logo is square (1024×1024, circular design on white bg), so keep 1:1
+  splashLogo: { width: 260, height: 260 },
   overlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: SPLASH_BG,
     alignItems: "center",
     justifyContent: "center",
   },
-  overlayLogo: { width: 200, height: 140 },
-  offlineLogo: { width: 220, height: 150, marginBottom: 8 },
+  overlayLogo: { width: 180, height: 180 },
+  offlineLogo: { width: 200, height: 200, marginBottom: 8 },
   offlineTitle: {
     color: "#111111",
     fontSize: 20,

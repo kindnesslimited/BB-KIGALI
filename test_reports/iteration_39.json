@@ -1,0 +1,32 @@
+{
+  "summary": "Regression verification of TWO targeted fixes: (1) PATCH /api/admin/live-shows/{id} now correctly accepts partial updates via the new all-Optional LiveShowUpdate model, and (2) mobile splash screen renders the correct circular B&B KIGALI 89.7 FM logo on a pure-white background. All 7 backend PATCH tests PASSED and the splash was visually verified.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_live_show_patch_partial.py",
+    "/app/test_reports/pytest/pytest_iter39.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "LiveShowUpdate correctly uses Optional for every field and handler uses body.dict(exclude_unset=True) so untouched fields are preserved — matches PRD.",
+    "Status validation enforced via LIVE_SHOW_STATES membership after unset-exclusion, so partial PATCH with only status still validates correctly.",
+    "Empty PATCH body raises 400 with helpful message; non-existent id raises 404 via update_one().matched_count check."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_live_show_patch_partial.py (new regression suite for the PATCH partial-edit fix)"
+  ],
+  "success_rate": {"backend": "100% (7/7)", "frontend": "100% (splash visual + asset checksum verified)"},
+  "seed_data_creation": "Test creates one live show titled 'TEST — original title' scoped to module fixture and deletes it in teardown. No residual data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "PATCH partial-edit test file is /app/backend/tests/test_live_show_patch_partial.py. Auth uses admin phone +250794230137 via /api/auth/otp/start (dev returns testCode) then /api/auth/otp/verify. Token field in verify response is 'accessToken' (NOT 'token'). Splash logo asset is /app/frontend/assets/images/bbfm-logo-transparent.png (1024×1024, md5 cad0fa077ecafe158e6349aa320ec7d2, shared by icon.png/adaptive-icon.png/splash-image.png). Splash background is #FFFFFF. Web preview at http://localhost:3000 renders the splash for 2s before loading web.bbkigali.com in the WebView.",
+  "rca_of_issue": "Original bug: PATCH /admin/live-shows/{id} previously used LiveShowIn (title required) → any partial edit that omitted title returned 422. Fix: introduced LiveShowUpdate with all Optional fields and used .dict(exclude_unset=True) in handler. Verified: patch with {description-only} returned 200 with title preserved (was 422 before). Splash bug RCA: previous asset showed the 3D 'BB KIGALI FM 89.7fm' variant; owner supplied the circular design. Fix: replaced bbfm-logo-transparent.png (and duplicated to icon/adaptive/splash pngs — all 794489 bytes / md5 match). Rendered logo confirmed to be the circular B&B KIGALI 89.7 FM design."
+}

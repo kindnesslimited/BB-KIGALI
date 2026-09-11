@@ -37,7 +37,7 @@
         "backgroundColor": "#FFFFFF"
       },
       "edgeToEdgeEnabled": true,
-      "softwareKeyboardLayoutMode": "pan",
+      "softwareKeyboardLayoutMode": "resize",
       "package": "com.bbkigali.fm",
       "jsEngine": "hermes",
       "usesCleartextTraffic": true,
@@ -55,6 +55,7 @@
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
+      "./plugins/withWebViewDebugging",
       "expo-router",
       [
         "expo-splash-screen",

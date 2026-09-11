@@ -15,6 +15,10 @@
 - ❌ NO architecture changes
 - ❌ NO data migration (owner confirmed there is no production customer data to preserve)
 
+### Corrections applied (post-freeze, owner-requested)
+- **2026-09-11** — Live Show edit: `PATCH /api/admin/live-shows/{id}` was rejecting partial updates because `LiveShowIn.title` was required. Introduced `LiveShowUpdate` (all fields Optional) and rewired the PATCH handler. Admins can now reopen any live show and change any subset of fields (title, description, scheduledAt, status, tier, etc.) without deleting and recreating. Empty body → 400. Invalid status → 400. Nonexistent id → 404. Verified: 7/7 backend tests pass (`/app/backend/tests/test_live_show_patch_partial.py`).
+- **2026-09-11** — Logo restored: `icon.png`, `adaptive-icon.png`, `splash-image.png`, `bbfm-logo-transparent.png` and `favicon.png` had all been replaced during earlier development with a different design (3D BB letters + microphone + "89.7fm #MURI SPORTS"). Restored to the owner's original circular B&B KIGALI 89.7 FM logo with white background, exactly as provided. Splash dimensions updated to 1:1. Verified visually via web preview.
+
 ### Reference documentation produced for the rebuild
 - `/app/memory/BB_KIGALI_REBUILD_REFERENCE.md` — master requirements + integration knowledge + gotchas, extracted for the new build. This is the file to hand to `vod-platform-access`.
 - `/app/memory/web_admin_api_contract.md` — legacy full API spec (115 endpoints) — useful for feature completeness check
