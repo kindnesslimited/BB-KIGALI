@@ -13,7 +13,7 @@
  *   7. RevenueCat / native IAP / native subscription code is REMOVED — all
  *      billing now happens in the web app.
  */
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
   View,
   Text,
@@ -110,6 +110,26 @@ export default function App() {
   // Tracks whether iOS screen-capture protection is currently ON, so we only
   // toggle it when the protected/unprotected route boundary is crossed.
   const iosCaptureProtectedRef = useRef(false);
+
+  // ----------------------------------------------------------------------
+  // Cache-buster — computed ONCE per app launch (and again on retry via
+  // retryNonce). Appended to the target URL so every cold start bypasses
+  // any stale HTTP cache and forces the WebView to fetch the newest HTML
+  // from web.bbkigali.com. Combined with `cacheEnabled={false}` and
+  // `cacheMode="LOAD_NO_CACHE"` below, this guarantees users always see
+  // the latest deployed web app inside the mobile shell.
+  //
+  // Cookies / localStorage / sessionStorage are DELIBERATELY preserved so
+  // that auth tokens and user preferences survive the cache reset — only
+  // the HTTP resource cache (HTML/JS/CSS/images) is invalidated.
+  // ----------------------------------------------------------------------
+  const cacheBuster = useMemo(() => {
+    const sep = WEB_URL.includes("?") ? "&" : "?";
+    return `${WEB_URL}${sep}_t=${Date.now()}`;
+    // We DO want retryNonce as a dep — it regenerates the buster when the
+    // user taps Retry on the offline screen. The URL constant is stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [retryNonce]);
 
   // -----------------------------------------------------------------------
   // Loading-overlay safety net.
@@ -335,6 +355,19 @@ export default function App() {
     return () => clearTimeout(t);
   }, []);
 
+  // --- WebView cache purge on cold start -----------------------------------
+  // Fires once the WebView is mounted (after the splash). Clears any
+  // stale HTTP cache the OS may have accumulated from a previous session
+  // so the very first page-load post-splash is guaranteed to hit the
+  // network. Cookies + localStorage remain intact (auth preserved).
+  useEffect(() => {
+    if (showSplash) return;
+    const t = setTimeout(() => {
+      try { (webRef.current as any)?.clearCache?.(true); } catch { /* not supported on iOS — safe no-op */ }
+    }, 100);
+    return () => clearTimeout(t);
+  }, [showSplash]);
+
   // --- Connectivity monitoring --------------------------------------------
   useEffect(() => {
     const unsub = NetInfo.addEventListener((state: NetInfoState) => {
@@ -407,7 +440,17 @@ export default function App() {
       <WebView
         key={retryNonce}
         ref={webRef}
-        source={{ uri: WEB_URL }}
+        source={{
+          uri: cacheBuster,
+          // Force fresh fetch: tell the origin server we don't want a
+          // cached response. Combined with cacheEnabled=false + Android
+          // cacheMode=LOAD_NO_CACHE below, this ensures the WebView
+          // always pulls the latest deployed web app.
+          headers: {
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+          },
+        }}
         style={styles.fill}
         // Some video CDNs reject default Android WebView user-agents (which
         // contain `; wv` and get treated as bots). Override with a stock
@@ -474,7 +517,13 @@ export default function App() {
         originWhitelist={["*"]}
         setSupportMultipleWindows={false}
         pullToRefreshEnabled
-        cacheEnabled
+        // Disable HTTP resource cache so every launch fetches fresh
+        // HTML/JS/CSS. Cookies + localStorage still persist (auth is
+        // preserved). Android needs the extra `cacheMode` prop below;
+        // iOS honours `cacheEnabled={false}` directly.
+        cacheEnabled={false}
+        cacheMode="LOAD_NO_CACHE"
+        incognito={false}
       />
       {loading && <LoadingOverlay />}
     </View>
