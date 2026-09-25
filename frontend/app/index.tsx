@@ -24,6 +24,7 @@ import {
   Alert,
   Pressable,
   Platform,
+  Linking,
   StatusBar as RNStatusBar,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
@@ -482,12 +483,15 @@ export default function App() {
           if (!nav.loading) endLoading();
         }}
         onShouldStartLoadWithRequest={(req) => {
-          // Route the T&C URL to our native Terms screen so it's readable
-          // offline, always available, and satisfies the App Store /
-          // Play Store requirement for an in-app Terms & Conditions
-          // reachable from the Settings/Profile menu.
+          const raw = req.url || "";
+          const u = raw.toLowerCase();
+
+          // -----------------------------------------------------------
+          // 1. Terms of Service → native offline-readable screen.
+          //    Required by App Store / Play Store (must be reachable
+          //    even without internet).
+          // -----------------------------------------------------------
           try {
-            const u = (req.url || "").toLowerCase();
             if (
               u.endsWith("/terms") ||
               u.endsWith("/terms.html") ||
@@ -499,7 +503,101 @@ export default function App() {
               return false;
             }
           } catch { /* ignore parse errors */ }
-          return true;
+
+          // -----------------------------------------------------------
+          // 2. WhatsApp deep-links → open native WhatsApp app so the
+          //    user can send the pre-filled message with one tap.
+          //    Handles all three URL shapes the web app can emit:
+          //      • whatsapp://send?phone=...&text=...  (native scheme)
+          //      • https://wa.me/<phone>?text=...       (short URL)
+          //      • https://api.whatsapp.com/send?...    (long URL)
+          //    Also handles chat.whatsapp.com/ invite links.
+          // -----------------------------------------------------------
+          const isWhatsApp =
+            u.startsWith("whatsapp:") ||
+            u.startsWith("https://wa.me/") ||
+            u.startsWith("http://wa.me/") ||
+            u.startsWith("https://api.whatsapp.com/send") ||
+            u.startsWith("https://chat.whatsapp.com/");
+          if (isWhatsApp) {
+            Linking.openURL(raw).catch(() => {
+              Alert.alert(
+                "WhatsApp not installed",
+                "Please install WhatsApp to continue this chat.",
+                [{ text: "OK" }],
+              );
+            });
+            return false;
+          }
+
+          // -----------------------------------------------------------
+          // 3. Native OS handlers — tel, mailto, sms, Android intents.
+          //    These MUST NOT load inside the WebView; they need the OS
+          //    to route them to the phone dialer / mail app / SMS app.
+          // -----------------------------------------------------------
+          if (
+            u.startsWith("tel:") ||
+            u.startsWith("mailto:") ||
+            u.startsWith("sms:") ||
+            u.startsWith("smsto:") ||
+            u.startsWith("intent:") ||
+            u.startsWith("market:") ||        // Play Store
+            u.startsWith("itms-apps:") ||     // App Store
+            u.startsWith("geo:") ||            // Maps
+            u.startsWith("mapkit:") ||
+            u.startsWith("fb-messenger:") ||
+            u.startsWith("tg:") ||             // Telegram
+            u.startsWith("twitter:") ||
+            u.startsWith("instagram:") ||
+            u.startsWith("youtube:")
+          ) {
+            Linking.openURL(raw).catch(() => { /* no handler — safe no-op */ });
+            return false;
+          }
+
+          // -----------------------------------------------------------
+          // 4. Payment provider return URLs — Stripe, PayPal, MoMo
+          //    redirect back to our origin after checkout, so those
+          //    stay INSIDE the WebView (do not intercept).
+          //    All web.bbkigali.com and bbkigali.com URLs stay inside.
+          // -----------------------------------------------------------
+          if (
+            u.startsWith("https://web.bbkigali.com") ||
+            u.startsWith("http://web.bbkigali.com") ||
+            u.startsWith("https://bbkigali.com") ||
+            u.startsWith("http://bbkigali.com") ||
+            u.startsWith("https://www.bbkigali.com") ||
+            u.startsWith("http://www.bbkigali.com") ||
+            // Payment provider hosted pages (Stripe Checkout, PayPal
+            // approval, BeSoft callback) — must load in-WebView so the
+            // return URL fires our success handler.
+            u.includes("checkout.stripe.com") ||
+            u.includes("paypal.com") ||
+            u.includes("besoft.rw") ||
+            u.includes("pay.besoft.rw") ||
+            // 3-D Secure auth iframes, etc.
+            u.startsWith("about:") ||
+            u.startsWith("data:") ||
+            u.startsWith("blob:")
+          ) {
+            return true;
+          }
+
+          // -----------------------------------------------------------
+          // 5. Any OTHER http(s) URL (external site, social media link,
+          //    news article the site links to, etc.) opens in the
+          //    device's default browser — this avoids trapping the
+          //    user inside our shell on unrelated sites and prevents
+          //    a "you can't leave this app" experience.
+          // -----------------------------------------------------------
+          if (u.startsWith("http://") || u.startsWith("https://")) {
+            Linking.openURL(raw).catch(() => { /* fall back to in-WebView */ });
+            return false;
+          }
+
+          // Unknown scheme — attempt to open externally.
+          try { Linking.openURL(raw).catch(() => { /* ignore */ }); } catch { /* ignore */ }
+          return false;
         }}
         onLoadStart={beginLoading}
         onLoadEnd={endLoading}
@@ -517,6 +615,24 @@ export default function App() {
         originWhitelist={["*"]}
         setSupportMultipleWindows={false}
         pullToRefreshEnabled
+        // File uploads (avatar picker, VOD receipts, etc.) — required
+        // for the admin panel and any user-content upload in the web
+        // app. Also grants read access to the media library.
+        allowFileAccess
+        allowFileAccessFromFileURLs
+        allowUniversalAccessFromFileURLs
+        allowsBackForwardNavigationGestures
+        geolocationEnabled
+        mixedContentMode="always"
+        // Download support (PDF receipts, invoices) — hand-off to the
+        // OS via Linking so the file opens in the system viewer / is
+        // saved to Files/Downloads.
+        onFileDownload={({ nativeEvent }: any) => {
+          try {
+            const url = nativeEvent?.downloadUrl;
+            if (url) Linking.openURL(url).catch(() => { /* noop */ });
+          } catch { /* noop */ }
+        }}
         // Disable HTTP resource cache so every launch fetches fresh
         // HTML/JS/CSS. Cookies + localStorage still persist (auth is
         // preserved). Android needs the extra `cacheMode` prop below;
